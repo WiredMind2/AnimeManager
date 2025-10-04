@@ -225,8 +225,8 @@ class Manager(
 		# TODO - Put that in settings
 
 		with self.getDatabase() as self.database:
-			if not os.path.exists(self.dbPath):  # TODO
-				print(f"No database found for path: {self.dbPath}")
+			if not self.database.is_initialized():
+				print(f"Database not initialized, setting up...")
 				self.checkSettings()
 				self.reloadAll()
 				return
@@ -658,6 +658,16 @@ class Manager(
 		except Exception as e:
 			self.log("MAIN_STATE", f"Error while stopping: {e}")
 
+		# Stop embedded MariaDB server if it's being used
+		try:
+			if hasattr(self, 'database') and self.database:
+				from .db_managers.embeddedMariaDB import EmbeddedMariaDB
+				if isinstance(self.database, EmbeddedMariaDB):
+					self.log("MAIN_STATE", "Stopping embedded MariaDB server")
+					self.database.stop_server()
+		except Exception as e:
+			self.log("MAIN_STATE", f"Error stopping embedded MariaDB: {e}")
+
 		self.database.close()
 
 		self.root.destroy()
@@ -748,7 +758,7 @@ class Manager(
 		# self.startup()
 		self.closing = False
 
-		if not os.path.exists(self.dbPath):  # TODO
+		if not self.database.is_initialized():
 			self.checkSettings()
 			self.reloadAll()
 			return

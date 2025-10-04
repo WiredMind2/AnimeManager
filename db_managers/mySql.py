@@ -60,6 +60,14 @@ class MySQL(BaseDB):
 		# Overwrite the default __exit__ method since there is no need to close the cursor
 		super().__exit__(close_cursor=False)
 
+	def is_initialized(self):
+		"""Check if the database is properly initialized for MySQL"""
+		try:
+			tables = self.sql("SELECT table_name FROM information_schema.tables WHERE table_type='BASE TABLE' AND table_schema = 'anime_manager'")
+			return len(tables) > 0
+		except Exception:
+			return False
+
 	def createNewDb(self, database=None):
 		""" Create a new database
 		"""

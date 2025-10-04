@@ -106,7 +106,13 @@
         }
     },
     "database_managers":{
-        "last_db_used": "MySQL",
+        "last_db_used": "EmbeddedMariaDB",
+        "EmbeddedMariaDB": {
+            "database": "anime_manager",
+            "password": "animemanager",
+            "port": 3307,
+            "user": "animemanager"
+        },
         "MySQL": {
             "host": "", 
             "user": "", 

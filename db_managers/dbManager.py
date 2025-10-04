@@ -96,6 +96,13 @@ class db_instance(BaseDB):
 		self.close()
 		return False
 
+	def is_initialized(self):
+		"""Check if the database is properly initialized for SQLite"""
+		try:
+			return os.path.exists(self.path) and os.path.getsize(self.path) > 0
+		except Exception:
+			return False
+
 	def keys(self, table):
 		return self.updateKeys(table)
 

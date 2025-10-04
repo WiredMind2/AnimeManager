@@ -41,6 +41,11 @@ class BaseDB():
 		"""
 		raise NotImplementedError()
 
+	def is_initialized(self):
+		""" Check if the database is properly initialized
+		"""
+		raise NotImplementedError()
+
 	def close(self):
 		""" Close the connection to the database
 		"""
