@@ -1,22 +1,22 @@
 import shutil
-from ..logger import Logger
-
 
 try:
-    from ..utils import LoginDialog
+    from ..logger import Logger
+    from ..dialog_components import LoginDialog
 except ImportError:
-    import sys, os
-    sys.path.append(os.path.abspath('./'))
-    from utils import LoginDialog
+    from logger import Logger
+    from dialog_components import LoginDialog
+
 
 class BaseFileManager(Logger):
-    name = ''
+    name = ""
+
     def __init__(self, settings={}, update=False):
         self.settings = settings
-        
+
         Logger.__init__(self)
 
-        if update or self.settings.get('dataPath', '') == '':
+        if update or self.settings.get("dataPath", "") == "":
             self.change_path(settings)
         else:
             self.initialize()
@@ -28,7 +28,7 @@ class BaseFileManager(Logger):
     def open(self, path, mode="r", **kwargs):
         """Return a file object depending on mode, creating file and folders if necessary"""
         raise NotImplementedError()
-    
+
     def mkdir(self, path):
         """Create a directory"""
         raise NotImplementedError()
@@ -43,8 +43,8 @@ class BaseFileManager(Logger):
 
     def isdir(self, path):
         """Check if path is a directory"""
-        return NotImplementedError()
-    
+        raise NotImplementedError()
+
     def isfile(self, path):
         """Check if path is a file"""
         # By default, will assume that anything that isn't a directory is a file
@@ -53,9 +53,7 @@ class BaseFileManager(Logger):
     def delete(self, path):
         """Delete a file or folder"""
         shutil.rmtree(path)
-    
+
     def change_path(self, root):
         """Update cwd, and sometimes login infos as well"""
         raise NotImplementedError()
-    
-

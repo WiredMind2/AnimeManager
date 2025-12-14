@@ -1,34 +1,36 @@
 # VERSION: 1.1
 # AUTHORS: LightDestory (https://github.com/LightDestory)
 
-from urllib import parse, request
 import xml.etree.ElementTree as ET
-from helpers import retrieve_url, download_file
+from urllib import parse, request
+
+from helpers import download_file, retrieve_url
 from novaprinter import prettyPrinter
 
 DATABASE_URL = "https://academictorrents.com/database.xml"
 FILTERS = []
 
+
 class academictorrents(object):
-    url = 'https://academictorrents.com/'
-    name = 'AcademicTorrents'
+    url = "https://academictorrents.com/"
+    name = "AcademicTorrents"
     """ 
     ***TLDR; It is safer to force an 'all' research***
         AcademicTorrents categories are very specific
         qBittorrent does not provide enough categories to implement a good filtering.
     """
-    supported_categories = {'all': '0'}
+    supported_categories = {"all": "0"}
 
     def parseXML(self, collection):
         for torrent in collection:
             data = {
-                'link': parse.quote(torrent.findtext("link")),
-                'name': torrent.findtext("title"),
-                'size': torrent.findtext("size"),
-                'seeds': -1,
-                'leech': -1,
-                'engine_url': self.url,
-                'desc_link': torrent.findtext("link")
+                "link": parse.quote(torrent.findtext("link")),
+                "name": torrent.findtext("title"),
+                "size": torrent.findtext("size"),
+                "seeds": -1,
+                "leech": -1,
+                "engine_url": self.url,
+                "desc_link": torrent.findtext("link"),
             }
             prettyPrinter(data)
 
@@ -58,11 +60,11 @@ class academictorrents(object):
     def download_torrent(self, info):
         infoHash = parse.unquote(info).split("/")[-1]
         if len(infoHash) == 40:
-            print(download_file('{0}/download/{1}.torrent'.format(self.url, infoHash)))
+            print(download_file("{0}/download/{1}.torrent".format(self.url, infoHash)))
         else:
-            raise Exception('Error, please fill a bug report!')
+            raise Exception("Error, please fill a bug report!")
 
-    def search(self, what, cat='all'):
+    def search(self, what, cat="all"):
         global FILTERS
         FILTERS = [f.lower() for f in str(what).split("%20")]
         db = self.retrieve_database()

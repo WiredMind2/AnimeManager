@@ -1,15 +1,17 @@
-import requests
-import sys
 import os
+import sys
 
-sys.path.append(os.path.abspath("../"))
+import requests
+
 try:
-    from ..logger import Logger
     from ..getters import Getters
-except ModuleNotFoundError as e:
-    print("Module not found:", e)
+    from ..logger import Logger
+except ImportError:
+    from getters import Getters
+    from logger import Logger
 
 exceptions = requests.exceptions
+
 
 class ParserUtils(Logger, Getters):
     def __init__(self):
@@ -17,7 +19,7 @@ class ParserUtils(Logger, Getters):
         # self.dbPath = dbPath
         # self.database = self.getDatabase()
         self.session = requests.Session()
-    
+
     def get(self, *args, **kwargs):
         # Wrapper function for HTTP GET requests
         return self.session.get(*args, **kwargs)

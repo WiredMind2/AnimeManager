@@ -1,3 +1,4 @@
+aiofiles
 aiohttp
 aiosignal
 altgraph
@@ -14,10 +15,14 @@ jikanpy
 jsonapi-client
 jsonschema
 multidict
+mysql-connector
 pefile
 Pillow
+requests
 pypresence
 pyrsistent
+ffpyplayer
+python-Levenshtein
 python-mpv
 python-vlc
 pytube
@@ -28,8 +33,26 @@ simplejson
 six
 soupsieve
 thefuzz
+transmission_rpc
 urllib3
 yarl
-transmission_rpc
-python-Levenshtein
-mysql-connector
+pytest-timeout
+lxml
+# Security testing tools
+bandit
+safety
+semgrep
+# Code quality tools
+flake8
+mypy
+black
+isort
+# Documentation testing
+sphinx
+sphinx-rtd-theme
+# Performance testing
+pytest-benchmark
+# Test reporting
+pytest-html
+pytest-cov
+pytest-xdist

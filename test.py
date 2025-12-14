@@ -1,30 +1,41 @@
 # from tkinter import *
-from operator import itemgetter
-from thefuzz import fuzz, process as fuzz_process
-import time
-from datetime import datetime, timezone, timedelta, time as datetime_time, tzinfo
-import requests
-from collections import defaultdict, deque
-import re
-import os
-import threading
-import queue
-import multiprocessing
 import json
-import random
-import sys
+import multiprocessing
 import os
+import queue
+import random
+import re
+import sys
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import datetime
+from datetime import time as datetime_time
+from datetime import timedelta, timezone, tzinfo
+from operator import itemgetter
+
 import mysql.connector
+import requests
 from mysql.connector.errors import ProgrammingError
+from thefuzz import fuzz
+from thefuzz import process as fuzz_process
 
-
-from .constants import Constants
-from .animeManager import Manager
-from .getters import Getters
-from .utils import TableFrame
-from .animeAPI.JikanMoe import JikanMoeWrapper
-from .classes import SortedDict, Anime, AnimeList, SortedList, RegroupList
-from .db_managers.dbManager import db_instance
+try:
+    from .animeAPI.JikanMoe import JikanMoeWrapper
+    from .animeManager import Manager
+    from .classes import Anime, AnimeList, RegroupList, SortedDict, SortedList
+    from .constants import Constants
+    from .db_managers.dbManager import db_instance
+    from .getters import Getters
+    from .table_frame import TableFrame
+except ImportError:
+    from animeAPI.JikanMoe import JikanMoeWrapper
+    from animeManager import Manager
+    from classes import Anime, AnimeList, RegroupList, SortedDict, SortedList
+    from constants import Constants
+    from db_managers.dbManager import db_instance
+    from getters import Getters
+    from table_frame import TableFrame
 
 # terms = 'classroom of the elite'
 # data = main.api.searchAnime(terms, limit=main.animePerPage)

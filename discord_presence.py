@@ -20,7 +20,7 @@ class DiscordPresence:
             self.init_t = threading.Thread(target=self.get_RPC, daemon=True)
             self.init_t.start()
         else:
-            self.RPC = globals()['RPC']
+            self.RPC = globals()["RPC"]
 
     def get_RPC(self):
         if "RPC" in globals().keys():
@@ -37,19 +37,18 @@ class DiscordPresence:
         try:
             RPC.connect()
         except PermissionError:
-            print('Error on RPC: PermissionError')
+            print("Error on RPC: PermissionError")
             return
         except pp_exceptions.DiscordNotFound:
             print("Error on RPC: DiscordNotFound")
             return
-
 
         RPC.global_start = time.time()
         RPC.watching = False
         RPC.timer = None
 
         self.RPC = RPC
-        globals()['RPC'] = self.RPC
+        globals()["RPC"] = self.RPC
 
     def RPC_menu(self):
         threading.Thread(target=self.RPC_menu_, daemon=True).start()
@@ -72,7 +71,7 @@ class DiscordPresence:
                 large_image="icon_rounded",
                 details="In the menu",
                 state=quote,
-                start=start
+                start=start,
             )
         except pp_exceptions.InvalidID:
             pass
@@ -82,7 +81,7 @@ class DiscordPresence:
             # TODO - Handle error:
             # Exception has occurred: ConnectionResetError
             # [WinError 995] The I/O operation has been aborted because of either a thread exit or an application request
-            
+
             print("Unknown error on RPC: ")
             traceback.print_exc()
 
@@ -95,7 +94,9 @@ class DiscordPresence:
             self.RPC.timer.start()
 
     def RPC_watching(self, title, **kwargs):
-        threading.Thread(target=self.RPC_watching_, args=(title,), daemon=True, kwargs=kwargs).start()
+        threading.Thread(
+            target=self.RPC_watching_, args=(title,), daemon=True, kwargs=kwargs
+        ).start()
 
     def RPC_watching_(self, title, **kwargs):
         # Kwargs can have three fields: start: float, end: float, eps: [int, int]
@@ -117,7 +118,7 @@ class DiscordPresence:
                 large_image="icon_rounded",
                 details="Watching an anime:",
                 state=title,
-                **kwargs
+                **kwargs,
             )
         except Exception as e:
             pass
@@ -146,10 +147,11 @@ class DiscordPresence:
                 "Forgot to sleep",
                 "Is probably asleep",
                 "Enjoying life",
-                "Probably about to watch an anime"
+                "Probably about to watch an anime",
             )
             return random.choice(funny_quotes)
-        elif False and cat == "disk": # Disk
+        elif False and cat == "disk":  # Disk
+
             def list_sub_dirs(dir):
                 out = []
                 for f in os.listdir(dir):
@@ -159,6 +161,7 @@ class DiscordPresence:
                     else:
                         out.append(path)
                 return out
+
             disk = self.animePath.split("/")[0]
             total, used, free = shutil.disk_usage(disk)
             anime_size = sum(os.path.getsize(p) for p in list_sub_dirs(self.animePath))
@@ -185,22 +188,22 @@ class DiscordPresence:
 
 
 def get_ipc_path(pipe=None):
-    ipc = 'discord-ipc-'
+    ipc = "discord-ipc-"
     if pipe:
         ipc = f"{ipc}{pipe}"
 
-    if sys.platform in ('linux', 'darwin'):
-        tempdir = (os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir())
-        paths = ['.', 'snap.discord', 'app/com.discordapp.Discord']
-    elif sys.platform == 'win32':
-        tempdir = r'\\?\pipe'
-        paths = ['.']
+    if sys.platform in ("linux", "darwin"):
+        tempdir = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+        paths = [".", "snap.discord", "app/com.discordapp.Discord"]
+    elif sys.platform == "win32":
+        tempdir = r"\\?\pipe"
+        paths = ["."]
     else:
         return
-    
+
     for path in paths:
         full_path = os.path.abspath(os.path.join(tempdir, path))
-        if sys.platform == 'win32' or os.path.isdir(full_path):
+        if sys.platform == "win32" or os.path.isdir(full_path):
             for entry in os.scandir(full_path):
                 if entry.name.startswith(ipc):
                     return entry.path
@@ -210,42 +213,29 @@ if __name__ == "__main__":
     pipe = get_ipc_path()
 
     act_details = {
-        "state": 'aaa',
-        "details": 'bbb',
-        "timestamps": {
-            "start": time.time(),
-            "end": time.time()+1000
-        },
+        "state": "aaa",
+        "details": "bbb",
+        "timestamps": {"start": time.time(), "end": time.time() + 1000},
         "assets": {
             "large_image": "icon_rounded",
             "large_text": "cccc",
             "small_image": None,
-            "small_text": None
+            "small_text": None,
         },
-        "party": {
-            "id": None,
-            "size": None
-        },
-        "secrets": {
-            "join": None,
-            "spectate": None,
-            "match": None
-        },
+        "party": {"id": None, "size": None},
+        "secrets": {"join": None, "spectate": None, "match": None},
         "buttons": None,
-        "instance": True
+        "instance": True,
     }
 
     payload = {
         "cmd": "SET_ACTIVITY",
-        "args": {
-            "pid": os.getpid(),
-            "activity": act_details
-        },
-        "nonce": '{:.20f}'.format(time.time())
+        "args": {"pid": os.getpid(), "activity": act_details},
+        "nonce": "{:.20f}".format(time.time()),
     }
 
-    data = json.dumps(payload).encode('utf-8')
+    data = json.dumps(payload).encode("utf-8")
 
     # TODO - Connection + Authentification
-    with open(pipe, 'wb') as f:
+    with open(pipe, "wb") as f:
         f.write(data)

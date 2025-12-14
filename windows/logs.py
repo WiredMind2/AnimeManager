@@ -1,16 +1,27 @@
-from tkinter import *
+from tkinter import Frame, Label, TclError
 
-from .. import utils
+# Standardized import handling
+try:
+    # Try importing as package first
+    from AnimeManager.window_frames import RoundTopLevel, ScrollableFrame
+except ImportError:
+    try:
+        # Try relative imports
+        from ..window_frames import RoundTopLevel, ScrollableFrame
+    except ImportError:
+        # Fallback to direct imports
+        from window_frames import RoundTopLevel, ScrollableFrame
 
 
-class Logs():
+class Logs:
     def drawLogsWindow(self):
         # Functions
         if True:
+
             def addLog(text):
                 panel = self.logsWindow.panel
                 row = self.logsWindow.row
-                bg = 'Gray2' if row % 2 == 1 else "Gray3"
+                bg = "Gray2" if row % 2 == 1 else "Gray3"
 
                 cell = Frame(panel, bg=self.colors["Gray2"])
                 Label(
@@ -18,7 +29,7 @@ class Logs():
                     text=text,
                     bg=self.colors[bg],
                     fg=self.colors["White"],
-                    font=("Source Code Pro Medium", 13)
+                    font=("Source Code Pro Medium", 13),
                 ).pack(fill="both", expand=True)
                 cell.grid(column=0, row=row, sticky="ew")
 
@@ -33,12 +44,12 @@ class Logs():
         if True:
             if self.logsWindow is None or not self.logsWindow.winfo_exists():
                 size = (1000, 500)
-                self.logsWindow = utils.RoundTopLevel(
+                self.logsWindow = RoundTopLevel(
                     self.initWindow,
                     title="Logs",
                     minsize=size,
                     bg=self.colors["Gray2"],
-                    fg=self.colors["Gray3"]
+                    fg=self.colors["Gray3"],
                 )
             else:
                 self.logsWindow.clear()
@@ -47,7 +58,9 @@ class Logs():
 
         # Main Panel
         if True:
-            panel = utils.ScrollableFrame(self.logsWindow, scrollbar=True, bg=self.colors["Gray2"])
+            panel = ScrollableFrame(
+                self.logsWindow, scrollbar=True, bg=self.colors["Gray2"]
+            )
             panel.grid(row=0, column=0, sticky="nsew")
             panel.grid_columnconfigure(0, weight=1)
 

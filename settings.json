@@ -93,7 +93,7 @@
         "iconPath": "",
         "logsPath": ""
     },
-    "file_managers":{
+    "file_managers": {
         "last_fm_used": "Local",
         "Local": {
             "dataPath": ""
@@ -105,18 +105,18 @@
             "dataPath": ""
         }
     },
-    "database_managers":{
+    "database_managers": {
         "last_db_used": "EmbeddedMariaDB",
         "EmbeddedMariaDB": {
-            "database": "anime_manager",
-            "password": "animemanager",
+            "database": "",
+            "password": "",
             "port": 3307,
-            "user": "animemanager"
+            "user": ""
         },
         "MySQL": {
-            "host": "", 
-            "user": "", 
-            "password": "", 
+            "host": "",
+            "user": "",
+            "password": "",
             "database": ""
         },
         "SQLite": {
@@ -167,8 +167,8 @@
             }
         },
         "playerOrder": [
-            "mpv_player", 
-            "vlc_player", 
+            "mpv_player",
+            "vlc_player",
             "ff_player"
         ]
     },

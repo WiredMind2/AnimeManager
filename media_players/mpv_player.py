@@ -1,47 +1,92 @@
+import traceback
 from tkinter import TclError
-from .base_player import BasePlayer
+
+try:
+    from ..logger import log
+except Exception:
+    try:
+        from logger import log
+    except Exception:
+
+        def log(*a, **k):
+            print(*a)
+
+
+try:
+    from .base_player import BasePlayer
+except ImportError:
+    from base_player import BasePlayer
+
 import os
 import time
 import traceback
 
 path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
-if not os.path.exists(path):
-    raise ImportError("mpv lib folder not found!")
-os.environ['PATH'] = path + ";" + os.environ["PATH"]
+# If a bundled mpv lib folder exists, prepend it to PATH. Don't raise if it doesn't.
+if os.path.exists(path):
+    os.environ["PATH"] = path + ";" + os.environ.get("PATH", "")
 
-import mpv
+# Try to import Python mpv binding; if unavailable we'll fallback to calling the mpv CLI.
+try:
+    import mpv
+except Exception:
+    mpv = None
+    try:
+        log("MEDIA_PLAYERS", "python-mpv import failed:", traceback.format_exc())
+    except Exception:
+        print("python-mpv import failed")
+import subprocess
 
 
 class MpvPlayer(BasePlayer):
-    def start(self, playlist, video=0, id=None,
-              dbPath=None, url=False, root=None):
+    def start(self, playlist, video=0, id=None, dbPath=None, url=False, root=None):
         super().setup(root)
 
         self.index = video % len(playlist)
         self.id = id
         self.database = dbPath
 
-        self.player = None
-        self.hidden = False
-        self.fullscreen = False
-        self.paused = False
-        self.ctrl = False
-        self.alt = False
-        self.threadLock = False
-        self.titleLock = False
-        self.stopped = False
+        # If the mpv python binding is available, use the rich implementation.
+        if mpv is not None:
+            self.player = None
+            self.hidden = False
+            self.fullscreen = False
+            self.paused = False
+            self.ctrl = False
+            self.alt = False
+            self.threadLock = False
+            self.titleLock = False
+            self.stopped = False
 
-        self.spuTrack = -1
-        self.audioTrack = -1
+            self.spuTrack = -1
+            self.audioTrack = -1
 
-        self.initWindow()
+            self.initWindow()
 
-        event = self.getPlaylist(playlist)
-        # Wait for playlist data to be processed
-        self.condition_waiter(event.is_set, lambda url=url: self.start_after(url))
+            event = self.getPlaylist(playlist)
+            # Wait for playlist data to be processed
+            self.condition_waiter(event.is_set, lambda url=url: self.start_after(url))
 
-        if self.root is None:
-            self.parent.mainloop()
+            if self.root is None:
+                self.parent.mainloop()
+        else:
+            # Fallback: use system 'mpv' binary if available. This is a minimal player
+            # that simply launches mpv with the chosen entry and exits when finished.
+            try:
+                cmd = [
+                    "mpv",
+                    "--no-terminal",
+                    "--force-window=yes",
+                    playlist[self.index],
+                ]
+                subprocess.run(cmd)
+            except FileNotFoundError:
+                self.log(
+                    "MAIN_STATE",
+                    "[ERROR] - mpv binary not found on PATH and python-mpv binding missing",
+                )
+            except Exception as e:
+                self.log("MAIN_STATE", "[ERROR] - mpv fallback failed:", str(e))
 
     def start_after(self, url):
         # Triggers when playlist is loaded
@@ -66,18 +111,21 @@ class MpvPlayer(BasePlayer):
         self.updateSubLbl()
         self.updateAudioLbl()
 
-        self.parent.after(100, self.OnTick)
+        # Schedule recurring OnTick and remember the id so we can cancel it on close
+        try:
+            self._on_tick_id = self.parent.after(100, self.OnTick)
+        except Exception:
+            self._on_tick_id = None
 
     def getAudio(self, i=None):
-        self.audioTracks = [
-            t for t in self.player.track_list if t['type'] == "audio"]
+        self.audioTracks = [t for t in self.player.track_list if t["type"] == "audio"]
         if i is None:
             i = self.player.audio
         else:
             i = i % len(self.audioTracks)
         track = None
         for t in self.audioTracks:
-            if t['id'] == i:
+            if t["id"] == i:
                 track = t
                 break
         return track
@@ -85,15 +133,17 @@ class MpvPlayer(BasePlayer):
     def updateAudioLbl(self):
         track = self.getAudio()
         if track is not None:
-            if 'title' in track.keys():
-                text = track['title']
+            if "title" in track.keys():
+                text = track["title"]
             else:
                 text = "Unknown"
-            self.audioLbl['text'] = "Audio {}/{} - {}".format(
-                track["id"], len(self.audioTracks), text)
+            self.audioLbl["text"] = "Audio {}/{} - {}".format(
+                track["id"], len(self.audioTracks), text
+            )
         else:
-            self.audioLbl['text'] = "Audio 0/{} - Disabled".format(
-                len(self.audioTracks))
+            self.audioLbl["text"] = "Audio 0/{} - Disabled".format(
+                len(self.audioTracks)
+            )
 
     def audioTrackNext(self):
         i = self.player.audio
@@ -116,15 +166,14 @@ class MpvPlayer(BasePlayer):
         self.updateAudioLbl()
 
     def getSub(self, i=None):
-        self.subTracks = [
-            t for t in self.player.track_list if t['type'] == "sub"]
+        self.subTracks = [t for t in self.player.track_list if t["type"] == "sub"]
         if i is None:
             i = self.player.sub
         else:
             i = i % self.subTracks
         track = None
         for t in self.subTracks:
-            if t['id'] == i:
+            if t["id"] == i:
                 track = t
                 break
         return track
@@ -132,15 +181,15 @@ class MpvPlayer(BasePlayer):
     def updateSubLbl(self):
         track = self.getSub()
         if track is not None:
-            if 'title' in track.keys():
-                text = track['title']
+            if "title" in track.keys():
+                text = track["title"]
             else:
                 text = "Unknown"
-            self.subLbl['text'] = "Sub {}/{} - {}".format(
-                track["id"], len(self.subTracks), text)
+            self.subLbl["text"] = "Sub {}/{} - {}".format(
+                track["id"], len(self.subTracks), text
+            )
         else:
-            self.subLbl['text'] = "Sub 0/{} - Disabled".format(
-                len(self.subTracks))
+            self.subLbl["text"] = "Sub 0/{} - Disabled".format(len(self.subTracks))
 
     def subTrackNext(self):
         i = self.player.sub
@@ -223,13 +272,13 @@ class MpvPlayer(BasePlayer):
         value = int(value)
         self.volume = max(0, min(self.volume + value, 200))
         self.player.volume = self.volume
-        self.soundLbl['text'] = str(self.volume) + "%"
+        self.soundLbl["text"] = str(self.volume) + "%"
 
     def volumeDown(self, value=0):
         value = int(value)
         self.volume = max(0, min(self.volume - value, 200))
         self.player.volume = self.volume
-        self.soundLbl['text'] = str(self.volume) + "%"
+        self.soundLbl["text"] = str(self.volume) + "%"
 
     def togglePause(self, playing=None):
         if playing is not None and not playing == self.paused:
@@ -238,7 +287,7 @@ class MpvPlayer(BasePlayer):
         self.player.pause = self.paused
         icon = "play" if self.paused else "pause"
         img = self.image("{}.png".format(icon), (25, 25))
-        self.playButton['image'] = img
+        self.playButton["image"] = img
         self.playButton.image = img
         # self.playButton['text'] = "Pause" if self.paused else "Play"
 
@@ -251,8 +300,9 @@ class MpvPlayer(BasePlayer):
             step = 100 / (time * fps)
             current = int((stop - start) * p / 100 + start)
 
-            self.titleLabel.place(anchor="n", relx=0.5,
-                                  y=current, relwidth=1, height=50)
+            self.titleLabel.place(
+                anchor="n", relx=0.5, y=current, relwidth=1, height=50
+            )
             p += step
 
             if start < stop:
@@ -260,8 +310,16 @@ class MpvPlayer(BasePlayer):
             else:
                 check = current > stop
             if not self.stopped and check:
-                self.parent.after(
-                    int(1000 / fps), lambda: animate(start, stop, time, fps, p))
+                try:
+                    aid = self.parent.after(
+                        int(1000 / fps), lambda: animate(start, stop, time, fps, p)
+                    )
+                    # keep track so we can cancel on close
+                    if not hasattr(self, "_after_ids"):
+                        self._after_ids = []
+                    self._after_ids.append(aid)
+                except Exception:
+                    pass
             else:
                 if start > stop:
                     self.titleLock = False
@@ -270,7 +328,7 @@ class MpvPlayer(BasePlayer):
         title = self.titles[self.index]
         if title is None:
             return self.parent.after(100, lambda: self.showTitle(animations))
-        self.titleLabel['text'] = title
+        self.titleLabel["text"] = title
 
         if self.titleLock:
             return
@@ -278,12 +336,23 @@ class MpvPlayer(BasePlayer):
         if animations:
             try:
                 animate(-50, 0, 1)
-                self.parent.after(3000, lambda: animate(0, -50, 1))
+                try:
+                    aid = self.parent.after(3000, lambda: animate(0, -50, 1))
+                    if not hasattr(self, "_after_ids"):
+                        self._after_ids = []
+                    self._after_ids.append(aid)
+                except Exception:
+                    pass
             except Exception:
                 pass
         try:
             if not self.stopped:
-                self.parent.after(5000, self.titleLabel.place_forget)
+                try:
+                    self._title_forget_id = self.parent.after(
+                        5000, self.titleLabel.place_forget
+                    )
+                except Exception:
+                    self._title_forget_id = None
         except Exception:
             pass
 
@@ -306,17 +375,25 @@ class MpvPlayer(BasePlayer):
         sec = int(currentTime)
         mins = (sec // 60) % 60
         hours = sec // 3600
-        currentTimeText = (str(hours) + ":" if hours > 0 else "") + \
-            str(mins).zfill(2) + ":" + str(sec % 60).zfill(2)
+        currentTimeText = (
+            (str(hours) + ":" if hours > 0 else "")
+            + str(mins).zfill(2)
+            + ":"
+            + str(sec % 60).zfill(2)
+        )
 
         sec = int(totalTime)
         mins = (sec // 60) % 60
         hours = sec // 3600
-        totalTimeText = (str(hours) + ":" if hours > 0 else "") + \
-            str(mins).zfill(2) + ":" + str(sec % 60).zfill(2)
+        totalTimeText = (
+            (str(hours) + ":" if hours > 0 else "")
+            + str(mins).zfill(2)
+            + ":"
+            + str(sec % 60).zfill(2)
+        )
 
         try:
-            self.posLbl['text'] = currentTimeText + " - " + totalTimeText
+            self.posLbl["text"] = currentTimeText + " - " + totalTimeText
         except Exception:
             pass
 
@@ -325,18 +402,65 @@ class MpvPlayer(BasePlayer):
         except Exception:
             cursorX, cursorY = 0, 0
         try:
-            cursorX, cursorY = cursorX - self.videopanel.winfo_rootx(), cursorY - self.videopanel.winfo_rooty()
+            cursorX, cursorY = (
+                cursorX - self.videopanel.winfo_rootx(),
+                cursorY - self.videopanel.winfo_rooty(),
+            )
         except TclError:
             # Window was closed
             return
 
-        self.parent.after(100, self.OnTick)
+        try:
+            # schedule next tick and remember id so we can cancel it on close
+            self._on_tick_id = self.parent.after(100, self.OnTick)
+        except Exception:
+            self._on_tick_id = None
 
     def OnClose(self):
         if self.stopped:
             return
         self.stopped = True
-        self.parent.destroy()
+        # Cancel scheduled callbacks to avoid Tcl trying to invoke them after
+        # the widgets have been destroyed.
+        try:
+            if hasattr(self, "movementCheck") and self.movementCheck is not None:
+                try:
+                    self.parent.after_cancel(self.movementCheck)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_on_tick_id") and self._on_tick_id is not None:
+                try:
+                    self.parent.after_cancel(self._on_tick_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_title_forget_id") and self._title_forget_id is not None:
+                try:
+                    self.parent.after_cancel(self._title_forget_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_after_ids"):
+                for aid in list(self._after_ids):
+                    try:
+                        self.parent.after_cancel(aid)
+                    except Exception:
+                        pass
+                self._after_ids.clear()
+        except Exception:
+            pass
+
+        try:
+            self.parent.destroy()
+        except Exception:
+            pass
         self.updateDb()
         try:
             if self.player:

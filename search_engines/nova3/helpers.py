@@ -1,4 +1,4 @@
-#VERSION: 1.43
+# VERSION: 1.43
 
 # Author:
 #  Christophe DUMEZ (chris@qbittorrent.org)
@@ -33,23 +33,33 @@ import io
 import os
 import re
 import socket
-import socks
+import ssl
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
+import socks
+
 # Some sites blocks default python User-agent
-user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko/20100101 Firefox/68.0'
-headers = {'User-Agent': user_agent}
+user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko/20100101 Firefox/68.0"
+headers = {"User-Agent": user_agent}
 # SOCKS5 Proxy support
 if "sock_proxy" in os.environ and len(os.environ["sock_proxy"].strip()) > 0:
     proxy_str = os.environ["sock_proxy"].strip()
-    m = re.match(r"^(?:(?P<username>[^:]+):(?P<password>[^@]+)@)?(?P<host>[^:]+):(?P<port>\w+)$",
-                 proxy_str)
+    m = re.match(
+        r"^(?:(?P<username>[^:]+):(?P<password>[^@]+)@)?(?P<host>[^:]+):(?P<port>\w+)$",
+        proxy_str,
+    )
     if m is not None:
-        socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, m.group('host'),
-                              int(m.group('port')), True, m.group('username'), m.group('password'))
+        socks.setdefaultproxy(
+            socks.PROXY_TYPE_SOCKS5,
+            m.group("host"),
+            int(m.group("port")),
+            True,
+            m.group("username"),
+            m.group("password"),
+        )
         socket.socket = socks.socksocket
 
 
@@ -61,56 +71,59 @@ def htmlentitydecode(s):
         if entity in html.entities.name2codepoint:
             return chr(html.entities.name2codepoint[entity])
         return " "  # Unknown entity: We replace with a space.
-    t = re.sub('&(%s);' % '|'.join(html.entities.name2codepoint), entity2char, s)
+
+    t = re.sub("&(%s);" % "|".join(html.entities.name2codepoint), entity2char, s)
 
     # Then convert numerical entities (such as &#233;)
-    t = re.sub(r'&#(\d+);', lambda x: chr(int(x.group(1))), t)
+    t = re.sub(r"&#(\d+);", lambda x: chr(int(x.group(1))), t)
 
     # Then convert hexa entities (such as &#x00E9;)
-    return re.sub(r'&#x(\w+);', lambda x: chr(int(x.group(1), 16)), t)
+    return re.sub(r"&#x(\w+);", lambda x: chr(int(x.group(1), 16)), t)
 
 
 def retrieve_url(url):
-    """ Return the content of the url page as a string """
+    """Return the content of the url page as a string"""
     req = urllib.request.Request(url, headers=headers)
+    context = ssl.create_default_context()
     try:
-        response = urllib.request.urlopen(req)
+        response = urllib.request.urlopen(req, context=context, timeout=10)
     except urllib.error.URLError as errno:
         if errno.code not in (403, 503, 523, 404, 522):
             print(" ".join(("Connection error:", str(errno.reason))))
         return ""
     dat = response.read()
     # Check if it is gzipped
-    if dat[:2] == b'\x1f\x8b':
+    if dat[:2] == b"\x1f\x8b":
         # Data is gzip encoded, decode it
         compressedstream = io.BytesIO(dat)
         gzipper = gzip.GzipFile(fileobj=compressedstream)
         extracted_data = gzipper.read()
         dat = extracted_data
     info = response.info()
-    charset = 'utf-8'
+    charset = "utf-8"
     try:
-        ignore, charset = info['Content-Type'].split('charset=')
+        ignore, charset = info["Content-Type"].split("charset=")
     except Exception:
         pass
-    dat = dat.decode(charset, 'replace')
+    dat = dat.decode(charset, "replace")
     dat = htmlentitydecode(dat)
     # return dat.encode('utf-8', 'replace')
     return dat
 
 
 def download_file(url, referer=None):
-    """ Download file at url and write it to a file, return the path to the file and the url """
+    """Download file at url and write it to a file, return the path to the file and the url"""
     file, path = tempfile.mkstemp()
     file = os.fdopen(file, "wb")
     # Download url
     req = urllib.request.Request(url, headers=headers)
     if referer is not None:
-        req.add_header('referer', referer)
-    response = urllib.request.urlopen(req)
+        req.add_header("referer", referer)
+    context = ssl.create_default_context()
+    response = urllib.request.urlopen(req, context=context, timeout=10)
     dat = response.read()
     # Check if it is gzipped
-    if dat[:2] == b'\x1f\x8b':
+    if dat[:2] == b"\x1f\x8b":
         # Data is gzip encoded, decode it
         compressedstream = io.BytesIO(dat)
         gzipper = gzip.GzipFile(fileobj=compressedstream)
@@ -121,4 +134,4 @@ def download_file(url, referer=None):
     file.write(dat)
     file.close()
     # return file path
-    return (path + " " + url)
+    return path + " " + url

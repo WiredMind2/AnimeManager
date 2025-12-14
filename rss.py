@@ -1,10 +1,13 @@
 import re
 import threading
+
 import requests
+
+from classes import Torrent
 
 # from lxml import etree, html
 
-from classes import Torrent
+
 
 class RSS:
     def addRSS(self, id):
@@ -20,29 +23,25 @@ class RSS:
             raise
 
         tree = etree.ElementTree(html.fromstring(r.content))
-        channel = tree.xpath('channel')[0]
-        title, desc = 'No title', 'No description'
+        channel = tree.xpath("channel")[0]
+        title, desc = "No title", "No description"
         items = []
         for entry in channel:
-            if entry.tag == 'item':
+            if entry.tag == "item":
                 data = {}
-                keys = ('title', 'link', 'pubdate')
+                keys = ("title", "link", "pubdate")
                 for sub in entry:
                     if sub.tag in keys:
                         data[sub.tag] = sub.text or sub.tail
                 items.append(data)
 
-            elif entry.tag == 'title':
+            elif entry.tag == "title":
                 title = entry.text
-            elif entry.tag == 'description':
+            elif entry.tag == "description":
                 desc = entry.text
 
-        return {
-            'title': title, 
-            'desc': desc, 
-            'data': items
-        }
-    
+        return {"title": title, "desc": desc, "data": items}
+
     def getRSSTorrents(self, data, thread=True):
         # Data is a dict with anime id, links and filters: {'id': (link, [filter1, filter2, ...]), ...}
         if thread:
@@ -51,7 +50,7 @@ class RSS:
 
         out = {}
         for id, (link, filters) in data.items():
-            items = self.parseRSS(link).get('data', [])
+            items = self.parseRSS(link).get("data", [])
             for item in items:
                 if all(map(lambda f: f(item), filters)):
                     if id not in out:
@@ -59,7 +58,10 @@ class RSS:
 
                     out[id].append(item)
 
-        self.log('[RSS]', f'{sum(map(len, out.values()))} new torrents found from RSS, downloading')
+        self.log(
+            "[RSS]",
+            f"{sum(map(len, out.values()))} new torrents found from RSS, downloading",
+        )
         for id, items in out.items():
             for item in items:
-                self.downloadFile(id, url=item['link'])
+                self.downloadFile(id, url=item["link"])

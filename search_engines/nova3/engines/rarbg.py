@@ -1,4 +1,4 @@
-#VERSION: 2.14
+# VERSION: 2.14
 # AUTHORS: b0nk
 # CONTRIBUTORS: Diego de las Heras (ngosang@hotmail.es)
 
@@ -28,61 +28,67 @@
 
 import json
 import time
-from urllib.parse import urlencode, unquote
+from urllib.parse import unquote, urlencode
 
-from novaprinter import prettyPrinter
 from helpers import retrieve_url
+from novaprinter import prettyPrinter
 
 
 class rarbg(object):
-    url = 'https://rarbg.to'
-    name = 'RARBG'
+    url = "https://rarbg.to"
+    name = "RARBG"
     supported_categories = {
-        'all': '4;14;17;18;23;25;27;28;32;33;40;41;42;44;45;46;47;48;49;50;51;52;53;54',
-        'movies': '14;17;42;44;45;46;47;48;50;51;52;54',
-        'tv': '18;41;49',
-        'music': '23;25',
-        'games': '27;28;32;40;53',
-        'software': '33'
+        "all": "4;14;17;18;23;25;27;28;32;33;40;41;42;44;45;46;47;48;49;50;51;52;53;54",
+        "movies": "14;17;42;44;45;46;47;48;50;51;52;54",
+        "tv": "18;41;49",
+        "music": "23;25",
+        "games": "27;28;32;40;53",
+        "software": "33",
     }
 
-    def search(self, what, cat='all'):
+    def search(self, what, cat="all"):
         base_url = "https://torrentapi.org/pubapi_v2.php?%s"
         app_id = "qbittorrent"
 
         # get token
-        params = urlencode({'get_token': 'get_token', 'app_id': app_id})
+        params = urlencode({"get_token": "get_token", "app_id": app_id})
         response = retrieve_url(base_url % params)
         j = json.loads(response)
-        token = j['token']
+        token = j["token"]
         time.sleep(2.1)
 
         # get response json
         what = unquote(what)
         category = self.supported_categories[cat]
-        params = urlencode({'mode': 'search',
-                            'search_string': what,
-                            'ranked': 0,
-                            'category': category,
-                            'limit': 100,
-                            'sort': 'seeders',
-                            'format': 'json_extended',
-                            'token': token,
-                            'app_id': 'qbittorrent'})
+        params = urlencode(
+            {
+                "mode": "search",
+                "search_string": what,
+                "ranked": 0,
+                "category": category,
+                "limit": 100,
+                "sort": "seeders",
+                "format": "json_extended",
+                "token": token,
+                "app_id": "qbittorrent",
+            }
+        )
         response = retrieve_url(base_url % params)
         j = json.loads(response)
 
         # check empty response
-        if 'torrent_results' not in j:
+        if "torrent_results" not in j:
             return
 
         # parse results
-        for result in j['torrent_results']:
-            res = {'link': result['download'],
-                   'name': result['title'],
-                   'size': str(result['size']) + " B",
-                   'seeds': result['seeders'],
-                   'leech': result['leechers'],
-                   'engine_url': self.url,
-                   'desc_link': result['info_page'] + "&app_id=" + app_id}
+        for result in j["torrent_results"]:
+            res = {
+                "link": result["download"],
+                "name": result["title"],
+                "size": str(result["size"]) + " B",
+                "seeds": result["seeders"],
+                "leech": result["leechers"],
+                "engine_url": self.url,
+                "desc_link": result["info_page"] + "&app_id=" + app_id,
+            }
             prettyPrinter(res)

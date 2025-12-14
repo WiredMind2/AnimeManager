@@ -1,59 +1,96 @@
-import time
 import os
-from .base_player import BasePlayer, dict_merge
+import time
+import traceback
 
 try:
-    lib_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'libvlc.dll')
-    import sys
-    # TODO - Find it another way
-    sys.path.append('C:\\Program Files (x86)\\VideoLAN\\VLC')
-    
-    os.environ['PATH'] += 'C:\\Program Files (x86)\\VideoLAN\\VLC' + os.sep + os.environ['PATH'] # TF??
-    # is64bit = sys.maxsize > 2**32
-    import vlc
-except FileNotFoundError as e:
-    vlc = None
-except Exception as e:
-    vlc = None
-except SystemExit as e:
-    vlc = None
+    from .base_player import BasePlayer, dict_merge
+except ImportError:
+    from base_player import BasePlayer, dict_merge
 
+try:
+    # Try to import python-vlc. If it's not available, don't abort; we will fallback
+    # to launching the 'vlc' binary via subprocess when needed.
+    import sys
+
+    vlc_prog_path = r"C:\Program Files (x86)\VideoLAN\VLC"
+    sys.path.append(vlc_prog_path)
+    os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + vlc_prog_path
+    import vlc
+except Exception:
+    vlc = None
+    try:
+        from ..logger import log
+    except Exception:
+        try:
+            from logger import log
+        except Exception:
+
+            def log(*a, **k):
+                print(*a)
+
+    try:
+        log("MEDIA_PLAYERS", "python-vlc import failed:", traceback.format_exc())
+    except Exception:
+        print("python-vlc import failed")
+import subprocess
 import urllib.parse
 from multiprocessing import Manager, Process
+from typing import Any, cast
 
 
 class VlcPlayer(BasePlayer):
     def __init__(self, *args, **kwargs):
-        if vlc is None:
-            # Couldn't import library
-            self.log("Couldn't import vlc library!")
-            return
-
+        # If python-vlc binding is not available, we'll still initialize the
+        # player class but mark that we'll use a subprocess fallback.
+        self._vlc_binding = vlc is not None
         self.method = "NONE"
+
+        # Initialize attributes used later so static analyzer recognizes them
+        from typing import Any
+
+        self.player: Any = None
+        self.Instance: Any = None
+        self.indexFlag: int = 0
+        self.index: int = 0
+        self.playlist: Any = []
+        self.parent: Any = None
+
         super().__init__(*args, **kwargs)
 
     def start(self, *args, **kwargs):
         with Manager() as manager:
             states = manager.dict()
-            states['running'] = 0
-            states['index'] = args[1]
-            states['fullscreen'] = False
+            states["running"] = 0
+            states["index"] = args[1]
+            states["fullscreen"] = False
             # state = manager.Value("i", -1, lock=False)
             # videoIndex = manager.Value("i", args[1], lock=False)
 
             start = time.time()
-            while states['running'] != -1:
+            while states["running"] != -1:
                 if "root" in kwargs.keys():
                     del kwargs["root"]
-                p = Process(target=self._start, args=args,
-                            kwargs=dict_merge(kwargs, {'states': states}))
+                p = Process(
+                    target=self._start,
+                    args=args,
+                    kwargs=dict_merge(kwargs, {"states": states}),
+                )
                 p.start()
                 p.join()
                 self.log(states)
                 time.sleep(max(0, time.time() - start + 10))
 
-    def _start(self, playlist, video=0, id=None, dbPath=None,
-               stopFlag=None, indexFlag=None, states=None, root=None):
+    def _start(
+        self,
+        playlist,
+        video=0,
+        id=None,
+        dbPath=None,
+        stopFlag=None,
+        indexFlag=None,
+        states=None,
+        root=None,
+    ):
         super().setup(root)
 
         self.playlist = playlist
@@ -71,15 +108,14 @@ class VlcPlayer(BasePlayer):
         self.titleLock = False
         self.stopped = False
         if states is None:
-            self.states = {"running": -1,
-                           "index": self.indexFlag, "fullscreen": False}
+            self.states = {"running": -1, "index": self.indexFlag, "fullscreen": False}
         else:
             self.states = states
 
-        self.fullscreen = self.states['fullscreen']
+        self.fullscreen = self.states["fullscreen"]
 
-        if self.states['index'] != self.index:
-            self.index = self.states['index']
+        if self.states["index"] != self.index:
+            self.index = self.states["index"]
 
         self.spuTrack = -1
         self.audioTrack = -1
@@ -107,25 +143,30 @@ class VlcPlayer(BasePlayer):
         self.log("Playing", self.playlist[self.index])
 
         # if self.stopFlag.value != -1:
-        if self.states['running'] != -1:
-            self.player.set_time(self.states['running'])
+        if self.states["running"] != -1:
+            self.player.set_time(self.states["running"])
 
         self.showTitle()
         self.updateDb()
         self.updateSubLbl()
         self.updateAudioLbl()
 
-        self.parent.after(100, self.OnTick)
+        try:
+            self._on_tick_id = self.parent.after(100, self.OnTick)
+        except Exception:
+            self._on_tick_id = None
 
         if self.root is None:
             self.parent.mainloop()
 
     def toggleFullscreen(self, *_):
         self.fullscreen = not self.fullscreen
-        self.states['fullscreen'] = self.fullscreen
+        self.states["fullscreen"] = self.fullscreen
         self.parent.attributes("-fullscreen", self.fullscreen)
 
     def getSubsList(self):
+        self._ensure_vlc()
+        self._ensure_player()
         return dict(self.player.video_get_spu_description())
         # subs = []
         # mods = self.player.video_get_spu_description()
@@ -139,6 +180,8 @@ class VlcPlayer(BasePlayer):
         # return subs
 
     def getAudioList(self):
+        self._ensure_vlc()
+        self._ensure_player()
         return dict(self.player.audio_get_track_description())
         # self.log(mods)
         # if mods:
@@ -151,6 +194,8 @@ class VlcPlayer(BasePlayer):
 
     def changeSubs(self, sub):
         # self.spuTrack = sub
+        if vlc is None:
+            raise RuntimeError("python-vlc binding not available")
         vlc.libvlc_video_set_spu(self.player, sub)
         self.updateSubLbl()
 
@@ -159,12 +204,15 @@ class VlcPlayer(BasePlayer):
         subDesc = self.getSubsList()
         if len(subDesc) > 1:
             text = subDesc[i].decode()
-            self.subLbl['text'] = "Sub {}/{} - {}".format(
-                list(subDesc.keys()).index(i) + 1, len(subDesc), text)
+            self.subLbl["text"] = "Sub {}/{} - {}".format(
+                list(subDesc.keys()).index(i) + 1, len(subDesc), text
+            )
         else:
             self.parent.after(100, self.updateSubLbl)
 
     def changeAudio(self, track):
+        if vlc is None:
+            raise RuntimeError("python-vlc binding not available")
         vlc.libvlc_audio_set_track(self.player, track)
         self.updateAudioLbl()
 
@@ -175,8 +223,9 @@ class VlcPlayer(BasePlayer):
         if len(desc) > 0:
             # desc = desc[i][1].decode()
             text = desc[i].decode()
-            self.audioLbl['text'] = "Audio {}/{} - {}".format(
-                list(desc.keys()).index(i) + 1, len(desc), text)
+            self.audioLbl["text"] = "Audio {}/{} - {}".format(
+                list(desc.keys()).index(i) + 1, len(desc), text
+            )
         else:
             self.parent.after(1000, self.updateAudioLbl)
 
@@ -235,6 +284,7 @@ class VlcPlayer(BasePlayer):
 
     def togglePause(self, playing=None):
         self.OnPlay(playing=None)
+
     # --
 
     def getNewPlayer(self):
@@ -247,9 +297,13 @@ class VlcPlayer(BasePlayer):
             del self.Instance
         except Exception:
             pass
-        self.Instance = vlc.Instance('--verbose 3')
-        self.Instance.log_unset()
-        self.player = self.Instance.media_player_new()
+        if vlc is None:
+            raise RuntimeError("python-vlc binding not available")
+
+        instance = cast(Any, vlc).Instance("--verbose 3")
+        self.Instance = instance
+        instance.log_unset()
+        self.player = instance.media_player_new()
         self.player.set_mrl(self.playlist[self.index])
         self.player.play()
 
@@ -257,11 +311,25 @@ class VlcPlayer(BasePlayer):
         self.player.set_hwnd(h)
 
         events = self.player.event_manager()
-        
-        events.event_attach(
-            vlc.EventType().MediaPlayerEndReached, 
-            lambda e:self.changeVideo(1))
+        evt_type = cast(Any, vlc).EventType().MediaPlayerEndReached
+        events.event_attach(evt_type, lambda e: self.changeVideo(1))
 
+    # --- helpers for analyzer/runtime
+    def _ensure_vlc(self):
+        if vlc is None:
+            raise RuntimeError("python-vlc binding not available")
+
+    def _ensure_player(self):
+        from typing import Any, cast
+
+        if self.player is None:
+            raise RuntimeError("VLC player not initialized")
+        # Cast to Any for the static analyzer
+        self.player = cast(Any, self.player)
+
+    def _ensure_parent(self):
+        if self.parent is None:
+            raise RuntimeError("Parent window not initialized")
 
     def changeVideo(self, i):
         if self.threadLock:
@@ -286,12 +354,12 @@ class VlcPlayer(BasePlayer):
             self.OnClose()
             return
         self.index = self.index + i
-        self.states['running'] = 0
-        self.states['index'] = self.index
+        self.states["running"] = 0
+        self.states["index"] = self.index
 
         self.getNewPlayer()
         self.updateDb()
-        
+
         time.sleep(2)
 
         self.showTitle()
@@ -309,8 +377,9 @@ class VlcPlayer(BasePlayer):
             step = 100 / (time * fps)
             current = int((stop - start) * p / 100 + start)
 
-            self.titleLabel.place(anchor="n", relx=0.5,
-                                  y=current, relwidth=1, height=50)
+            self.titleLabel.place(
+                anchor="n", relx=0.5, y=current, relwidth=1, height=50
+            )
             p += step
 
             if start < stop:
@@ -318,8 +387,15 @@ class VlcPlayer(BasePlayer):
             else:
                 check = current > stop
             if not self.stopped and check:
-                self.parent.after(
-                    int(1000 / fps), lambda: animate(start, stop, time, fps, p))
+                try:
+                    aid = self.parent.after(
+                        int(1000 / fps), lambda: animate(start, stop, time, fps, p)
+                    )
+                    if not hasattr(self, "_after_ids"):
+                        self._after_ids = []
+                    self._after_ids.append(aid)
+                except Exception:
+                    pass
             else:
                 if start > stop:
                     self.titleLock = False
@@ -327,20 +403,34 @@ class VlcPlayer(BasePlayer):
         if self.titleLock:
             return
         self.titleLock = True
-        title = urllib.parse.unquote(self.player.get_media().get_mrl()).rsplit(
-            "/", 1)[1].rsplit(".", 1)[0]
+        title = (
+            urllib.parse.unquote(self.player.get_media().get_mrl())
+            .rsplit("/", 1)[1]
+            .rsplit(".", 1)[0]
+        )
         # self.log(title)
-        self.titleLabel['text'] = title
+        self.titleLabel["text"] = title
 
         if animations:
             try:
                 animate(-50, 0, 1)
-                self.parent.after(3000, lambda: animate(0, -50, 1))
+                try:
+                    aid = self.parent.after(3000, lambda: animate(0, -50, 1))
+                    if not hasattr(self, "_after_ids"):
+                        self._after_ids = []
+                    self._after_ids.append(aid)
+                except Exception:
+                    pass
             except Exception:
                 pass
         try:
             if not self.stopped:
-                self.parent.after(5000, self.titleLabel.place_forget)
+                try:
+                    self._title_forget_id = self.parent.after(
+                        5000, self.titleLabel.place_forget
+                    )
+                except Exception:
+                    self._title_forget_id = None
         except Exception:
             pass
 
@@ -353,22 +443,33 @@ class VlcPlayer(BasePlayer):
         sec = int(currentTime / 1000)
         mins = (sec // 60) % 60
         hours = sec // 3600
-        currentTimeText = (str(hours) + ":" if hours > 0 else "") + \
-            str(mins).zfill(2) + ":" + str(sec % 60).zfill(2)
+        currentTimeText = (
+            (str(hours) + ":" if hours > 0 else "")
+            + str(mins).zfill(2)
+            + ":"
+            + str(sec % 60).zfill(2)
+        )
         totalTime = self.player.get_length()
         sec = int(totalTime / 1000)
         mins = (sec // 60) % 60
         hours = sec // 3600
-        totalTimeText = (str(hours) + ":" if hours > 0 else "") + \
-            str(mins).zfill(2) + ":" + str(sec % 60).zfill(2)
+        totalTimeText = (
+            (str(hours) + ":" if hours > 0 else "")
+            + str(mins).zfill(2)
+            + ":"
+            + str(sec % 60).zfill(2)
+        )
 
         try:
-            self.posLbl['text'] = currentTimeText + " - " + totalTimeText
+            self.posLbl["text"] = currentTimeText + " - " + totalTimeText
         except Exception:
             pass
 
         if not self.stopped:
-            self.parent.after(100, self.OnTick)
+            try:
+                self._on_tick_id = self.parent.after(100, self.OnTick)
+            except Exception:
+                self._on_tick_id = None
 
     def OnPlay(self, playing=None):
         if playing is not None and not playing == self.paused:
@@ -378,26 +479,77 @@ class VlcPlayer(BasePlayer):
 
         icon = "play" if self.paused else "pause"
         img = self.image(f"{icon}.png", (25, 25))
-
-        self.playButton['image'] = img
-        self.playButton.image = img
+        self.playButton["image"] = img
+        setattr(self.playButton, "image", img)
         # self.playButton['text'] = "Pause" if self.paused else "Play"
 
     def OnVolume(self, value=0):
         self.volume = max(0, min(self.volume + value, 200))
         self.player.audio_set_volume(self.volume)
-        self.soundLbl['text'] = str(self.volume) + "%"
+        self.soundLbl["text"] = str(self.volume) + "%"
 
     def OnClose(self):
         self.log("Closing")
         if self.stopped:
             return
         self.stopped = True
-        # self.stopFlag.value = 0
-        self.states['running'] = -1
-        self.parent.destroy()
+        # Mark stopping state for processes
+        try:
+            self.states["running"] = -1
+        except Exception:
+            pass
+
+        # Cancel scheduled callbacks
+        try:
+            if hasattr(self, "movementCheck") and self.movementCheck is not None:
+                try:
+                    self.parent.after_cancel(self.movementCheck)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_on_tick_id") and self._on_tick_id is not None:
+                try:
+                    self.parent.after_cancel(self._on_tick_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_title_forget_id") and self._title_forget_id is not None:
+                try:
+                    self.parent.after_cancel(self._title_forget_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_after_ids"):
+                for aid in list(self._after_ids):
+                    try:
+                        self.parent.after_cancel(aid)
+                    except Exception:
+                        pass
+                self._after_ids.clear()
+        except Exception:
+            pass
+
+        # Cleanup player and window
         self.updateDb()
         try:
             self.player.stop()
+        except Exception:
+            pass
+        try:
+            self.player.close_player()
+        except Exception:
+            pass
+        try:
+            self.parent.destroy()
+        except Exception:
+            pass
+        try:
+            del self.player
         except Exception:
             pass

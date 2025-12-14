@@ -1,7 +1,8 @@
-""" Torrent web parser for nyaa.si """
-import urllib.parse
+"""Torrent web parser for nyaa.si"""
+
 import re
 import traceback
+import urllib.parse
 
 from bs4 import BeautifulSoup
 
@@ -11,12 +12,13 @@ except ImportError:
     # Local testing
     import os
     import sys
-    sys.path.append(os.path.abspath('./'))
+
+    sys.path.append(os.path.abspath("./"))
     from parserUtils import ParserUtils, exceptions
 
 
 class Parser(ParserUtils):
-    API_NAME = 'TokyoTosho'
+    API_NAME = "TokyoTosho"
 
     def search(self, terms, limit=50):
         terms = terms.strip()
@@ -24,7 +26,8 @@ class Parser(ParserUtils):
 
         soup = None
         url = "https://www.tokyotosho.info/search.php?terms={}&type=1&searchName=true&searchComment=true".format(
-            searchterms)
+            searchterms
+        )
         try:
             r = self.get(url, timeout=10)
         except exceptions.ConnectionError:
@@ -35,7 +38,7 @@ class Parser(ParserUtils):
             yield False
         else:
             soup = BeautifulSoup(r.content, "html.parser")
-            pattern = re.compile(r'\| Size: (\S*?) \|')
+            pattern = re.compile(r"\| Size: (\S*?) \|")
             table = soup.find("table", class_="listing")
             body = table.find_all("tr")[1:]
             for rowA, rowB in self.table_iter(body):
@@ -44,22 +47,22 @@ class Parser(ParserUtils):
                     if title_column is None:
                         continue
                     filename = title_column.find_all("a")[-1].text
-                    torrent_url = title_column.find_all("a")[-1]['href']
+                    torrent_url = title_column.find_all("a")[-1]["href"]
 
                     desc = rowB.find("td", class_="desc-bot").text
                     result = pattern.findall(desc)
                     file_size = result[0] if len(result) >= 1 else ""
 
                     stats = rowB.find("td", class_="stats")
-                    seeds, leechs = map(
-                        lambda e: e.text, stats.find_all("span")[:2])
+                    seeds, leechs = map(lambda e: e.text, stats.find_all("span")[:2])
 
                     out = {
-                        'name': filename,
-                        'link': torrent_url,
-                        'seeds': seeds,
-                        'leech': leechs,
-                        'size': file_size}
+                        "name": filename,
+                        "link": torrent_url,
+                        "seeds": seeds,
+                        "leech": leechs,
+                        "size": file_size,
+                    }
                     yield out
                 except Exception as e:
                     self.log("Tokyotosho - error:", traceback.format_exc())

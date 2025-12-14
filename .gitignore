@@ -1,18 +1,158 @@
+# =========================
+# Generated / build artifacts
+# =========================
 build/
 dist/
-venv/
-installer/
-.vscode/**
-**/__pycache__/
+*.egg-info/
 
-.pem
+# PyInstaller
+*.spec
+
+# Installer output
+installer/
+
+# =========================
+# Virtual environments
+# =========================
+venv/
+.venv/
+env/
+ENV/
+venv.bak/
+
+# pipenv
+/.venv/
+
+# =========================
+# Python bytecode
+# =========================
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# =========================
+# Distribution / packaging
+# =========================
+*.egg
+*.egg-info/
+dist/
+build/
+
+# =========================
+# Logs and databases
+# =========================
+*.log
+logs/
+allout.txt
+
+# SQLite database files
+*.db
+*.sqlite3
+
+# =========================
+# OS generated files
+# =========================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+Icon?
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+Thumbs.db
+icons/Thumbs.db
+
+# =========================
+# IDEs / editors
+# =========================
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-workspace
+
+# =========================
+# Secrets / keys / creds
+# =========================
+*.pem
 **/token.json
+
+# Backup files
+*.backup
+
+# =========================
+# Project-specific
+# =========================
+# Keep the project launcher/batch out of ignore list but ignore generated spec
+animemanager.spec
+animeManager.bat
+
+# icons
 icons/app_icon/icon.pdn
 icons/app_icon/*/
+
+# Generated API docs
+animeAPI/docs/
+
+# lib artifacts
 lib/upx-3.96-win64/
-*.lnk
-*.code-workspace
-*.log
+
+# Cache (application runtime)
+Anime Manager/cache/
+Anime Manager/cache/*
+
+# Application settings in roaming
+Anime Manager/settings.json
+
+# MariaDB embedded data and server shipped in repo
+Anime Manager/mariadb/
+Anime Manager/mariadb/**
+
+# Other runtime cache/log directories
+Anime Manager/logs/
+
+# Test helpers and local test file
 test.py
-icons/Thumbs.db
-allout.txt
+
+# =========================
+# Optional: Python tools
+# =========================
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# pip cache
+pip-wheel-metadata/
+
+# coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# virtualenv
+venv/
+
+# =========================
+# End of file
+# =========================
+docs/_build/
+coverage.xml
+.github/
+.vscode/

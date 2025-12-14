@@ -1,8 +1,8 @@
-#VERSION: 0.13
-#AUTHORS: Bugsbringer (dastins193@gmail.com)
+# VERSION: 0.13
+# AUTHORS: Bugsbringer (dastins193@gmail.com)
 
 
-SITE_URL = 'https://darklibria.it/'
+SITE_URL = "https://darklibria.it/"
 
 
 import logging
@@ -18,23 +18,23 @@ from urllib import parse
 from helpers import retrieve_url
 from novaprinter import prettyPrinter
 
-LOG_FORMAT = '[%(asctime)s] %(levelname)s:%(name)s:%(funcName)s - %(message)s'
-LOG_DT_FORMAT = '%d-%b-%y %H:%M:%S'
+LOG_FORMAT = "[%(asctime)s] %(levelname)s:%(name)s:%(funcName)s - %(message)s"
+LOG_DT_FORMAT = "%d-%b-%y %H:%M:%S"
 
 
 class darklibria:
     url = SITE_URL
-    name = 'dark-libria'
-    supported_categories = {'all': '0'}
+    name = "dark-libria"
+    supported_categories = {"all": "0"}
 
     units_dict = {"Тб": "TB", "Гб": "GB", "Мб": "MB", "Кб": "KB", "б": "B"}
-    page_search_url_pattern = SITE_URL + 'search?page={page}&find={what}'
-    dt_regex = re_compile('\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}')
+    page_search_url_pattern = SITE_URL + "search?page={page}&find={what}"
+    dt_regex = re_compile("\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
     def __init__(self, output=True):
         self.output = output
 
-    def search(self, what, cat='all'):
+    def search(self, what, cat="all"):
         self.torrents_count = 0
         what = parse.quote(parse.unquote(what))
         logger.info(parse.unquote(what))
@@ -42,7 +42,7 @@ class darklibria:
         with ThreadPoolExecutor() as executor:
             for page in range(2, self.pages_count + 1):
                 executor.submit(self.handle_page, what, page)
-        logger.info('%s torrents', self.torrents_count)
+        logger.info("%s torrents", self.torrents_count)
 
     def handle_page(self, what, page):
         url = self.page_search_url_pattern.format(page=page, what=what)
@@ -50,10 +50,10 @@ class darklibria:
         if not data:
             return
         parser = Parser(data)
-        serials = parser.find_all('tbody', {'style': 'vertical-align: center'})
+        serials = parser.find_all("tbody", {"style": "vertical-align: center"})
         with ThreadPoolExecutor() as executor:
             for serial in serials:
-                executor.submit(self.handle_serial, serial.a['href'])
+                executor.submit(self.handle_serial, serial.a["href"])
         return parser
 
     def handle_serial(self, url):
@@ -61,58 +61,63 @@ class darklibria:
         if not data:
             return
         parser = Parser(data)
-        name = parser.find(attrs={'id': 'russian_name'}).text
-        for torrent_row in parser.find_all('tr', {'class': 'torrent'}):
+        name = parser.find(attrs={"id": "russian_name"}).text
+        for torrent_row in parser.find_all("tr", {"class": "torrent"}):
             self.handle_torrent_row(torrent_row, name, url)
 
     def handle_torrent_row(self, torrent_row, name, url):
-        type, quality, size_data, date_time, download, seeds, leech, *_ = torrent_row.children
-        self.pretty_printer({
-            'link': self.get_link(download),
-            'name': self.get_name(name, quality, type, date_time),
-            'size': self.get_size(size_data),
-            'seeds': int(seeds.text),
-            'leech': int(leech.text),
-            'engine_url': self.url,
-            'desc_link': url
-        })
+        type, quality, size_data, date_time, download, seeds, leech, *_ = (
+            torrent_row.children
+        )
+        self.pretty_printer(
+            {
+                "link": self.get_link(download),
+                "name": self.get_name(name, quality, type, date_time),
+                "size": self.get_size(size_data),
+                "seeds": int(seeds.text),
+                "leech": int(leech.text),
+                "engine_url": self.url,
+                "desc_link": url,
+            }
+        )
         self.torrents_count += 1
 
     def get_link(self, download):
-        return download.find(attrs={'title': 'Magnet-ссылка'})['href'] \
-            or download.find(attrs={'title': 'Скачать торрент'})['href']
-            
+        return (
+            download.find(attrs={"title": "Magnet-ссылка"})["href"]
+            or download.find(attrs={"title": "Скачать торрент"})["href"]
+        )
+
     def get_name(self, name, quality, type, date_time):
-        return '[{}] {} [{}] {}'.format(
-            self.get_date(date_time),
-            name,
-            type.text,
-            quality.text
+        return "[{}] {} [{}] {}".format(
+            self.get_date(date_time), name, type.text, quality.text
         )
 
     def get_date(self, date_time):
         utc_dt_string = self.dt_regex.search(date_time.text).group()
-        utc = datetime.strptime(utc_dt_string, '%Y-%m-%d %H:%M:%S')
+        utc = datetime.strptime(utc_dt_string, "%Y-%m-%d %H:%M:%S")
         return str(utc2local(utc))
 
     def get_size(self, size_data):
         size, unit = size_data.text.split()
-        return size + ' ' + self.units_dict[unit]
+        return size + " " + self.units_dict[unit]
 
     def request_get(self, url):
         try:
             return retrieve_url(url)
         except Exception as exp:
             logger.error(exp)
-            self.pretty_printer({
-                'link': 'Error',
-                'name': 'Connection failed',
-                'size': "0",
-                'seeds': -1,
-                'leech': -1,
-                'engine_url': self.url,
-                'desc_link': self.url
-            })
+            self.pretty_printer(
+                {
+                    "link": "Error",
+                    "name": "Connection failed",
+                    "size": "0",
+                    "seeds": -1,
+                    "leech": -1,
+                    "engine_url": self.url,
+                    "desc_link": self.url,
+                }
+            )
 
     def pretty_printer(self, dictionary):
         logger.debug(str(dictionary))
@@ -120,18 +125,18 @@ class darklibria:
             prettyPrinter(dictionary)
 
     def set_search_data(self, parser):
-        results = parser.find('span', {'class': 'text text-light mt-0'})
+        results = parser.find("span", {"class": "text text-light mt-0"})
         if results:
             parts = results.text.split()
             items_count = int(parts[4])
-            items_on_page = int(parts[2].split('-')[1])
+            items_on_page = int(parts[2].split("-")[1])
             self.pages_count = ceil(items_count / items_on_page)
 
-            logger.info('%s animes', items_count)
+            logger.info("%s animes", items_count)
         else:
             self.pages_count = 0
 
-        logger.info('%s pages', self.pages_count)
+        logger.info("%s pages", self.pages_count)
 
 
 class Tag:
@@ -149,14 +154,15 @@ class Tag:
     @property
     def text(self):
         """returns str of all contained text"""
-        return ''.join(c if isinstance(c, str) else c.text for c in self._content)
+        return "".join(c if isinstance(c, str) else c.text for c in self._content)
 
     def _add_content(self, obj):
         if isinstance(obj, (Tag, str)):
             self._content += (obj,)
         else:
-            raise TypeError('Argument must be str or %s, not %s' %
-                            (self.__class__, obj.__class__))
+            raise TypeError(
+                "Argument must be str or %s, not %s" % (self.__class__, obj.__class__)
+            )
 
     def find(self, tag=None, attrs=None):
         """returns Tag or None"""
@@ -170,11 +176,11 @@ class Tag:
         """returns generator"""
         if not (isinstance(tag_type, (str, Tag)) or tag_type is None):
             raise TypeError(
-                'tag_type argument must be str or Tag, not %s' % (tag_type.__class__))
+                "tag_type argument must be str or Tag, not %s" % (tag_type.__class__)
+            )
 
         if not (isinstance(attrs, dict) or attrs is None):
-            raise TypeError('attrs argument must be dict, not %s' %
-                            (self.__class__))
+            raise TypeError("attrs argument must be dict, not %s" % (self.__class__))
 
         # get tags-descendants generator
         results = self.descendants
@@ -182,8 +188,7 @@ class Tag:
         # filter by Tag.type
         if tag_type:
             if isinstance(tag_type, Tag):
-                tag_type, attrs = tag_type.type, (
-                    attrs if attrs else tag_type.attrs)
+                tag_type, attrs = tag_type.type, (attrs if attrs else tag_type.attrs)
 
             results = filter(lambda t: t.type == tag_type, results)
 
@@ -223,26 +228,28 @@ class Tag:
             return self.find(tag=attr)
 
     def __repr__(self):
-        attrs = ' '.join(str(k) if v is None else '{}="{}"'.format(k, v)
-                         for k, v in self._attrs)
-        starttag = ' '.join((self.type, attrs)) if attrs else self.type
+        attrs = " ".join(
+            str(k) if v is None else '{}="{}"'.format(k, v) for k, v in self._attrs
+        )
+        starttag = " ".join((self.type, attrs)) if attrs else self.type
 
         if self.is_self_closing:
-            return '<{starttag}>\n'.format(starttag=starttag)
+            return "<{starttag}>\n".format(starttag=starttag)
         else:
-            nested = '\n' * bool(next(self.children, None)) + \
-                ''.join(map(str, self._content))
-            return '<{}>{}</{}>\n'.format(starttag, nested, self.type)
+            nested = "\n" * bool(next(self.children, None)) + "".join(
+                map(str, self._content)
+            )
+            return "<{}>{}</{}>\n".format(starttag, nested, self.type)
 
 
 class Parser(HTMLParser):
     def __init__(self, html_code, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self._root = Tag('_root')
+        self._root = Tag("_root")
         self._path = [self._root]
 
-        self.feed(''.join(map(str.strip, html_code.splitlines())))
+        self.feed("".join(map(str.strip, html_code.splitlines())))
         self.handle_endtag(self._root.type)
         self.close()
 
@@ -262,16 +269,20 @@ class Parser(HTMLParser):
 
     def handle_endtag(self, tag_type):
         for pos, tag in tuple(enumerate(self._path))[::-1]:
-            if isinstance(tag, Tag) and tag.type == tag_type and tag.is_self_closing is None:
+            if (
+                isinstance(tag, Tag)
+                and tag.type == tag_type
+                and tag.is_self_closing is None
+            ):
                 tag.is_self_closing = False
 
-                for obj in self._path[pos + 1:]:
+                for obj in self._path[pos + 1 :]:
                     if isinstance(obj, Tag) and obj.is_self_closing is None:
                         obj.is_self_closing = True
 
                     tag._add_content(obj)
 
-                self._path = self._path[:pos + 1]
+                self._path = self._path[: pos + 1]
 
                 break
 
@@ -279,7 +290,7 @@ class Parser(HTMLParser):
         self._path.append(Tag(tag=tag, attrs=attrs, is_self_closing=True))
 
     def handle_decl(self, decl):
-        self._path.append(Tag(tag='!'+decl, is_self_closing=True))
+        self._path.append(Tag(tag="!" + decl, is_self_closing=True))
 
     def handle_data(self, text):
         self._path.append(text)
@@ -292,7 +303,7 @@ class Parser(HTMLParser):
             return getattr(self._root, attr)
 
     def __repr__(self):
-        return ''.join(str(c) for c in self._root._content)
+        return "".join(str(c) for c in self._root._content)
 
 
 def utc2local(utc):
@@ -301,17 +312,18 @@ def utc2local(utc):
     return utc + offset
 
 
-is_main = __name__ == '__main__'
+is_main = __name__ == "__main__"
 STORAGE = os.path.abspath(os.path.dirname(__file__))
 log_config = {
-    'level': logging.INFO if is_main else logging.WARNING,
-    'filename': None if is_main else os.path.join(STORAGE, 'darklibria.log'),
-    'format': LOG_FORMAT,
-    'datefmt': LOG_DT_FORMAT
+    "level": logging.INFO if is_main else logging.WARNING,
+    "filename": None if is_main else os.path.join(STORAGE, "darklibria.log"),
+    "format": LOG_FORMAT,
+    "datefmt": LOG_DT_FORMAT,
 }
 logging.basicConfig(**log_config)
-logger = logging.getLogger('darklibria')
+logger = logging.getLogger("darklibria")
 
 if is_main:
     import sys
+
     darklibria(output=False).search(sys.argv[-1])

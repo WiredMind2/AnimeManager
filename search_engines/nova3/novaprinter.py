@@ -1,4 +1,4 @@
-#VERSION: 1.46
+# VERSION: 1.46
 
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,22 +26,31 @@
 
 
 def prettyPrinter(dictionary):
-    dictionary['size'] = anySizeToBytes(dictionary['size'])
-    outtext = "|".join((dictionary["link"], dictionary["name"].replace("|", " "),
-                        str(dictionary["size"]), str(dictionary["seeds"]),
-                        str(dictionary["leech"]), dictionary["engine_url"]))
-    if 'desc_link' in dictionary:
+    dictionary["size"] = anySizeToBytes(dictionary["size"])
+    outtext = "|".join(
+        (
+            dictionary["link"],
+            dictionary["name"].replace("|", " "),
+            str(dictionary["size"]),
+            str(dictionary["seeds"]),
+            str(dictionary["leech"]),
+            dictionary["engine_url"],
+        )
+    )
+    if "desc_link" in dictionary:
         outtext = "|".join((outtext, dictionary["desc_link"]))
 
     # fd 1 is stdout
-    with open(1, 'w', encoding='utf-8', closefd=False) as utf8stdout:
+    with open(1, "w", encoding="utf-8", closefd=False) as utf8stdout:
         print(outtext, file=utf8stdout)
+
 
 # def prettyPrinter(dictionnary):
 #     if prettyPrinter.output is not None:
 #         prettyPrinter.output(dictionnary)
 
 # prettyPrinter.output = None
+
 
 def anySizeToBytes(size_string):
     """
@@ -53,9 +62,9 @@ def anySizeToBytes(size_string):
     except:
         try:
             size = size_string.strip()
-            unit = ''.join([c for c in size if c.isalpha()])
+            unit = "".join([c for c in size if c.isalpha()])
             if len(unit) > 0:
-                size = size[:-len(unit)]
+                size = size[: -len(unit)]
         except:
             return -1
     if len(size) == 0:
@@ -66,7 +75,7 @@ def anySizeToBytes(size_string):
     short_unit = unit.upper()[0]
 
     # convert
-    units_dict = {'T': 40, 'G': 30, 'M': 20, 'K': 10}
+    units_dict = {"T": 40, "G": 30, "M": 20, "K": 10}
     if short_unit in units_dict:
-        size = size * 2**units_dict[short_unit]
+        size = size * 2 ** units_dict[short_unit]
     return int(size)

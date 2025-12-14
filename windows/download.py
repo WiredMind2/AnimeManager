@@ -1,11 +1,27 @@
-from operator import itemgetter
 import re
+from operator import itemgetter
+from tkinter import Button, Frame, Label, TclError
 
-from tkinter import *
-from ..classes import SortedDict, SortedList, TorrentList
-from .. import search_engines
-
-from .. import utils
+# Standardized import handling
+try:
+    # Try importing as package first
+    from AnimeManager import search_engines
+    from AnimeManager.general_utils import Timer
+    from AnimeManager.window_frames import RoundTopLevel, ScrollableFrame
+    from AnimeManager.classes import SortedDict, SortedList, TorrentList
+except ImportError:
+    try:
+        # Try relative imports
+        from .. import search_engines
+        from ..general_utils import Timer
+        from ..window_frames import RoundTopLevel, ScrollableFrame
+        from ..classes import SortedDict, SortedList, TorrentList
+    except ImportError:
+        # Fallback to direct imports
+        import search_engines
+        from general_utils import Timer
+        from window_frames import RoundTopLevel, ScrollableFrame
+        from classes import SortedDict, SortedList, TorrentList
 
 
 class Download:
@@ -31,7 +47,7 @@ class Download:
 
             def search_handler(table, fetcher):
                 # Handle torrent search and sorting
-                timer = utils.Timer(
+                timer = Timer(
                     "Torrent search",
                     logger=lambda *args, **kwargs: self.log(
                         "FILE_SEARCH", *args, **kwargs
@@ -81,7 +97,7 @@ class Download:
                         return -1  # Should be inferior to 0
 
                     else:
-                        max_seeds = max(map(lambda e: int(e['seeds']), values))
+                        max_seeds = max(map(lambda e: int(e["seeds"]), values))
                         return max_seeds
 
                 keys = (
@@ -162,7 +178,7 @@ class Download:
                 torrents.add_callback(cache_handler)
 
             def draw_table(table, publishers):
-                timer = utils.Timer(
+                timer = Timer(
                     "Draw torrent table",
                     logger=lambda *args, **kwargs: self.log(
                         "FILE_SEARCH", *args, **kwargs
@@ -239,7 +255,7 @@ class Download:
                 if parent is None:
                     parent = self.optionsWindow
 
-                self.ddlWindow = utils.RoundTopLevel(
+                self.ddlWindow = RoundTopLevel(
                     parent,
                     title="Loading...",
                     minsize=size,
@@ -285,7 +301,7 @@ class Download:
 
         # Torrent publisher list
         if True:
-            table = utils.ScrollableFrame(self.ddlWindow, bg=self.colors["Gray3"])
+            table = ScrollableFrame(self.ddlWindow, bg=self.colors["Gray3"])
             table.grid_columnconfigure(0, weight=1)
             table.grid(row=2)
 

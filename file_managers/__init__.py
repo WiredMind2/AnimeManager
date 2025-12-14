@@ -1,5 +1,9 @@
-from .local_disk import LocalFileManager
-from .FTP import FTPFileManager
+try:
+    from .FTP import FTPFileManager
+    from .local_disk import LocalFileManager
+except ImportError:
+    from FTP import FTPFileManager
+    from local_disk import LocalFileManager
 
 managers = {}
 for m in [LocalFileManager, FTPFileManager]:

@@ -1,7 +1,22 @@
-from tkinter import *
-from ..constants import Constants
+from tkinter import Button, Label, TclError
 
-from .. import utils
+# Standardized import handling
+try:
+    # Try importing as package first
+    from AnimeManager.window_frames import RoundTopLevel
+    from AnimeManager.table_frame import TableFrame
+    from AnimeManager.constants import Constants
+except ImportError:
+    try:
+        # Try relative imports
+        from ..window_frames import RoundTopLevel
+        from ..table_frame import TableFrame
+        from ..constants import Constants
+    except ImportError:
+        # Fallback to direct imports
+        from window_frames import RoundTopLevel
+        from table_frame import TableFrame
+        from constants import Constants
 
 
 class DownloadFileList:
@@ -72,7 +87,7 @@ class DownloadFileList:
         if True:
             size = (self.torrentDDLWindowMinWidth, self.torrentDDLWindowMinHeight)
             if self.fileListWindow is None or not self.fileListWindow.winfo_exists():
-                self.fileListWindow = utils.RoundTopLevel(
+                self.fileListWindow = RoundTopLevel(
                     self.ddlWindow,
                     title="Torrents:",
                     minsize=size,
@@ -91,9 +106,7 @@ class DownloadFileList:
                 "Size": "size",
                 "Engine": "engine",
             }
-            # table = utils.ScrollableFrame(
-            # 	self.fileListWindow, bg=self.colors['Gray2'])
-            table = utils.TableFrame(
+            table = TableFrame(
                 self.fileListWindow,
                 keys,
                 sort_key="Seeds",

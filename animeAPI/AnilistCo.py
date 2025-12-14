@@ -1,463 +1,481 @@
-from datetime import date, datetime
 import re
+from datetime import date, datetime, timezone
+
 import requests
 
-from .APIUtils import Anime, APIUtils, Character, EnhancedSession
+try:
+    from .APIUtils import Anime, APIUtils, Character, EnhancedSession
+except ImportError:
+    from APIUtils import Anime, APIUtils, Character, EnhancedSession
 
 
 class QueryObject:
-	def __init__(self, name, args=None, fields=None) -> None:
-		self.name = name
-		self.args = args or []  # [(name, ?type, ?value)]
-		self.fields = set(fields or [])
+    def __init__(self, name, args=None, fields=None) -> None:
+        self.name = name
+        self.args = args or []  # [(name, ?type, ?value)]
+        self.fields = set(fields or [])
 
-	def __str__(self):
-		return self.build()
+    def __str__(self):
+        return self.build()
 
-	def set_arg(self, arg):
-		for i, sub_arg in enumerate(self.args):
-			if sub_arg[0] == arg[0]:
-				# Same name
-				self.args[i] = arg
-				break
-		else:
-			self.args.append(arg)
+    def set_arg(self, arg):
+        for i, sub_arg in enumerate(self.args):
+            if sub_arg[0] == arg[0]:
+                # Same name
+                self.args[i] = arg
+                break
+        else:
+            self.args.append(arg)
 
-	def add_field(self, field):
-		self.fields.add(field)
-		return self
+    def add_field(self, field):
+        self.fields.add(field)
+        return self
 
-	def del_field(self, field):
-		if field in self.fields:
-			self.fields.remove(field)
-		return self
+    def del_field(self, field):
+        if field in self.fields:
+            self.fields.remove(field)
+        return self
 
-	def build(self):
-		args = []
-		for arg, arg_type, *value in self.args:
-			text = f'{arg}: {arg_type}'
-			if value:
-				value = value[0]
-				if isinstance(value, str):
-					value = f'"{value}"'
-				text += f' = {value}'
-			args.append(text)
+    def build(self):
+        args = []
+        for arg, arg_type, *value in self.args:
+            text = f"{arg}: {arg_type}"
+            if value:
+                value = value[0]
+                if isinstance(value, str):
+                    value = f'"{value}"'
+                text += f" = {value}"
+            args.append(text)
 
-		text = [self.name]
+        text = [self.name]
 
-		if args:
-			text.append(f'({", ".join(args)})')
+        if args:
+            text.append(f'({", ".join(args)})')
 
-		if self.fields:
-			text.append('{')
+        if self.fields:
+            text.append("{")
 
-			for field in self.fields:
-				text.append(str(field))
+            for field in self.fields:
+                text.append(str(field))
 
-			text.append('}')
+            text.append("}")
 
-		return ' '.join(text)
+        return " ".join(text)
 
 
 class AnilistCoWrapper(APIUtils):
-	def __init__(self):
-		super().__init__()
-		self.session = EnhancedSession(timeout=30)
-		self.url = 'https://graphql.anilist.co'
-		self.apiKey = "anilist_id"
+    def __init__(self):
+        super().__init__()
+        self.session = EnhancedSession(timeout=30)
+        self.url = "https://graphql.anilist.co"
+        self.apiKey = "anilist_id"
 
-		self.media_fields = [
-			'id',
-			'idMal',
-			QueryObject(
-				'title',
-				fields=[
-					'romaji',
-					'english',
-					'native',
-				]
-			),
-			QueryObject(
-				'status',
-				args=(
-					('version', 2),
-				)
-			),
-			QueryObject(
-				'description',
-				args=(
-					('asHtml', 'false'),
-				)
-			),
-			QueryObject(
-				'startDate',
-				fields=[
-					'year',
-					'month',
-					'day',
-				]
-			),
-			QueryObject(
-				'endDate',
-				fields=[
-					'year',
-					'month',
-					'day',
-				]
-			),
-			'episodes',
-			'duration',
-			QueryObject(
-				'trailer',
-				fields=[
-					'site',
-				]
-			),
-			QueryObject(
-				'coverImage',
-				fields=[
-					'extraLarge',
-					'large',
-					'medium',
-				]
-			),
-			'genres',
-			'synonyms',
-			QueryObject(
-				'tags',
-				fields=[
-					'id',
-					'name',
-					'description',
-					'isAdult',
-				]
-			),
-			# QueryObject(
-			# 	'relations',
-			# 	fields=[
-			# 		QueryObject(
-			# 			'edges',
-			# 			fields=[
-			# 				'relationType',
-			# 				QueryObject(
-			# 					'node',
-			# 					fields=[
-			# 						'id',
-			# 						QueryObject(
-			# 							'title',
-			# 							fields=[
-			# 								'english',
-			# 							]
-			# 						),
-			# 						'type',
-			# 					]
-			# 				),
-			# 			]
-			# 		),
-			# 	]
-			# ),
-			# QueryObject(
-			# 	'characters',
-			# 	fields=[
-			# 		QueryObject(
-			# 			'edges',
-			# 			fields=[
-			# 				'role',
-			# 				QueryObject(
-			# 					'node',
-			# 					fields=[
-			# 						'id',
-			# 						QueryObject(
-			# 							'name',
-			# 							fields=[
-			# 								'full',
-			# 							]
-			# 						),
-			# 						QueryObject(
-			# 							'image',
-			# 							fields=[
-			# 								'large',
-			# 								'medium',
-			# 							]
-			# 						),
-			# 						'description',
-			# 					]
-			# 				),
-			# 			]
-			# 		),
-			# 	]
-			# ),
-			'isAdult',
-			QueryObject(
-				'nextAiringEpisode',
-				fields=[
-					'airingAt',
-				]
-			)
-		]
+        self.media_fields = [
+            "id",
+            "idMal",
+            QueryObject(
+                "title",
+                fields=[
+                    "romaji",
+                    "english",
+                    "native",
+                ],
+            ),
+            QueryObject("status", args=(("version", 2),)),
+            QueryObject("description", args=(("asHtml", "false"),)),
+            QueryObject(
+                "startDate",
+                fields=[
+                    "year",
+                    "month",
+                    "day",
+                ],
+            ),
+            QueryObject(
+                "endDate",
+                fields=[
+                    "year",
+                    "month",
+                    "day",
+                ],
+            ),
+            "episodes",
+            "duration",
+            QueryObject(
+                "trailer",
+                fields=[
+                    "site",
+                ],
+            ),
+            QueryObject(
+                "coverImage",
+                fields=[
+                    "extraLarge",
+                    "large",
+                    "medium",
+                ],
+            ),
+            "genres",
+            "synonyms",
+            QueryObject(
+                "tags",
+                fields=[
+                    "id",
+                    "name",
+                    "description",
+                    "isAdult",
+                ],
+            ),
+            # QueryObject(
+            # 	'relations',
+            # 	fields=[
+            # 		QueryObject(
+            # 			'edges',
+            # 			fields=[
+            # 				'relationType',
+            # 				QueryObject(
+            # 					'node',
+            # 					fields=[
+            # 						'id',
+            # 						QueryObject(
+            # 							'title',
+            # 							fields=[
+            # 								'english',
+            # 							]
+            # 						),
+            # 						'type',
+            # 					]
+            # 				),
+            # 			]
+            # 		),
+            # 	]
+            # ),
+            # QueryObject(
+            # 	'characters',
+            # 	fields=[
+            # 		QueryObject(
+            # 			'edges',
+            # 			fields=[
+            # 				'role',
+            # 				QueryObject(
+            # 					'node',
+            # 					fields=[
+            # 						'id',
+            # 						QueryObject(
+            # 							'name',
+            # 							fields=[
+            # 								'full',
+            # 							]
+            # 						),
+            # 						QueryObject(
+            # 							'image',
+            # 							fields=[
+            # 								'large',
+            # 								'medium',
+            # 							]
+            # 						),
+            # 						'description',
+            # 					]
+            # 				),
+            # 			]
+            # 		),
+            # 	]
+            # ),
+            "isAdult",
+            QueryObject(
+                "nextAiringEpisode",
+                fields=[
+                    "airingAt",
+                ],
+            ),
+        ]
 
-		self.media_query = QueryObject(
-			'Media',
-			args=(
-				('id', '$id'),
-				('type', 'ANIME'),
-			),
-			fields=self.media_fields
-		)
+        self.media_query = QueryObject(
+            "Media",
+            args=(
+                ("id", "$id"),
+                ("type", "ANIME"),
+            ),
+            fields=self.media_fields,
+        )
 
-		self.pagination_query = QueryObject(
-			# query ($id: Int, $page: Int, $perPage: Int, $search: String) {
-			'Page',
-			args=(
-				('page', '$page'),
-				('perPage', '$perPage'),
-			),
-			fields=[
-				QueryObject(
-					'pageInfo',
-					fields=[
-						'total',
-						'currentPage',
-						'lastPage',
-						'hasNextPage',
-						'perPage'
-					]
-				)
-			]
-		)
+        self.pagination_query = QueryObject(
+            # query ($id: Int, $page: Int, $perPage: Int, $search: String) {
+            "Page",
+            args=(
+                ("page", "$page"),
+                ("perPage", "$perPage"),
+            ),
+            fields=[
+                QueryObject(
+                    "pageInfo",
+                    fields=[
+                        "total",
+                        "currentPage",
+                        "lastPage",
+                        "hasNextPage",
+                        "perPage",
+                    ],
+                )
+            ],
+        )
 
-	def anime(self, id):
-		ani_id = self.getId(id)
-		if ani_id is None:
-			return None
+    def anime(self, id):
+        ani_id = self.getId(id)
+        if ani_id is None:
+            return None
 
-		query = QueryObject(
-			'query',
-			args=(
-				('$id', 'Int'),
-			),
-			fields=[
-				self.media_query
-			]
-		)
+        query = QueryObject("query", args=(("$id", "Int"),), fields=[self.media_query])
 
-		variables = {
-			'id': ani_id
-		}
-		rep = requests.post(
-			self.url, json={'query': str(query), 'variables': variables})
-		data = rep.json().get('data')
+        variables = {"id": ani_id}
+        try:
+            if hasattr(self, "session") and self.session is not None:
+                rep = self.session.request(
+                    "POST", self.url, json={"query": str(query), "variables": variables}
+                )
+            else:
+                rep = requests.post(
+                    self.url, json={"query": str(query), "variables": variables}
+                )
+        except Exception as e:
+            self.log("ANILIST", "Network error during anime():", e)
+            return None
 
-		if not data:
-			return None
+        try:
+            data = rep.json().get("data")
+        except Exception as e:
+            self.log("ANILIST", "Invalid JSON response from Anilist:", e)
+            return None
 
-		anime = self._convertAnime(data.get('Media'))
-		return anime
+        if not data:
+            return None
 
-	def searchAnime(self, search, limit=50):
-		query = QueryObject(
-			'query',
-			args=(
-				('$id', 'Int'),
-				('$page', 'Int'),
-				('$perPage', 'Int'),
-				('$search', 'String')
-			),
-			fields=[
-				self.pagination_query.add_field(
-					QueryObject(
-						'media',
-						args=(
-							('id', '$id'),
-							('search', '$search'),
-						),
-						fields=self.media_fields
-					)
-				)
-			]
-		)
+        anime = self._convertAnime(data.get("Media"))
+        return anime
 
-		variables = {
-			'search': search,
-			'page': 1,
-			'perPage': 50
-		}
-		
-		count = 0
-		for a in self.iterate(query, variables):
-			data = self._convertAnime(a)
-			if data and len(data) != 0:
-				yield data
-				count += 1
-				if count >= limit:
-					return
+    def searchAnime(self, search, limit=50):
+        query = QueryObject(
+            "query",
+            args=(
+                ("$id", "Int"),
+                ("$page", "Int"),
+                ("$perPage", "Int"),
+                ("$search", "String"),
+            ),
+            fields=[
+                self.pagination_query.add_field(
+                    QueryObject(
+                        "media",
+                        args=(
+                            ("id", "$id"),
+                            ("search", "$search"),
+                        ),
+                        fields=self.media_fields,
+                    )
+                )
+            ],
+        )
 
-	def _convertAnime(self, a):
-		if a is None:
-			return
-		id = self.database.getId(self.apiKey, a.get('id'))
-		out = Anime()
+        variables = {"search": search, "page": 1, "perPage": 50}
 
-		out.id = id
+        count = 0
+        for a in self.iterate(query, variables):
+            data = self._convertAnime(a)
+            if data and len(data) != 0:
+                yield data
+                count += 1
+                if count >= limit:
+                    return
 
-		keys = ['english', 'romaji', 'native']
-		titles = []
-		for key in keys:
-			title = a.get('title').get(key)
-			if title:
-				titles.append(title)
+    def _convertAnime(self, a):
+        if a is None:
+            return
+        id = self.database.getId(self.apiKey, a.get("id"))
+        out = Anime()
 
-		titles += a.get('synonyms', [])
+        out.id = id
 
-		# Every anime should have at least one title
-		out.title = titles[0].rstrip('.')
-		# rstrip() is a fix for a problem where files would get corrupted
+        keys = ["english", "romaji", "native"]
+        titles = []
+        for key in keys:
+            title = a.get("title").get(key)
+            if title:
+                titles.append(title)
 
-		out.title_synonyms = titles
+        titles += a.get("synonyms", [])
 
-		mapped_status = {
-			'FINISHED': 'FINISHED',
-			'RELEASING': 'AIRING',
-			'NOT_YET_RELEASED': 'UPCOMING',
-			'CANCELLED': 'UNKNOWN',
-			'HIATUS': 'UPCOMING'
-		}
-		out.status = mapped_status.get(a.get('status'))
+        # Every anime should have at least one title
+        out.title = titles[0].rstrip(".")
+        # rstrip() is a fix for a problem where files would get corrupted
 
-		desc = a.get('description')
-		if desc: # Avoid using regex when it isn't necessary
-			out.synopsis = re.sub('<.*?>', '', desc) # Remove all HTML tags
-		else:
-			out.synopsis = None
+        out.title_synonyms = titles
 
-		datefrom = a.get('startDate')
-		if None not in datefrom.values():
-			out.date_from = datetime(**datefrom).toordinal()
-		else:
-			out.date_from = None
+        mapped_status = {
+            "FINISHED": "FINISHED",
+            "RELEASING": "AIRING",
+            "NOT_YET_RELEASED": "UPCOMING",
+            "CANCELLED": "UNKNOWN",
+            "HIATUS": "UPCOMING",
+        }
+        out.status = mapped_status.get(a.get("status"))
 
-		dateto = a.get('endDate')
+        desc = a.get("description")
+        if desc:  # Avoid using regex when it isn't necessary
+            out.synopsis = re.sub("<.*?>", "", desc)  # Remove all HTML tags
+        else:
+            out.synopsis = None
 
-		if None not in dateto.values():
-			try:
-				out.date_to = datetime(**dateto).toordinal()
-			except:
-				# Probably ValueError for an invalid date (like https://anilist.co/manga/81583/34sai-Mushokusan)
-				out.date_to = None
-		else:
-			out.date_to = None
+        datefrom = a.get("startDate")
+        if None not in datefrom.values():
+            try:
+                dt = datetime(**datefrom)
+                out.date_from = int(dt.replace(tzinfo=timezone.utc).timestamp())
+            except Exception:
+                out.date_from = None
+        else:
+            out.date_from = None
 
-		out.episodes = a.get('episodes')
-		out.duration = a.get('duration')
-		out.trailer = (a.get('trailer') or {}).get('site')
-		out.rating = 'R' if a.get('isAdult') else ''
+        dateto = a.get("endDate")
 
-		out.picture = a.get('coverImage', {}).get('medium')
+        if None not in dateto.values():
+            try:
+                try:
+                    dt = datetime(**dateto)
+                    out.date_to = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                except Exception:
+                    out.date_to = None
+            except:
+                # Probably ValueError for an invalid date (like https://anilist.co/manga/81583/34sai-Mushokusan)
+                out.date_to = None
+        else:
+            out.date_to = None
 
-		pictures = []
+        out.episodes = a.get("episodes")
+        out.duration = a.get("duration")
+        out.trailer = (a.get("trailer") or {}).get("site")
+        out.rating = "R" if a.get("isAdult") else ""
 
-		sizes = {'large': 'medium', 'medium': 'small',
-				 'extraLarge': 'large'}
-		pictures = []
-		for key, size in sizes.items():
-			url = a.get('coverImage', {}).get(key)
-			if url:
-				img = {
-					'url': url,
-					'size': size
-				}
-				pictures.append(img)
+        out.picture = a.get("coverImage", {}).get("medium")
 
-		self.save_pictures(id, pictures)
+        pictures = []
 
-		broadcast = (a.get('nextAiringEpisode') or {}).get('airingAt')
-		if broadcast:
-			broadcast = datetime.fromtimestamp(broadcast)
-			data = (
-				broadcast.isoweekday() - 1,
-				broadcast.hour,
-				broadcast.minute)
+        sizes = {"large": "medium", "medium": "small", "extraLarge": "large"}
+        pictures = []
+        for key, size in sizes.items():
+            url = a.get("coverImage", {}).get(key)
+            if url:
+                img = {"url": url, "size": size}
+                pictures.append(img)
 
-			self.save_broadcast(id, *data)
+        self.save_pictures(id, pictures)
 
-			# TODO - Should be removed
-			out.broadcast = "{}-{}-{}".format(*data)
+        broadcast = (a.get("nextAiringEpisode") or {}).get("airingAt")
+        if broadcast:
+            broadcast = datetime.fromtimestamp(broadcast)
+            data = (broadcast.isoweekday() - 1, broadcast.hour, broadcast.minute)
 
-		out.status = self.getStatus(out)
+            self.save_broadcast(id, *data)
 
-		if 'genres' in a.keys():
-			self.save_genres(id, a['genres'])
+            # TODO - Should be removed
+            out.broadcast = "{}-{}-{}".format(*data)
 
-		# Relations
-		if a.get('relations'):
-			rels = []
-			for edge in a.get('relations', {}).get('edges', []):
-				node = edge.get('node', {})
+        out.status = self.getStatus(out)
 
-				rel = {
-					'type': node.get('type').lower(),
-					'name': edge.get('relationType'),
-					'rel_id': int(node.get('id'))
-				}
-				rels.append(rel)
+        if "genres" in a.keys():
+            self.save_genres(id, a["genres"])
 
-			if len(rels) > 0:
-				self.save_relations(id, rels)
+        # Relations
+        if a.get("relations"):
+            rels = []
+            for edge in a.get("relations", {}).get("edges", []):
+                node = edge.get("node", {})
 
-		# Mapped animes
-		mal_id = a.get('mal_id')
-		if mal_id:
-			self.save_mapped(out.id, [('mal_id', mal_id)])
+                rel = {
+                    "type": node.get("type").lower(),
+                    "name": edge.get("relationType"),
+                    "rel_id": int(node.get("id")),
+                }
+                rels.append(rel)
 
-		# Characters
-		if a.get('characters'):
-			for edge in a.get('characters').get('edges'):
-				c = edge.get('node')
-				c['role'] = edge.get('role')
+            if len(rels) > 0:
+                self.save_relations(id, rels)
 
-				# self._convertCharacter(c) #TODO
+        # Mapped animes
+        mal_id = a.get("mal_id")
+        if mal_id:
+            self.save_mapped(out.id, [("mal_id", mal_id)])
 
-		return out
+        # Characters
+        if a.get("characters"):
+            for edge in a.get("characters").get("edges"):
+                c = edge.get("node")
+                c["role"] = edge.get("role")
 
-	def _convertCharacter(self, c, anime_id=None):
-		# TODO - merge function
+                # self._convertCharacter(c) #TODO
 
-		id = self.database.getId(self.apiKey, c.get('id'), table="characters")
-		out = Character()
-		out.id = id
-		out.name = c.get('name', {}).get('full')
-		out.desc = c.get('description')
+        return out
 
-		image = c.get('image', {})
-		out.picture = image.get('large') or image.get('medium')
+    def _convertCharacter(self, c, anime_id=None):
+        # TODO - merge function
 
-		if anime_id is not None:
-			anime_data = {anime_id: c.get('role').lower()}
-			self.save_animeography(id, anime_data)
+        id = self.database.getId(self.apiKey, c.get("id"), table="characters")
+        out = Character()
+        out.id = id
+        out.name = c.get("name", {}).get("full")
+        out.desc = c.get("description")
 
-		return out
+        image = c.get("image", {})
+        out.picture = image.get("large") or image.get("medium")
 
-	def iterate(self, query, variables):
-		page = 1
-		while True:
-			variables['page'] = page
-			rep = requests.post(
-				self.url, json={'query': str(query), 'variables': variables}).json()		
-			if rep.get('errors', None):
-				self.log(f'[ERROR] - On AnilistCo: {rep["errors"]}')
-			data = rep.get('data')
-			if not data:
-				return
+        if anime_id is not None:
+            role = c.get("role") if isinstance(c, dict) else None
+            if role is None:
+                role = ""
+            anime_data = {anime_id: role.lower()}
+            self.save_animeography(id, anime_data)
 
-			page = data.get('Page', {})
-			if page is not None:
-				for m in page.get('media', []):
-					yield m
-	 
-				pageInfo = page.get('pageInfo', {})
-				if not pageInfo.get('hasNextPage'):
-					return
-				page = pageInfo.get('currentPage', page) + 1
+        return out
 
-			else:
-				pass
+    def iterate(self, query, variables):
+        page = 1
+        while True:
+            variables["page"] = page
+            try:
+                if hasattr(self, "session") and self.session is not None:
+                    res = self.session.request(
+                        "POST",
+                        self.url,
+                        json={"query": str(query), "variables": variables},
+                    )
+                else:
+                    res = requests.post(
+                        self.url, json={"query": str(query), "variables": variables}
+                    )
+            except Exception as e:
+                self.log("ANILIST", "Network error during iterate():", e)
+                return
+
+            try:
+                rep = res.json()
+            except Exception as e:
+                self.log("ANILIST", "Invalid JSON in iterate():", e)
+                return
+
+        if rep.get("errors"):
+            self.log("ANILIST", f'[ERROR] - On AnilistCo: {rep.get("errors")}')
+            data = rep.get("data")
+            if not data:
+                return
+
+            page = data.get("Page", {})
+            if page is not None:
+                for m in page.get("media", []) or []:
+                    yield m
+
+                pageInfo = page.get("pageInfo", {}) or {}
+                if not pageInfo.get("hasNextPage"):
+                    return
+                page = (pageInfo.get("currentPage") or page) + 1
+
+            else:
+                pass

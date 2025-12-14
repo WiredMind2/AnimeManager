@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-#VERSION: 1.11
-#AUTHORS: Joost Bremmer (toost.b@gmail.com), vt-idiot
+# VERSION: 1.11
+# AUTHORS: Joost Bremmer (toost.b@gmail.com), vt-idiot
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -22,16 +22,17 @@ except ImportError:
 
 # import qBT modules
 try:
-    from novaprinter import prettyPrinter
     from helpers import retrieve_url
+    from novaprinter import prettyPrinter
 except:
     pass
+
 
 class sukebeisi(object):
     """Class used by qBittorrent to search for torrents"""
 
-    url = 'https://sukebei.nyaa.si'
-    name = 'Sukebei (Nyaa)'
+    url = "https://sukebei.nyaa.si"
+    name = "Sukebei (Nyaa)"
     # defines which search categories are supported by this search engine
     # and their corresponding id. Possible categories are:
     # 'all', 'movies', 'tv', 'music', 'games', 'anime', 'software', 'pictures', 'books'
@@ -48,15 +49,17 @@ class sukebeisi(object):
     #   'books': '1_4',
     #   'pictures': '1_5',
     supported_categories = {
-            'all': '0_0',
-            'anime': '1_1',
-            'books': '1_2',
-            'games': '1_3',
-            'pictures': '2_1',
-            'movies': '2_2'}
+        "all": "0_0",
+        "anime": "1_1",
+        "books": "1_2",
+        "games": "1_3",
+        "pictures": "2_1",
+        "movies": "2_2",
+    }
 
     class SukebeiSiParser(HTMLParser):
-        """ Parses sukebei.nyaa.si browse page for search results and prints them"""
+        """Parses sukebei.nyaa.si browse page for search results and prints them"""
+
         def __init__(self, res, url):
             try:
                 super().__init__()
@@ -71,26 +74,31 @@ class sukebeisi(object):
 
         def handle_starttag(self, tag, attr):
             """Tell the parser what to do with which tags"""
-            if tag == 'a':
+            if tag == "a":
                 self.start_a(attr)
 
         def handle_endtag(self, tag):
-            if tag == 'td':
+            if tag == "td":
                 self.start_td()
 
         def start_a(self, attr):
             params = dict(attr)
             # get torrent name
-            if 'title' in params and 'class' not in params and params['href'].startswith('/view/'):
+            if (
+                "title" in params
+                and "class" not in params
+                and params["href"].startswith("/view/")
+            ):
                 hit = {
-                        'name': params['title'],
-                        'desc_link': self.engine_url + params['href']}
+                    "name": params["title"],
+                    "desc_link": self.engine_url + params["href"],
+                }
                 if not self.curr:
-                    hit['engine_url'] = self.engine_url
+                    hit["engine_url"] = self.engine_url
                     self.curr = hit
-            elif 'href' in params and params['href'].startswith("magnet:?"):
+            elif "href" in params and params["href"].startswith("magnet:?"):
                 if self.curr:
-                    self.curr['link'] = params['href']
+                    self.curr["link"] = params["href"]
                     self.td_counter += 1
 
         def start_td(self):
@@ -110,26 +118,26 @@ class sukebeisi(object):
             if self.td_counter > 0 and self.td_counter <= 5:
                 # Catch the size
                 if self.td_counter == 1:
-                    self.curr['size'] = data.strip()
+                    self.curr["size"] = data.strip()
                 # Catch the seeds
                 elif self.td_counter == 3:
                     try:
-                        self.curr['seeds'] = int(data.strip())
+                        self.curr["seeds"] = int(data.strip())
                     except:
-                        self.curr['seeds'] = -1
+                        self.curr["seeds"] = -1
                 # Catch the leechers
                 elif self.td_counter == 4:
                     try:
-                        self.curr['leech'] = int(data.strip())
+                        self.curr["leech"] = int(data.strip())
                     except:
-                        self.curr['leech'] = -1
+                        self.curr["leech"] = -1
                 # The rest is not supported by prettyPrinter
                 else:
                     pass
 
     # DO NOT CHANGE the name and parameters of this function
     # This function will be the one called by nova2.py
-    def search(self, what, cat='all'):
+    def search(self, what, cat="all"):
         """
         Retreive and parse engine search results by category and query.
 
@@ -139,10 +147,11 @@ class sukebeisi(object):
         :param cat:  the name of a search category, see supported_categories.
         """
 
-        url = str("{0}/?f=0&s=seeders&o=desc&c={1}&q={2}"
-                  .format(self.url,
-                          self.supported_categories.get(cat),
-                          what))
+        url = str(
+            "{0}/?f=0&s=seeders&o=desc&c={1}&q={2}".format(
+                self.url, self.supported_categories.get(cat), what
+            )
+        )
 
         hits = []
         page = 1

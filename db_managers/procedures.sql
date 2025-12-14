@@ -31,40 +31,50 @@ END //
 DROP PROCEDURE IF EXISTS save_anime//
 CREATE PROCEDURE save_anime(IN a_id INT, IN a_data JSON)
 BEGIN
-	SET SESSION group_concat_max_len = 50000;
-	IF (SELECT COUNT(*) FROM anime WHERE id = a_id LIMIT 1) > 0 THEN
-		-- If an entry exists, update the existing record
-		SET @update_values = (SELECT GROUP_CONCAT(
-			CONCAT_WS(
-				'=',
-				column_name,
-				QUOTE(JSON_UNQUOTE(JSON_EXTRACT(a_data, CONCAT('$.', column_name))))
-			)
-			SEPARATOR ', ')
-			FROM information_schema.columns 
-			WHERE table_name = 'anime' AND table_schema = 'anime_manager' AND column_name != 'id');
-
-		SET @update_query = CONCAT('UPDATE anime SET ', @update_values, ' WHERE id = ', a_id);
-
-		PREPARE stmt FROM @update_query;
-		EXECUTE stmt;
-		DEALLOCATE PREPARE stmt;
-	ELSE
-		-- If no entry exists, insert a new record
-		SET @insert_columns = (SELECT GROUP_CONCAT(column_name) 
-			FROM information_schema.columns 
-			WHERE table_name = 'anime' AND table_schema = 'anime_manager' AND column_name != 'id');
-		
-		SET @insert_values = (SELECT GROUP_CONCAT(QUOTE(JSON_UNQUOTE(JSON_EXTRACT(a_data, CONCAT('$.', column_name)))) SEPARATOR ', ')
-			FROM information_schema.columns 
-			WHERE table_name = 'anime' AND table_schema = 'anime_manager' AND column_name != 'id');
-		
-		SET @insert_query = CONCAT('INSERT INTO anime (id, ', @insert_columns, ') VALUES (', a_id, ', ', @insert_values, ')');
-		
-		PREPARE stmt FROM @insert_query;
-		EXECUTE stmt;
-		DEALLOCATE PREPARE stmt;
-	END IF;
+	-- Use INSERT ... ON DUPLICATE KEY UPDATE for atomic upsert operation
+	-- This prevents deadlocks by avoiding information_schema queries and ensuring consistent lock ordering
+	INSERT INTO anime (
+		id,
+		title,
+		picture,
+		date_from,
+		date_to,
+		synopsis,
+		episodes,
+		duration,
+		rating,
+		status,
+		broadcast,
+		last_seen,
+		trailer
+	) VALUES (
+		a_id,
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.title')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.picture')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.date_from')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.date_to')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.synopsis')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.episodes')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.duration')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.rating')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.status')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.broadcast')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.last_seen')),
+		JSON_UNQUOTE(JSON_EXTRACT(a_data, '$.trailer'))
+	)
+	ON DUPLICATE KEY UPDATE
+		title = VALUES(title),
+		picture = VALUES(picture),
+		date_from = VALUES(date_from),
+		date_to = VALUES(date_to),
+		synopsis = VALUES(synopsis),
+		episodes = VALUES(episodes),
+		duration = VALUES(duration),
+		rating = VALUES(rating),
+		status = VALUES(status),
+		broadcast = VALUES(broadcast),
+		last_seen = VALUES(last_seen),
+		trailer = VALUES(trailer);
 END //
 
 DROP PROCEDURE IF EXISTS save_picture//
@@ -81,13 +91,10 @@ BEGIN
 		SET p_url = JSON_UNQUOTE(JSON_EXTRACT(p_data, CONCAT('$[', i, '].url')));
 		SET p_size = JSON_UNQUOTE(JSON_EXTRACT(p_data, CONCAT('$[', i, '].size')));
 
-		IF (SELECT COUNT(*) FROM pictures WHERE id = p_id AND size = p_size LIMIT 1) > 0 THEN
-			-- If an entry exists with the same id and size, update the existing record
-			UPDATE pictures SET url = p_url WHERE id = p_id AND size = p_size;
-		ELSE
-			-- If no entry exists, insert a new record
-			INSERT INTO pictures (id, url, size) VALUES (p_id, p_url, p_size);
-		END IF;
+		-- Use atomic INSERT ... ON DUPLICATE KEY UPDATE to avoid race conditions
+		INSERT INTO pictures (id, url, size)
+		VALUES (p_id, p_url, p_size)
+		ON DUPLICATE KEY UPDATE url = VALUES(url);
 
 		SET i = i + 1;
 	END WHILE;
@@ -96,40 +103,34 @@ END //
 DROP PROCEDURE IF EXISTS get_anime_id_from_api_id//
 CREATE PROCEDURE get_anime_id_from_api_id(IN a_api_key VARCHAR(255), IN a_api_id INT)
 BEGIN
-	DECLARE anime_id INT;
+	DECLARE anime_id INT DEFAULT NULL;
 
-	-- Check if the entry exists and fetch the result
-	SET @query = CONCAT('SELECT id INTO @anime_id FROM indexList WHERE ', a_api_key, ' = ', a_api_id, ' LIMIT 1');
-	PREPARE stmt FROM @query;
-	EXECUTE stmt;
-	DEALLOCATE PREPARE stmt;
+	-- Use CASE statement for efficient column selection instead of dynamic SQL
+	SELECT id INTO anime_id
+	FROM indexList
+	WHERE CASE
+		WHEN a_api_key = 'mal_id' THEN mal_id = a_api_id
+		WHEN a_api_key = 'kitsu_id' THEN kitsu_id = a_api_id
+		WHEN a_api_key = 'anilist_id' THEN anilist_id = a_api_id
+		WHEN a_api_key = 'anidb_id' THEN anidb_id = a_api_id
+		ELSE FALSE
+	END
+	LIMIT 1;
 
-	-- Assign the result to the variable
-	SET anime_id = @anime_id;
-
+	-- If entry exists, return the id
 	IF anime_id IS NOT NULL THEN
-		-- If the entry exists, return the id
-		SELECT anime_id;
+		SELECT anime_id AS id;
 	ELSE
-		-- If the entry does not exist, insert a new record
-		SET @insert_query = CONCAT('INSERT INTO indexList(', a_api_key, ') VALUES (', a_api_id, ')');
-		PREPARE stmt FROM @insert_query;
-		EXECUTE stmt;
-		DEALLOCATE PREPARE stmt;
+		-- Insert new entry using CASE for column selection
+		CASE a_api_key
+			WHEN 'mal_id' THEN INSERT INTO indexList(mal_id) VALUES (a_api_id);
+			WHEN 'kitsu_id' THEN INSERT INTO indexList(kitsu_id) VALUES (a_api_id);
+			WHEN 'anilist_id' THEN INSERT INTO indexList(anilist_id) VALUES (a_api_id);
+			WHEN 'anidb_id' THEN INSERT INTO indexList(anidb_id) VALUES (a_api_id);
+		END CASE;
 
-		-- Fetch the id again after insertion
-		SET @query = CONCAT('SELECT id FROM indexList WHERE ', a_api_key, ' = ', a_api_id, ' LIMIT 1');
-		PREPARE stmt FROM @query;
-		EXECUTE stmt;
-		DEALLOCATE PREPARE stmt;
-
-		SELECT id INTO anime_id FROM indexList WHERE a_api_key = a_api_id LIMIT 1;
-
-		IF anime_id IS NOT NULL THEN
-			SELECT anime_id;
-		ELSE
-			SELECT NULL;
-		END IF;
+		-- Return the newly inserted ID
+		SELECT LAST_INSERT_ID() AS id;
 	END IF;
 END //
 
@@ -190,6 +191,67 @@ BEGIN
 
 		SET i = i + 1;
 	END WHILE;
+END //
+
+DROP PROCEDURE IF EXISTS search_anime_fast//
+CREATE PROCEDURE search_anime_fast(IN search_terms VARCHAR(500), IN max_results INT)
+BEGIN
+	DECLARE ft_min_word_len INT DEFAULT 3;
+	DECLARE search_mode VARCHAR(20);
+	
+	-- Determine search mode based on search term length
+	-- For short terms, use LIKE. For longer terms, use FULLTEXT
+	IF CHAR_LENGTH(search_terms) < ft_min_word_len THEN
+		SET search_mode = 'LIKE';
+	ELSE
+		SET search_mode = 'FULLTEXT';
+	END IF;
+	
+	-- Use FULLTEXT search for better performance on longer queries
+	IF search_mode = 'FULLTEXT' THEN
+		SELECT DISTINCT 
+			a.id,
+			a.title,
+			a.picture,
+			a.date_from,
+			a.date_to,
+			a.synopsis,
+			a.episodes,
+			a.duration,
+			a.rating,
+			a.status,
+			a.broadcast,
+			a.last_seen,
+			a.trailer,
+			MATCH(ts.value) AGAINST(search_terms IN NATURAL LANGUAGE MODE) as relevance
+		FROM title_synonyms ts
+		INNER JOIN anime a ON ts.id = a.id
+		WHERE MATCH(ts.value) AGAINST(search_terms IN NATURAL LANGUAGE MODE)
+		ORDER BY relevance DESC, a.date_from DESC
+		LIMIT max_results;
+	ELSE
+		-- Fallback to LIKE for very short search terms (< 3 chars)
+		SELECT DISTINCT 
+			a.id,
+			a.title,
+			a.picture,
+			a.date_from,
+			a.date_to,
+			a.synopsis,
+			a.episodes,
+			a.duration,
+			a.rating,
+			a.status,
+			a.broadcast,
+			a.last_seen,
+			a.trailer,
+			1.0 as relevance
+		FROM title_synonyms ts
+		INNER JOIN anime a ON ts.id = a.id
+		WHERE LOWER(ts.value) LIKE CONCAT('%', LOWER(search_terms), '%')
+		ORDER BY a.date_from DESC
+		LIMIT max_results;
+	END IF;
 END //
 
 DELIMITER ;

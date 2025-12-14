@@ -1,11 +1,15 @@
-import threading
 import json
-import ssl
 import os
-
+import ssl
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from .logger import log
-from .getters import Getters
+
+try:
+    from .getters import Getters
+    from .logger import log
+except ImportError:
+    from getters import Getters
+    from logger import log
 
 
 def startServer(hostName, serverPort, manager):
@@ -14,17 +18,20 @@ def startServer(hostName, serverPort, manager):
             webServer.serve_forever()
         except OSError:
             pass
+
     handler = GetHandler(manager)
     httpd = HTTPServer((hostName, serverPort), handler)
     keyFile, certFile = "./key.pem", "./cert.pem"
     usessl = os.path.exists(keyFile) and os.path.exists(certFile)
     if usessl:
-        httpd.socket = ssl.wrap_socket(httpd.socket,
-                                       keyfile="./key.pem",
-                                       certfile='./cert.pem', server_side=True)
+        httpd.socket = ssl.wrap_socket(
+            httpd.socket, keyfile="./key.pem", certfile="./cert.pem", server_side=True
+        )
 
-    manager.log("SERVER", "Server started http%s://%s:%s" %
-                ("s" if usessl else "", hostName, serverPort))
+    manager.log(
+        "SERVER",
+        "Server started http%s://%s:%s" % ("s" if usessl else "", hostName, serverPort),
+    )
 
     # webServer.serve_forever()
     t = threading.Thread(target=serve_thread, args=(httpd,), daemon=True)
@@ -45,8 +52,10 @@ def GetHandler(manager):
             content = "application/json"
 
             self.database = self.getDatabase()
-            log("SERVER", "Received GET request from address {}".format(
-                self.client_address))
+            log(
+                "SERVER",
+                "Received GET request from address {}".format(self.client_address),
+            )
             request = self.path.split("/")[1:]
             if request[0] != "":
                 table = request.pop(0)
@@ -64,17 +73,19 @@ def GetHandler(manager):
                     content = "application/json"
                 elif id is not None:
                     data = self.database(id=id, table=table)
-                    if data['id'] == "NONE":
+                    if data["id"] == "NONE":
                         # data = "404 - Id not in db"
                         # code = 404
                         # content = "text/plain"
                         self.send_error(
-                            400, "Id not in db", "The id {} is not in the database.".format(id))
+                            400,
+                            "Id not in db",
+                            "The id {} is not in the database.".format(id),
+                        )
                         return
                 else:
                     try:
-                        data = dict(self.database.sql(
-                            "SELECT * FROM {}".format(table)))
+                        data = dict(self.database.sql("SELECT * FROM {}".format(table)))
                     except Exception:
                         code = 404
                         content = "text/html; charset=UTF-8"
@@ -90,10 +101,14 @@ def GetHandler(manager):
             self.send(data, content)
 
         def do_POST(self):
-            length = int(self.headers['Content-length'])
+            length = int(self.headers["Content-length"])
             rep = json.loads(self.rfile.read(length))
-            log("SERVER", "Received sync request (POST) from address {}, {} animes.".format(
-                self.client_address, len(rep)))
+            log(
+                "SERVER",
+                "Received sync request (POST) from address {}, {} animes.".format(
+                    self.client_address, len(rep)
+                ),
+            )
             self.saveAnimes(rep)
             self.send_response(200, "OK")
             self.end_headers()
@@ -112,9 +127,10 @@ def GetHandler(manager):
                     try:
                         log("SERVER", "Fetching data for id", id)
                         data = self.manager.getData(id)
-                        data['id'] = id  # TODO - Needed?
+                        data["id"] = id  # TODO - Needed?
                         self.database.set(
-                            data, table="anime", save=False, get_output=False)
+                            data, table="anime", save=False, get_output=False
+                        )
                     except Exception:
                         pass
 
@@ -123,7 +139,7 @@ def GetHandler(manager):
         def getAnimesToSync(self):
             self.database = self.getDatabase()
             content = self.database.sql(
-                '''SELECT
+                """SELECT
                     anime.id,
                     title,
                     title_synonyms,
@@ -139,7 +155,8 @@ def GetHandler(manager):
                     tag
                 FROM anime
                 WHERE tag in ("WATCHLIST","WATCHING","SEEN")
-            ''')
+            """
+            )
             rep = []
             keys = (
                 "mal_id",
@@ -154,7 +171,8 @@ def GetHandler(manager):
                 "broadcast",
                 "trailer_url",
                 "tag",
-                "like")
+                "like",
+            )
 
             for c in content:
                 value = dict(zip(keys, c))

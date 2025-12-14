@@ -1,4 +1,4 @@
-#VERSION: 2.5
+# VERSION: 2.5
 # AUTHORS: Christophe Dumez (chris@qbittorrent.org)
 #          Douman (custparasite@gmx.se)
 
@@ -26,24 +26,32 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-from novaprinter import prettyPrinter
-from helpers import retrieve_url, download_file
 from html.parser import HTMLParser
 from re import compile as re_compile
 
+from helpers import download_file, retrieve_url
+from novaprinter import prettyPrinter
+
 
 class legittorrents(object):
-    url = 'http://www.legittorrents.info'
-    name = 'Legit Torrents'
-    supported_categories = {'all': '0', 'movies': '1', 'tv': '13',
-                            'music': '2', 'games': '3', 'anime': '5',
-                            'books': '6'}
+    url = "http://www.legittorrents.info"
+    name = "Legit Torrents"
+    supported_categories = {
+        "all": "0",
+        "movies": "1",
+        "tv": "13",
+        "music": "2",
+        "games": "3",
+        "anime": "5",
+        "books": "6",
+    }
 
     def download_torrent(self, info):
         print(download_file(info))
 
     class MyHtmlParseWithBlackJack(HTMLParser):
-        """ Parser class """
+        """Parser class"""
+
         def __init__(self, url):
             HTMLParser.__init__(self)
             self.url = url
@@ -51,7 +59,7 @@ class legittorrents(object):
             self.save_item_key = None
 
         def handle_starttag(self, tag, attrs):
-            """ Parser's start tag handler """
+            """Parser's start tag handler"""
             if self.current_item:
                 params = dict(attrs)
                 if tag == "a":
@@ -63,9 +71,14 @@ class legittorrents(object):
                     elif link.startswith("download"):
                         self.current_item["link"] = "/".join((self.url, link))
                 elif tag == "td":
-                    if ("width" in params
-                            and params["width"] == "30" and "leech" not in self.current_item):
-                        self.save_item_key = "leech" if "seeds" in self.current_item else "seeds"
+                    if (
+                        "width" in params
+                        and params["width"] == "30"
+                        and "leech" not in self.current_item
+                    ):
+                        self.save_item_key = (
+                            "leech" if "seeds" in self.current_item else "seeds"
+                        )
 
             elif tag == "tr":
                 self.current_item = {}
@@ -73,28 +86,38 @@ class legittorrents(object):
                 self.current_item["engine_url"] = self.url
 
         def handle_endtag(self, tag):
-            """ Parser's end tag handler """
+            """Parser's end tag handler"""
             if self.current_item and tag == "tr":
                 if len(self.current_item) > 4:
                     prettyPrinter(self.current_item)
                 self.current_item = None
 
         def handle_data(self, data):
-            """ Parser's data handler """
+            """Parser's data handler"""
             if self.save_item_key:
                 self.current_item[self.save_item_key] = data.strip()
                 self.save_item_key = None
 
-    def search(self, what, cat='all'):
-        """ Performs search """
-        query = "".join((self.url, "/index.php?page=torrents&search=", what, "&category=",
-                         self.supported_categories.get(cat, '0'), "&active=1"))
+    def search(self, what, cat="all"):
+        """Performs search"""
+        query = "".join(
+            (
+                self.url,
+                "/index.php?page=torrents&search=",
+                what,
+                "&category=",
+                self.supported_categories.get(cat, "0"),
+                "&active=1",
+            )
+        )
 
         get_table = re_compile(r'(?s)<table\sclass="lista".*>(.*)</table>')
         data = get_table.search(retrieve_url(query)).group(0)
         # extract first ten pages of next results
         next_pages = re_compile('(?m)<option value="(.*)">[0-9]+</option>')
-        next_pages = ["".join((self.url, page)) for page in next_pages.findall(data)[:10]]
+        next_pages = [
+            "".join((self.url, page)) for page in next_pages.findall(data)[:10]
+        ]
 
         parser = self.MyHtmlParseWithBlackJack(self.url)
         parser.feed(data)

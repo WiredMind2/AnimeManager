@@ -1,7 +1,18 @@
-import os, sys
+import os
+import sys
+
 root = os.path.dirname(__file__)
-# __all__ = [f[:-3] for f in os.listdir(root) if os.path.isfile(os.path.join(root, f)) and f[-3:] == '.py' and f != '__init__.py']
-sys.path.append(os.path.abspath(__file__ + '/../..'))
-from . import *
-# Import all submodules with this package
-pass
+
+# Add search engines to path for Nova3 compatibility
+sys.path.append(os.path.abspath(__file__ + "/../.."))
+
+# Explicitly import specific modules instead of wildcard import
+# This avoids potential conflicts with Final constants from tkinter
+try:
+    # Import specific search engine modules
+    pass  # Add specific imports as needed
+except ImportError:
+    pass  # Gracefully handle missing modules
+
+# Define __all__ to control what gets exported
+__all__ = []
