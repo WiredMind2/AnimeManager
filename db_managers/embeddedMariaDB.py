@@ -919,6 +919,7 @@ FLUSH PRIVILEGES;
             "title_synonyms",
             "indexList",
             "charactersIndex",
+            "genres",
         }
         # Allow JOIN clauses for complex queries
         if table not in allowed_tables and "LEFT JOIN" not in table:

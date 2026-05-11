@@ -565,12 +565,23 @@ class Getters:
         return "".join(chars)
 
     def getFolder(self, id=None, anime=None):
+        self.log("DEBUG", f"getFolder called with id={id}, anime={anime}")
         if anime is None or anime == {}:
             if id is None:
                 raise Exception("Id required!")
             database = self.getDatabase()
             anime = database.get(id=id, table="anime")
+            self.log("DEBUG", f"Retrieved anime from db: {anime}")
+            if self.fm is None:
+                self.log("DEBUG", "self.fm is None, attempting to initialize file manager")
+                try:
+                    self.getFileManager()
+                    self.log("DEBUG", f"File manager initialized: {self.fm}")
+                except Exception as e:
+                    self.log("DEBUG", f"Failed to initialize file manager: {e}")
+                    raise
             self.animeFolder = self.fm.list(self.animePath)
+            self.log("DEBUG", f"animeFolder set to: {self.animeFolder}")
         else:
             if not isinstance(anime, Anime):
                 anime = Anime(anime)

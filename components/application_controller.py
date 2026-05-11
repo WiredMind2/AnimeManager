@@ -10,7 +10,7 @@ import threading
 from typing import Optional, Any
 
 from ..core import BaseComponent
-from ..logger import Logger
+from logger import Logger
 
 
 class ApplicationController(BaseComponent):
@@ -45,6 +45,12 @@ class ApplicationController(BaseComponent):
             self.remote = True
             self.log("MAIN_STATE", "Running in headless mode")
 
+    def start(self) -> None:
+        """Start the application controller."""
+        super().start()
+        if not self.remote:
+            self._late_startup()
+
     def _start(self) -> None:
         """Start the application."""
         self.log("MAIN_STATE", "Starting application")
@@ -55,30 +61,33 @@ class ApplicationController(BaseComponent):
         # Start components
         self._start_components()
 
-        # Late startup if not remote
-        if not self.remote:
-            self._late_startup()
-        else:
+        # Remote startup if remote
+        if self.remote:
             self._remote_startup()
 
         self.log("TIME", "Ready:".ljust(25), round(time.time() - self.start_time, 2), "sec")
 
     def _stop(self) -> None:
         """Stop the application."""
+        self.log("MAIN_STATE", "ApplicationController._stop() called")
         if self.closing:
+            self.log("MAIN_STATE", "Application already closing, returning early")
             return
 
         self.log("MAIN_STATE", "Stopping application")
         self.closing = True
 
         # Stop components in reverse order
+        self.log("MAIN_STATE", "Stopping components in reverse order")
         self._stop_components()
 
         # Final cleanup
+        self.log("MAIN_STATE", "Performing final cleanup")
         self._cleanup()
 
         self.log("TIME", "Stopping time:".ljust(25),
                 round(time.time() - self.start_time, 2), "sec")
+        self.log("MAIN_STATE", "Application shutdown complete")
 
     def register_component(self, component: BaseComponent) -> None:
         """
@@ -138,6 +147,10 @@ class ApplicationController(BaseComponent):
         self.log("MAIN_STATE", "Publishing application.ui_ready event")
         self.publish_event("application.ui_ready")
 
+        # Notify for UI initialization (for backward compatibility)
+        if hasattr(self, 'on_ui_ready'):
+            self.on_ui_ready()
+
     def _remote_startup(self) -> None:
         """Perform startup tasks for remote/headless mode."""
         # Publish event for remote initialization
@@ -150,7 +163,15 @@ class ApplicationController(BaseComponent):
             self.init_window.destroy()
 
         if self.root is not None:
-            self.root.destroy()
+            # Quit the mainloop first, then destroy
+            try:
+                self.root.quit()
+            except Exception as e:
+                self.log("MAIN_STATE", f"Error quitting mainloop: {e}")
+            try:
+                self.root.destroy()
+            except Exception as e:
+                self.log("MAIN_STATE", f"Error destroying root window: {e}")
             self.root = None
 
     def quit(self) -> None:

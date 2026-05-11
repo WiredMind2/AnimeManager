@@ -348,6 +348,10 @@ class Main:
                 closeIcon = self.getImage(
                     os.path.join(self.iconPath, "close.png"), (40, 40)
                 )
+                def close_button_handler():
+                    self.log("UI_EVENT", "Close button clicked")
+                    self.quit()
+
                 closeButton = Button(
                     head,
                     image=closeIcon,
@@ -356,7 +360,7 @@ class Main:
                     relief="solid",
                     activebackground=self.colors["Gray2"],
                     bg=self.colors["Gray2"],
-                    command=self.quit,
+                    command=close_button_handler,
                 )
                 closeButton.closeIcon = closeIcon  # type: ignore
                 closeButton.bind("<Button-3>", reset_windows)
@@ -395,8 +399,7 @@ class Main:
 
         self.root.after(1, self.late_startup)
 
-        if mainloop:
-            self.root.mainloop()
+        # Mainloop is now started by UIManager._handle_application_ui_ready
 
     def cleanup_resources(self):
         """Cleanup resources to prevent memory leaks"""

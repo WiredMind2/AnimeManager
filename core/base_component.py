@@ -10,7 +10,7 @@ from weakref import ref
 
 from .event_bus import get_event_bus, EventBus
 from .dependency_container import get_dependency_container, DependencyContainer
-from ..logger import log
+from logger import log
 
 
 class BaseComponent(ABC):

@@ -53,6 +53,11 @@ class TestLocalDiskFileManager(BaseFileManagerTestBase, unittest.TestCase):
         self.mock_askdirectory = askdirectory_patch.start()
         self.mock_patches.append(askdirectory_patch)
 
+        # Mock persist_manager_settings to prevent overwriting actual settings
+        persist_patch = patch("general_utils.persist_manager_settings")
+        self.mock_persist = persist_patch.start()
+        self.mock_patches.append(persist_patch)
+
     def get_file_manager_instance(self, **kwargs):
         """Create a Local Disk file manager instance for testing."""
         # Use test directory as data path
@@ -224,6 +229,11 @@ class TestLocalDiskPerformance(FileManagerPerformanceTestBase, unittest.TestCase
         self.mock_askdirectory = askdirectory_patch.start()
         self.mock_patches.append(askdirectory_patch)
 
+        # Mock persist_manager_settings to prevent overwriting actual settings
+        persist_patch = patch("general_utils.persist_manager_settings")
+        self.mock_persist = persist_patch.start()
+        self.mock_patches.append(persist_patch)
+
     def cleanup_mocks(self):
         """Clean up mock patches."""
         for patch_obj in self.mock_patches:
@@ -318,6 +328,11 @@ class TestLocalDiskEdgeCases(unittest.TestCase):
         )
         self.mock_askdirectory = askdirectory_patch.start()
         self.mock_patches.append(askdirectory_patch)
+
+        # Mock persist_manager_settings to prevent overwriting actual settings
+        persist_patch = patch("general_utils.persist_manager_settings")
+        self.mock_persist = persist_patch.start()
+        self.mock_patches.append(persist_patch)
 
     def cleanup_mocks(self):
         """Clean up mock patches."""

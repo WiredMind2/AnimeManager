@@ -1,200 +1,228 @@
 {
-    "UI": {
-        "colors": {
-            "Blue": "#56D8EF",
-            "Gray": "#676760",
-            "Gray2": "#181915",
-            "Gray3": "#282923",
-            "Gray4": "#373734",
-            "Green": "#98E22B",
-            "Orange": "#E79622",
-            "Red": "#F92472",
-            "White": "#F0F0FF"
-        },
-        "dateStates": {
-            "AIRING": {
-                "color": "Orange",
-                "text": "Airing"
-            },
-            "FINISHED": {
-                "color": "Green",
-                "text": "Finished!"
-            },
-            "UNKNOWN": {
-                "color": "Red",
-                "text": "Unknown!"
-            },
-            "UPCOMING": {
-                "color": "Blue",
-                "text": "Upcoming!"
-            }
-        },
-        "fileMarkers": {
-            "Green": [
-                ".*\\Wdual.*",
-                ".*\\Wdub\\W.*"
-            ],
-            "Red": [
-                ".*\\Wunc.*"
-            ]
-        },
-        "tagcolors": {
-            "NONE": "White",
-            "SEEN": "Green",
-            "WATCHING": "Orange",
-            "WATCHLIST": "Blue"
-        },
-        "torrentsStateColors": {
-            "COMPLETE": "Green",
-            "DOWNLOADING": "Orange",
-            "UNKNOWN": "Gray4",
-            "DELETED": "White",
-            "NOT_FOUND": "Red"
-        }
+  "database": {
+    "type": "sqlite",
+    "path": "./data/anime.db"
+  },
+  "ui": {
+    "theme": "default",
+    "language": "en",
+    "window_size": [
+      1200,
+      800
+    ]
+  },
+  "media": {
+    "players_order": [
+      "mpv",
+      "vlc",
+      "ffplay"
+    ],
+    "default_player": "mpv"
+  },
+  "downloads": {
+    "max_concurrent": 3,
+    "default_folder": "./downloads"
+  },
+  "api": {
+    "timeout": 30,
+    "rate_limit": 60
+  },
+  "file_managers": {
+    "last_fm_used": "Local",
+    "Local": {
+      "dataPath": ""
     },
-    "anime": {
-        "animePerRow": 4,
-        "animePerPage": 50,
-        "apiHost": "kitsu.io",
-        "hideRated": true,
-        "maxTimeout": 30,
-        "scheduleTimeout": 120,
-        "lastSchedule": 0,
-        "maxTrendingAnime": 100,
-        "topPublishers": [
-            "SubsPlease",
-            "SSA",
-            "LostYears",
-            "HorribleSubs",
-            "Judas",
-            "EMBER",
-            "HorribleRips",
-            "Erai-raws"
-        ]
-    },
-    "logs": {
-        "logBracketWidth": 13,
-        "logs": [
-            "DB_ERROR",
-            "MAIN_STATE",
-            "NETWORK",
-            "SERVER",
-            "SETTINGS",
-            "TIME",
-            "THREAD",
-            "DISK_ERROR",
-            "NETWORK_DATA",
-            "DB_UPDATE"
-        ],
-        "maxLogsSize": 50000
-    },
-    "paths": {
-        "cache": "",
-        "iconPath": "",
-        "logsPath": ""
-    },
-    "file_managers": {
-        "last_fm_used": "Local",
-        "Local": {
-            "dataPath": ""
-        },
-        "FTP": {
-            "url": "",
-            "login": "",
-            "password": "",
-            "dataPath": ""
-        }
-    },
-    "database_managers": {
-        "last_db_used": "EmbeddedMariaDB",
-        "EmbeddedMariaDB": {
-            "database": "",
-            "password": "",
-            "port": 3307,
-            "user": ""
-        },
-        "MySQL": {
-            "host": "",
-            "user": "",
-            "password": "",
-            "database": ""
-        },
-        "SQLite": {
-            "dbPath": ""
-        }
-    },
-    "torrent_managers": {
-        "last_tm_used": "qBittorrent",
-        "qBittorrent": {
-            "url": "",
-            "login": "",
-            "password": "",
-            "qb_settings": {}
-        },
-        "Transmission": {}
-    },
-    "phoneSyncServer": {
-        "enableServer": false,
-        "hostName": "0.0.0.0",
-        "serverPort": 8081
-    },
-    "player": {
-        "playerKeyBindings": {
-            "Alt": {
-                "Down": "subTrackBack",
-                "Left": "chapterBack",
-                "Right": "chapterNext",
-                "Up": "subTrackNext"
-            },
-            "Ctrl": {
-                "Down": "audioTrackBack",
-                "Left": "timeBack - 60",
-                "Right": "timeForward - 60",
-                "Up": "audioTrackNext"
-            },
-            "None": {
-                "Down": "volumeDown - 10",
-                "Left": "timeBack - 10",
-                "Right": "timeForward - 10",
-                "Up": "volumeUp - 10",
-                "f": "toggleFullscreen",
-                "h": "toggle_iconify",
-                "space": "togglePause"
-            },
-            "Shift": {
-                "Left": "playlistBack",
-                "Right": "playlistNext"
-            }
-        },
-        "playerOrder": [
-            "mpv_player",
-            "vlc_player",
-            "ff_player"
-        ]
-    },
-    "windows": {
-        "characterWindowWindowMinHeight": 300,
-        "characterWindowWindowMinWidth": 300,
-        "characterListWindowMinHeight": 500,
-        "characterListWindowMinWidth": 1000,
-        "diskWindowMinHeight": 300,
-        "diskWindowMinWidth": 700,
-        "infoWindowMinHeight": 0,
-        "infoWindowMinWidth": 1000,
-        "mainWindowHeight": 500,
-        "mainWindowTitle": "Anime Manager - Browser",
-        "mainWindowWidth": 920,
-        "publisherDDLWindowMinHeight": 410,
-        "publisherDDLWindowMinWidth": 250,
-        "searchTermsWindowMinHeight": 750,
-        "searchTermsWindowMinWidth": 1000,
-        "seasonSelectorMinHeight": 750,
-        "seasonSelectorMinWidth": 750,
-        "settingsWindowMinHeight": 400,
-        "settingsWindowMinWidth": 600,
-        "torrentDDLWindowMinHeight": 500,
-        "torrentDDLWindowMinWidth": 1500,
-        "torrentFilesWindowMinHeight": 500,
-        "torrentFilesWindowMinWidth": 1500
+    "FTP": {
+      "url": "",
+      "login": "",
+      "password": "",
+      "dataPath": ""
     }
+  },
+  "torrent_managers": {
+    "last_tm_used": "qBittorrent",
+    "qBittorrent": {
+      "url": "",
+      "login": "",
+      "password": "",
+      "qb_settings": {}
+    },
+    "Transmission": {}
+  },
+  "UI": {
+    "colors": {
+      "Blue": "#56D8EF",
+      "Gray": "#676760",
+      "Gray2": "#181915",
+      "Gray3": "#282923",
+      "Gray4": "#373734",
+      "Green": "#98E22B",
+      "Orange": "#E79622",
+      "Red": "#F92472",
+      "White": "#F0F0FF"
+    },
+    "dateStates": {
+      "AIRING": {
+        "color": "Orange",
+        "text": "Airing"
+      },
+      "FINISHED": {
+        "color": "Green",
+        "text": "Finished!"
+      },
+      "UNKNOWN": {
+        "color": "Red",
+        "text": "Unknown!"
+      },
+      "UPCOMING": {
+        "color": "Blue",
+        "text": "Upcoming!"
+      }
+    },
+    "fileMarkers": {
+      "Green": [
+        ".*\\Wdual.*",
+        ".*\\Wdub\\W.*"
+      ],
+      "Red": [
+        ".*\\Wunc.*"
+      ]
+    },
+    "tagcolors": {
+      "NONE": "White",
+      "SEEN": "Green",
+      "WATCHING": "Orange",
+      "WATCHLIST": "Blue"
+    },
+    "torrentsStateColors": {
+      "COMPLETE": "Green",
+      "DOWNLOADING": "Orange",
+      "UNKNOWN": "Gray4",
+      "DELETED": "White",
+      "NOT_FOUND": "Red"
+    }
+  },
+  "anime": {
+    "animePerRow": 4,
+    "animePerPage": 50,
+    "apiHost": "kitsu.io",
+    "hideRated": true,
+    "maxTimeout": 30,
+    "scheduleTimeout": 120,
+    "lastSchedule": 0,
+    "maxTrendingAnime": 100,
+    "topPublishers": [
+      "SubsPlease",
+      "SSA",
+      "LostYears",
+      "HorribleSubs",
+      "Judas",
+      "EMBER",
+      "HorribleRips",
+      "Erai-raws"
+    ]
+  },
+  "logs": {
+    "logBracketWidth": 13,
+    "logs": [
+      "DB_ERROR",
+      "MAIN_STATE",
+      "NETWORK",
+      "SERVER",
+      "SETTINGS",
+      "TIME",
+      "THREAD",
+      "DISK_ERROR",
+      "NETWORK_DATA",
+      "DB_UPDATE"
+    ],
+    "maxLogsSize": 50000
+  },
+  "paths": {
+    "cache": "",
+    "iconPath": "",
+    "logsPath": ""
+  },
+  "database_managers": {
+    "last_db_used": "EmbeddedMariaDB",
+    "EmbeddedMariaDB": {
+      "database": "",
+      "password": "",
+      "port": 3307,
+      "user": ""
+    },
+    "MySQL": {
+      "host": "",
+      "user": "",
+      "password": "",
+      "database": ""
+    },
+    "SQLite": {
+      "dbPath": ""
+    }
+  },
+  "phoneSyncServer": {
+    "enableServer": false,
+    "hostName": "0.0.0.0",
+    "serverPort": 8081
+  },
+  "player": {
+    "playerKeyBindings": {
+      "Alt": {
+        "Down": "subTrackBack",
+        "Left": "chapterBack",
+        "Right": "chapterNext",
+        "Up": "subTrackNext"
+      },
+      "Ctrl": {
+        "Down": "audioTrackBack",
+        "Left": "timeBack - 60",
+        "Right": "timeForward - 60",
+        "Up": "audioTrackNext"
+      },
+      "None": {
+        "Down": "volumeDown - 10",
+        "Left": "timeBack - 10",
+        "Right": "timeForward - 10",
+        "Up": "volumeUp - 10",
+        "f": "toggleFullscreen",
+        "h": "toggle_iconify",
+        "space": "togglePause"
+      },
+      "Shift": {
+        "Left": "playlistBack",
+        "Right": "playlistNext"
+      }
+    },
+    "playerOrder": [
+      "mpv_player",
+      "vlc_player",
+      "ff_player"
+    ]
+  },
+  "windows": {
+    "characterWindowWindowMinHeight": 300,
+    "characterWindowWindowMinWidth": 300,
+    "characterListWindowMinHeight": 500,
+    "characterListWindowMinWidth": 1000,
+    "diskWindowMinHeight": 300,
+    "diskWindowMinWidth": 700,
+    "infoWindowMinHeight": 0,
+    "infoWindowMinWidth": 1000,
+    "mainWindowHeight": 500,
+    "mainWindowTitle": "Anime Manager - Browser",
+    "mainWindowWidth": 920,
+    "publisherDDLWindowMinHeight": 410,
+    "publisherDDLWindowMinWidth": 250,
+    "searchTermsWindowMinHeight": 750,
+    "searchTermsWindowMinWidth": 1000,
+    "seasonSelectorMinHeight": 750,
+    "seasonSelectorMinWidth": 750,
+    "settingsWindowMinHeight": 400,
+    "settingsWindowMinWidth": 600,
+    "torrentDDLWindowMinHeight": 500,
+    "torrentDDLWindowMinWidth": 1500,
+    "torrentFilesWindowMinHeight": 500,
+    "torrentFilesWindowMinWidth": 1500
+  }
 }

@@ -32,6 +32,7 @@ class UIManager(BaseComponent):
         self.subscribe_event("ui.show_window", self._handle_show_window)
         self.subscribe_event("ui.hide_window", self._handle_hide_window)
         self.subscribe_event("ui.update_loading", self._handle_update_loading)
+        self.subscribe_event("application.ui_ready", self._handle_application_ui_ready)
 
     def _start(self) -> None:
         """Start the UI manager."""
@@ -195,6 +196,12 @@ class UIManager(BaseComponent):
         """Handle loading update event."""
         # This would be handled by the loading window component
         pass
+
+    def _handle_application_ui_ready(self, event_type: str, data: Any) -> None:
+        """Handle application UI ready event."""
+        if not self.is_remote_mode() and self._root:
+            self.log("UI_MANAGER", "Starting Tkinter mainloop")
+            self._root.mainloop()
 
     def set_init_window(self, window) -> None:
         """Set the initialization window."""

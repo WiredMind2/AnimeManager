@@ -9,7 +9,7 @@ from typing import Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..core import BaseComponent
-from ..classes import AnimeList
+from classes import AnimeList
 
 
 class APICoordinator(BaseComponent):

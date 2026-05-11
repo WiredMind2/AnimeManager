@@ -18,8 +18,8 @@ except ImportError:
 class LocalFileManager(BaseFileManager):
     name = "Local"
 
-    def __init__(self, settings=None):
-        super().__init__(settings)
+    def __init__(self, settings=None, update=False):
+        super().__init__(settings, update)
         self._executor = ThreadPoolExecutor(max_workers=4)
         self._file_cache = {}
         self._cache_timestamps = {}

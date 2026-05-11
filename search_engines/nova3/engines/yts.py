@@ -66,33 +66,33 @@ class yts(object):
                 self.url, url_path, "page" in params and {"page": params["page"]}
             )
             data = retrieve_url(url)
-            data = re.sub("\s\s+", "", data).replace("\n", "").replace("\r", "")
+            data = re.sub(r"\s\s+", "", data).replace("\n", "").replace("\r", "")
             data_container = re.findall(
-                '<div class="browse-content"><div class="container">.*?<section><div class="row">(.*?)</div></section>.*?</div></div>',
+                r'<div class="browse-content"><div class="container">.*?<section><div class="row">(.*?)</div></section>.*?</div></div>',
                 data,
             )
             if data_container and data_container[0]:
                 page_of = re.findall(
-                    '<li class="pagination-bordered">(.*?)</li>', data
+                    r'<li class="pagination-bordered">(.*?)</li>', data
                 )[
                     0
                 ]  # 1 of 5
-                page_of = page_of and re.sub(" +", "", page_of).strip() or "?"
+                page_of = page_of and re.sub(r" +", "", page_of).strip() or "?"
                 data_movie = re.findall(
-                    '<div class=".?browse-movie-wrap.*?">.*?</div></div></div>',
+                    r'<div class=".?browse-movie-wrap.*?">.*?</div></div></div>',
                     data_container[0],
                 )
                 for hM in data_movie:
                     movie_link = re.findall(
-                        '<a href="(.*?)" class="browse-movie-link">.*?</a>', hM
+                        r'<a href="(.*?)" class="browse-movie-link">.*?</a>', hM
                     )[0]
                     response_detail = retrieve_url(movie_link)
                     response_detail = (
-                        re.sub("\s\s+", "", response_detail)
+                        re.sub(r"\s\s+", "", response_detail)
                         .replace("\n", "")
                         .replace("\r", "")
                     )
-                    movie_id = re.findall('data-movie-id="(\d+)"', response_detail)[0]
+                    movie_id = re.findall(r'data-movie-id="(\d+)"', response_detail)[0]
                     if movie_id:
                         url = job.urlBuilder(
                             self.url,
@@ -127,20 +127,20 @@ class yts(object):
                         else:
                             # TODO: ??
                             movie_title = re.findall(
-                                '<a.*?class="browse-movie-title".*?>(.*?)</a>', hM
+                                r'<a.*?class="browse-movie-title".*?>(.*?)</a>', hM
                             )[0]
                             movie_year = re.findall(
-                                '<div.?class="browse-movie-year".*?>(.*?)</div>', hM
+                                r'<div.?class="browse-movie-year".*?>(.*?)</div>', hM
                             )[0]
                             movie_rate = re.findall(
-                                '<h4.?class="rating".*?>(.*?)</h4>', hM
+                                r'<h4.?class="rating".*?>(.*?)</h4>', hM
                             )[0]
                             movie_rate = movie_rate.split("/")[0]
                             movie_genre = re.findall(
-                                '<figcaption class=".*?">.*?(<h4>.*</h4>).*?</figcaption>',
+                                r'<figcaption class=".*?">.*?(<h4>.*</h4>).*?</figcaption>',
                                 hM,
                             )[0]
-                            movie_genre = re.findall("<h4>(.*?)</h4>", movie_genre)
+                            movie_genre = re.findall(r"<h4>(.*?)</h4>", movie_genre)
                             # print(movie_title,movie_link,movie_year,movie_rate,movie_genre)
                             job.done()
             else:
@@ -161,15 +161,15 @@ class score(object):
         "sort_by": "latest",
     }
     default_params = {
-        "genre": {"x": "(term=\w+[\s+|$]?)"},
-        "quality": {"x": "(term=\w+[\s+|$]?)"},
-        "minimum_rating": {"x": "(term=?[0-9]*[.]?[0-9]+[\s+|$]?)"},
-        "sort_by": {"x": "(term=\w+[\s+|$]?)"},
-        "order_by": {"x": "(term=\w+[\s+|$]?)"},
-        "with_rt_ratings": {"x": "(term=\w+[\s+|$]?)"},
-        "page": {"x": "(term=\w+[\s+|$]?)", "value": "1"},
-        "limit": {"x": "(term=.*[\s+|$]?)", "value": "1"},
-        "query_term": {"x": "(term=.*[\s+|$]?)", "value": "%%"},
+        "genre": {"x": r"(term=\w+[\s+|$]?)"},
+        "quality": {"x": r"(term=\w+[\s+|$]?)"},
+        "minimum_rating": {"x": r"(term=?[0-9]*[.]?[0-9]+[\s+|$]?)"},
+        "sort_by": {"x": r"(term=\w+[\s+|$]?)"},
+        "order_by": {"x": r"(term=\w+[\s+|$]?)"},
+        "with_rt_ratings": {"x": r"(term=\w+[\s+|$]?)"},
+        "page": {"x": r"(term=\w+[\s+|$]?)", "value": "1"},
+        "limit": {"x": r"(term=.*[\s+|$]?)", "value": "1"},
+        "query_term": {"x": r"(term=.*[\s+|$]?)", "value": "%%"},
     }
 
     tracker = [
@@ -205,7 +205,7 @@ class score(object):
             val = re.findall(regex, query_term)
             if len(val):
                 query_term = re.sub(regex, "", query_term)
-                val = re.findall("=(.*)", val[0])[0].strip()
+                val = re.findall(r"=(.*)", val[0])[0].strip()
                 if "value" in o and val != o["value"]:
                     """limit > 1, page > 1, query_term != '%%'"""
                     params[name] = val
@@ -213,7 +213,7 @@ class score(object):
                     params[name] = val
             else:
                 """default value, if required"""
-        query_term = re.sub(" +", " ", query_term).strip()
+        query_term = re.sub(r" +", " ", query_term).strip()
         if query_term:
             if query_term != self.default_params["query_term"]["value"]:
                 params["query_term"] = query_term  # quote_plus(query_term)

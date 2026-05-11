@@ -10,7 +10,7 @@ from typing import Optional, Any, Dict, List, Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from ..core import BaseComponent
-from ..classes import Torrent, Magnet
+from classes import Torrent, Magnet
 
 
 class DownloadManager(BaseComponent):

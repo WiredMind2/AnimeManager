@@ -7,7 +7,7 @@ import threading
 from typing import Optional, Any, Dict, List
 
 from ..core import BaseComponent
-from ..media_players import MediaPlayers
+from media_players import MediaPlayers
 
 
 class MediaManager(BaseComponent):

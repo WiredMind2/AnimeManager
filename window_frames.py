@@ -22,10 +22,7 @@ try:
 except ImportError:
     from logger import log
 
-try:
-    from .menu_components import DropDownMenu
-except ImportError:
-    from menu_components import DropDownMenu
+# DropDownMenu imported lazily in getChild to avoid circular import
 
 class RoundTopLevel(Frame):
     def __init__(
@@ -141,12 +138,19 @@ class RoundTopLevel(Frame):
         return mainFrame
 
     def getChild(self, w):
+        # Lazy import to avoid circular import
+        try:
+            from menu_components import DropDownMenu
+        except ImportError:
+            DropDownMenu = None
+
+        excluded_types = (Button, Checkbutton, Toplevel, OptionMenu, CustomScrollbar)
+        if DropDownMenu is not None:
+            excluded_types += (DropDownMenu,)
+
         out = []
         # ScrollableFrame
-        if not isinstance(
-            w,
-            (Button, Checkbutton, Toplevel, OptionMenu, DropDownMenu, CustomScrollbar),
-        ):
+        if not isinstance(w, excluded_types):
             out.append(w)
 
         # RoundTopLevel, ScrollableFrame

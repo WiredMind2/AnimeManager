@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 from contextlib import contextmanager
 
 from ..core import BaseComponent
-from ..classes import Anime, AnimeList
-from ..db_managers import databases
+from classes import Anime, AnimeList
+from db_managers import databases
 
 
 class DatabaseManager(BaseComponent):

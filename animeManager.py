@@ -62,7 +62,8 @@ try:
     from .media_players import MediaPlayers
     from .update_utils import UpdateUtils
     # New component architecture
-    from .core import get_dependency_container, get_event_bus
+    from .core.dependency_container import get_dependency_container
+    from .core.event_bus import get_event_bus
     from .components import (ApplicationController, DatabaseManager, APICoordinator,
                            UIManager, MediaManager, DownloadManager, SettingsManager)
 except ImportError as e:
@@ -83,7 +84,8 @@ except ImportError as e:
         from media_players import MediaPlayers
         from update_utils import UpdateUtils
         # New component architecture
-        from core import get_dependency_container, get_event_bus
+        from core.dependency_container import get_dependency_container
+        from core.event_bus import get_event_bus
         from components import (ApplicationController, DatabaseManager, APICoordinator,
                                UIManager, MediaManager, DownloadManager, SettingsManager)
     except ImportError as fallback_error:
@@ -294,11 +296,24 @@ class Manager(
         # Handle application events
         self._event_bus.subscribe("application.quit_requested", lambda e, d: self.quit())
         self._event_bus.subscribe("application.reload_requested", lambda e, d: self.reloadAll())
-        self._event_bus.subscribe("application.ui_ready", lambda e, d: self.drawInitWindow())
+        self._event_bus.subscribe("application.ui_ready", self._on_ui_ready)
 
         # Handle UI events
         self._event_bus.subscribe("ui.show_window", self._handle_ui_event)
         self._event_bus.subscribe("ui.hide_window", self._handle_ui_event)
+
+    def _on_ui_ready(self, event_type, data):
+        """Handle UI ready event."""
+        self.log("MAIN_STATE", "UI ready event received, calling drawInitWindow")
+        try:
+            self.drawInitWindow()
+            # Set the UI manager's root so it can start the mainloop
+            self._ui_manager.set_root(self.root)
+            # Set the application controller's root for proper shutdown
+            self._application_controller.root = self.root
+        except Exception as e:
+            self.log("MAIN_STATE", f"Error in UI ready event: {e}")
+            raise
 
     def _handle_ui_event(self, event_type, data):
         """Handle UI events for backward compatibility."""
@@ -308,6 +323,13 @@ class Manager(
     def late_startup(self):
         """Perform late startup tasks after UI initialization."""
         self.log("MAIN_STATE", "Performing late startup")
+        # Initialize file manager if not already done
+        if self.fm is None:
+            self.log("MAIN_STATE", "Initializing file manager in late startup")
+            try:
+                self.getFileManager(update=True)
+            except Exception as e:
+                self.log("MAIN_STATE", f"Failed to initialize file manager: {e}")
         # Load the default anime list to populate the UI
         if hasattr(self, 'animeList'):
             self.animeList.from_filter("DEFAULT")
@@ -508,11 +530,14 @@ class Manager(
         Quit application - now delegates to ApplicationController.
         Maintained for backward compatibility.
         """
+        self.log("MAIN_STATE", "Manager.quit() called - starting application shutdown")
+
         # Set legacy flags for backward compatibility
         self.stopSearch = True
         self.closing = True
 
         # Delegate to application controller
+        self.log("MAIN_STATE", "Delegating to ApplicationController.stop()")
         self._application_controller.stop()
 
     # ___Utils___
@@ -547,6 +572,10 @@ class Manager(
             self.startup()
 
     def reloadAll(self):
+        # Completely resets and reloads the app, 
+        # can be triggered by the user in case of an issue
+        # but shouldn't be called anywhere else in the code
+        
         self.log("MAIN_STATE", "Reloading")
         self.stopSearch = True
         self.closing = True

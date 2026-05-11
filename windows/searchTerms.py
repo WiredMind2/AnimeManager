@@ -23,8 +23,9 @@ class SearchTerms:
         if True:
 
             def getsearchTermsWindow(id):
-                with self.database.get_lock():
-                    data = self.database.sql(
+                db = self.getDatabase()
+                with db.get_lock():
+                    data = db.sql(
                         "SELECT value FROM title_synonyms WHERE id=?", (id,)
                     )
                 return [row[0] for row in data]
@@ -136,13 +137,18 @@ class SearchTerms:
             return
 
     def addSearchTerms(self, id, term, cb=None):
-        with self.database.get_lock():
-            exists = self.database.sql(
+        if not hasattr(self, 'database'):
+            self.log("DEBUG", "self.database not set in addSearchTerms, using getDatabase()")
+            db = self.getDatabase()
+        else:
+            db = self.database
+        with db.get_lock():
+            exists = db.sql(
                 "SELECT EXISTS( SELECT 1 FROM title_synonyms WHERE id=? AND value=? )",
                 (id, term),
             )
             if not bool(exists[0][0]):
-                self.database.sql(
+                db.sql(
                     "INSERT INTO title_synonyms(id, value) VALUES (?, ?)", (id, term)
                 )
 
@@ -150,8 +156,9 @@ class SearchTerms:
             cb()
 
     def removeSearchTerm(self, id, term, cb=None):
-        with self.database.get_lock():
-            self.database.sql(
+        db = self.getDatabase()
+        with db.get_lock():
+            db.sql(
                 "DELETE FROM title_synonyms WHERE id=? AND value=?", (id, term)
             )
         if cb:

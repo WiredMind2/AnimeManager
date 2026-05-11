@@ -214,10 +214,11 @@ class Download:
                     bg = (self.colors["Gray2"], self.colors["Gray3"])[i % 2]
 
                     # Avoid raising an error when the window is closing
-                    if self.closing or not self.ddlWindow.winfo_exists():
+                    if self.closing or not self.ddlWindow.winfo_exists() or not table.winfo_exists():
                         return
 
-                    b = Button(
+                    try:
+                        b = Button(
                         table,
                         text=publisher,
                         bd=0,
@@ -231,10 +232,13 @@ class Download:
                         command=lambda publisher=publisher, id=id: self.drawFileListWindow(
                             publisher, id
                         ),
-                    )
-                    b.grid(row=i, column=0, sticky="nsew")
+                        )
+                        b.grid(row=i, column=0, sticky="nsew")
 
-                    self.ddlWindow.publisherButtons[i] = (publisher, b)
+                        self.ddlWindow.publisherButtons[i] = (publisher, b)
+                    except TclError:
+                        # Parent widget was destroyed concurrently (window closed)
+                        return
 
                 try:
                     if i is None:
