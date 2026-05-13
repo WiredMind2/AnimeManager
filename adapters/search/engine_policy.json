@@ -1,0 +1,152 @@
+{
+  "$comment": "Trust policy for nova3 engines. Keys mirror the engine short names produced by nova3.nova2.initialize_engines. risk_level guides default enablement, while requires_insecure_tls and missing_timeout drive profile-aware gating.",
+  "default_action": "deny",
+  "engines": {
+    "nyaasi": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "sukebeisi": {
+      "enabled": false,
+      "risk_level": "low",
+      "anime_relevant": false,
+      "nsfw": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "sukebei": {
+      "enabled": false,
+      "risk_level": "low",
+      "anime_relevant": false,
+      "nsfw": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "pantsu": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "nyaapantsu": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "anidex": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "dmhyorg": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "tokyotoshokan": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "darklibria": {
+      "enabled": true,
+      "risk_level": "low",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "bt4g": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "one337x": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "thepiratebay": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "piratebay": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "torrentgalaxy": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "solidtorrents": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": true,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "torrentscsv": {
+      "enabled": true,
+      "risk_level": "medium",
+      "anime_relevant": false,
+      "requires_insecure_tls": false,
+      "missing_timeout": false
+    },
+    "limetorrents": {
+      "enabled": false,
+      "risk_level": "high",
+      "anime_relevant": false,
+      "requires_insecure_tls": true,
+      "missing_timeout": false,
+      "notes": "Globally disables HTTPS certificate verification."
+    },
+    "smallgames": {
+      "enabled": false,
+      "risk_level": "high",
+      "anime_relevant": false,
+      "requires_insecure_tls": true,
+      "missing_timeout": true,
+      "notes": "Unverified TLS context and no HTTP timeouts."
+    },
+    "pctmix": {
+      "enabled": false,
+      "risk_level": "medium",
+      "anime_relevant": false,
+      "requires_insecure_tls": false,
+      "missing_timeout": true,
+      "notes": "Issues urlopen without a timeout."
+    },
+    "pctfenix": {
+      "enabled": false,
+      "risk_level": "medium",
+      "anime_relevant": false,
+      "requires_insecure_tls": false,
+      "missing_timeout": true,
+      "notes": "Issues urlopen without a timeout."
+    }
+  }
+}

@@ -3,6 +3,22 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+# -- sys.path setup ----------------------------------------------------------
+# AnimeManager's repo root IS the package root (the directory is named
+# "AnimeManager" and contains __init__.py). Keep both the repo root and
+# its parent on sys.path so canonical imports resolve in local/docs builds.
+
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir))
+_PARENT_OF_REPO = os.path.abspath(os.path.join(_REPO_ROOT, os.pardir))
+
+for _p in (_PARENT_OF_REPO, _REPO_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -23,6 +39,23 @@ extensions = [
 
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+
+# Avoid duplicate-object warnings in large autodoc builds.
+suppress_warnings = [
+    'autodoc.import_object',
+    'misc.highlighting_failure',
+    'app.add_directive',
+    'duplicate_object_description',
+    'ref.python',
+]
+
+# Tolerate optional dependencies that may be absent in CI.
+autodoc_mock_imports = [
+    'mpv', 'vlc', 'libtorrent',
+    'PIL', 'PIL.Image', 'PIL.ImageTk',
+    'uvicorn', 'fastapi',
+    'tkinter',
+]
 
 language = 'en'
 

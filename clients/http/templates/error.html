@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ status_code }} — AnimeManager{% endblock %}
+{% block topbar_title %}{{ status_code }}{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <div>
+      <h1 class="page-head__title">{{ status_code }} · {{ status_text }}</h1>
+      <p class="page-head__subtitle">{{ detail }}</p>
+    </div>
+  </header>
+  <a class="btn btn--primary" href="{{ url_for('web_library') }}">← Back to library</a>
+{% endblock %}

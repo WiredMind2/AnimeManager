@@ -22,7 +22,7 @@ if parent_dir not in sys.path:
 
 try:
     # Try importing the ImportManager for proper import handling
-    from import_manager import ImportManager
+    from shared.utils.import_manager import ImportManager
 
     ImportManager.ensure_package_path()
 
@@ -30,14 +30,14 @@ try:
     sys.path.insert(0, os.path.dirname(__file__))
     from db_base_tests import DBIntegrationTestBase, DBTestBase
 
-    from db_managers.dbManager import db_instance
+    from adapters.persistence.dbManager import db_instance
 except ImportError as e:
     # Fallback imports
     try:
         sys.path.insert(0, os.path.dirname(__file__))
         from db_base_tests import DBIntegrationTestBase, DBTestBase
 
-        from db_managers.dbManager import db_instance
+        from adapters.persistence.dbManager import db_instance
     except ImportError as fallback_e:
         print(f"Import error: {e}")
         print(f"Fallback error: {fallback_e}")

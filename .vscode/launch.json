@@ -5,19 +5,50 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Module",
+            "name": "AnimeManager: GUI (Tk)",
             "type": "debugpy",
             "request": "launch",
-            "module": "launch",
-            "justMyCode": false
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "gui"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
         },
         {
-            "name": "Python : fichier actif",
+            "name": "AnimeManager: API (LAN, FastAPI/uvicorn)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "api",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8081"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Python: Current File",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
+            "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
         }
     ]
 }

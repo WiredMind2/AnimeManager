@@ -42,8 +42,8 @@ setup(
         "AnimeManager": [
             "icons/**/*",
             "lib/*",
-            "tutorial.html",
-            "tutorial.css",
+            "docs/tutorial/tutorial.html",
+            "docs/tutorial/tutorial.css",
             "settings.json",
         ],
     },
@@ -52,7 +52,7 @@ setup(
     # Entry points
     entry_points={
         "console_scripts": [
-            "animemanager=AnimeManager.__main__:main",
+            "animemanager=AnimeManager.bootstrap:main",
         ],
     },
     # Classification

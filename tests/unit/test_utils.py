@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from general_utils import (dict_merge, merge_iter, new_iter, parse_args, peek,
+from shared.utils.general import (dict_merge, merge_iter, new_iter, parse_args, peek,
                    persist_manager_settings, project_modules, project_stats)
 
 
@@ -170,42 +170,41 @@ class TestPersistManagerSettings:
     @pytest.mark.timeout(30)
     def test_persist_manager_settings_basic(self):
         """Test persist_manager_settings saves to json."""
-        with patch("constants.Constants") as mock_constants:
-            mock_constants.getAppdata.return_value = tempfile.gettempdir()
-            settings_file = os.path.join(tempfile.gettempdir(), "settings.json")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("shared.config.constants.Constants") as mock_constants:
+                mock_constants.getAppdata.return_value = tmpdir
+                settings_file = os.path.join(tmpdir, "settings.json")
 
-            # Ensure clean start
-            if os.path.exists(settings_file):
-                os.remove(settings_file)
+                persist_manager_settings(
+                    "file_managers", "test_manager", {"key": "value"}
+                )
 
-            persist_manager_settings("file_managers", "test_manager", {"key": "value"})
+                assert os.path.exists(settings_file)
+                with open(settings_file, "r") as f:
+                    data = json.load(f)
 
-            assert os.path.exists(settings_file)
-            with open(settings_file, "r") as f:
-                data = json.load(f)
-
-            assert "file_managers" in data
-            assert "test_manager" in data["file_managers"]
-            assert data["file_managers"]["test_manager"]["key"] == "value"
-            assert data["file_managers"]["last_fm_used"] == "test_manager"
+                assert "file_managers" in data
+                assert "test_manager" in data["file_managers"]
+                assert data["file_managers"]["test_manager"]["key"] == "value"
+                assert data["file_managers"]["last_fm_used"] == "test_manager"
 
     @pytest.mark.timeout(30)
     def test_persist_manager_settings_torrent_managers(self):
         """Test persist_manager_settings for torrent_managers."""
-        with patch("constants.Constants") as mock_constants:
-            mock_constants.getAppdata.return_value = tempfile.gettempdir()
-            settings_file = os.path.join(tempfile.gettempdir(), "settings.json")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("shared.config.constants.Constants") as mock_constants:
+                mock_constants.getAppdata.return_value = tmpdir
+                settings_file = os.path.join(tmpdir, "settings.json")
 
-            if os.path.exists(settings_file):
-                os.remove(settings_file)
+                persist_manager_settings(
+                    "torrent_managers", "test_tm", {"setting": "val"}
+                )
 
-            persist_manager_settings("torrent_managers", "test_tm", {"setting": "val"})
+                with open(settings_file, "r") as f:
+                    data = json.load(f)
 
-            with open(settings_file, "r") as f:
-                data = json.load(f)
-
-            assert "torrent_managers" in data
-            assert data["torrent_managers"]["last_tm_used"] == "test_tm"
+                assert "torrent_managers" in data
+                assert data["torrent_managers"]["last_tm_used"] == "test_tm"
 
 
 class TestProjectStats:

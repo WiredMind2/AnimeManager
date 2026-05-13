@@ -1,0 +1,37 @@
+{# Reusable pagination footer for client-side paginated tables.
+
+   Expects the surrounding wrapper to have `data-paginate-wrap` and at
+   least one descendant with `data-paginate` (a <tbody> or any container
+   whose direct element children are the paginated rows). The companion
+   JS (`wireTablePagination` in app.js) keeps `data-pager-info` and the
+   row visibility in sync; on a single page the pager hides itself.
+#}
+<nav class="table-pager" data-pager hidden aria-label="Result pages">
+  <div class="table-pager__info" data-pager-info>0 results</div>
+  <div class="table-pager__controls" role="group" aria-label="Page navigation">
+    <button type="button" class="btn btn--ghost table-pager__btn"
+            data-pager-first aria-label="First page" title="First page">«</button>
+    <button type="button" class="btn btn--ghost table-pager__btn"
+            data-pager-prev aria-label="Previous page" title="Previous page">
+      <span aria-hidden="true">‹</span><span class="table-pager__btn-label"> Prev</span>
+    </button>
+    <span class="table-pager__page" data-pager-page aria-live="polite">Page 1 / 1</span>
+    <button type="button" class="btn btn--ghost table-pager__btn"
+            data-pager-next aria-label="Next page" title="Next page">
+      <span class="table-pager__btn-label">Next </span><span aria-hidden="true">›</span>
+    </button>
+    <button type="button" class="btn btn--ghost table-pager__btn"
+            data-pager-last aria-label="Last page" title="Last page">»</button>
+  </div>
+  <label class="table-pager__size">
+    <span class="table-pager__size-label">Per page</span>
+    <select class="input table-pager__size-select" data-pager-size>
+      <option value="5">5</option>
+      <option value="10">10</option>
+      <option value="25">25</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+      <option value="0">All</option>
+    </select>
+  </label>
+</nav>

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 try:
-    from file_managers.base import BaseFileManager
+    from adapters.file.base import BaseFileManager
 except ImportError:
     # Mock if imports fail
     class BaseFileManager:
@@ -22,7 +22,7 @@ class TestBaseFileManager:
     def test_init_without_update(self):
         """Test initialization without update flag."""
         settings = {"test": "value", "dataPath": "/some/path"}
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=settings, update=False)
 
         assert manager.settings == settings
@@ -33,7 +33,7 @@ class TestBaseFileManager:
     def test_init_with_update_calls_change_path(self):
         """Test initialization with update flag calls change_path."""
         settings = {"test": "value"}
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             with pytest.raises(NotImplementedError):
                 BaseFileManager(settings=settings, update=True)
 
@@ -41,14 +41,14 @@ class TestBaseFileManager:
     def test_init_with_empty_datapath_calls_change_path(self):
         """Test initialization with empty dataPath calls change_path."""
         settings = {"dataPath": ""}
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             with pytest.raises(NotImplementedError):
                 BaseFileManager(settings=settings, update=False)
 
     @pytest.mark.timeout(30)
     def test_initialize_does_nothing(self):
         """Test that initialize method does nothing."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
         # Should not raise any exception
         manager.initialize()
@@ -56,7 +56,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_isfile_uses_isdir(self):
         """Test that isfile returns not isdir(path)."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with patch.object(manager, "isdir", return_value=False) as mock_isdir:
@@ -72,7 +72,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_delete_uses_shutil_rmtree(self):
         """Test that delete uses shutil.rmtree."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with patch("shutil.rmtree") as mock_rmtree:
@@ -82,7 +82,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_open_raises_not_implemented(self):
         """Test that open raises NotImplementedError."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with pytest.raises(NotImplementedError):
@@ -91,7 +91,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_mkdir_raises_not_implemented(self):
         """Test that mkdir raises NotImplementedError."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with pytest.raises(NotImplementedError):
@@ -100,7 +100,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_list_raises_not_implemented(self):
         """Test that list raises NotImplementedError."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with pytest.raises(NotImplementedError):
@@ -109,7 +109,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_exists_raises_not_implemented(self):
         """Test that exists raises NotImplementedError."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with pytest.raises(NotImplementedError):
@@ -118,7 +118,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_isdir_raises_not_implemented(self):
         """Test that isdir raises NotImplementedError."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with pytest.raises(NotImplementedError):
@@ -127,7 +127,7 @@ class TestBaseFileManager:
     @pytest.mark.timeout(30)
     def test_change_path_raises_not_implemented(self):
         """Test that change_path raises NotImplementedError."""
-        with patch("logger.Logger.__init__", return_value=None):
+        with patch("shared.telemetry.logger.Logger.__init__", return_value=None):
             manager = BaseFileManager(settings=self.settings)
 
         with pytest.raises(NotImplementedError):

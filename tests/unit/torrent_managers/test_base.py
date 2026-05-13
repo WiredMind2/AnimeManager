@@ -3,8 +3,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 try:
-    from torrent_managers.base import (BaseTorrentManager, TorrentException,
-                                       TorrentListFilter)
+    from adapters.torrent.base import (
+        BaseTorrentManager,
+        TorrentException,
+        TorrentListFilter,
+    )
 except ImportError:
     # Mock if imports fail
     class BaseTorrentManager:

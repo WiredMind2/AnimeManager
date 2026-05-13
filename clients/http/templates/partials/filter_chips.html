@@ -1,0 +1,14 @@
+<div class="chip-row" role="tablist" aria-label="Filters">
+  {% for option in filter_options %}
+    {% set is_active = (option.value or 'DEFAULT')|upper == (active_filter or 'DEFAULT')|upper %}
+    <a
+      class="chip {% if is_active %}is-active{% endif %}"
+      href="{{ url_for('web_library') }}?filter={{ option.value }}{% if q %}&q={{ q }}{% endif %}"
+      role="tab"
+      aria-selected="{{ 'true' if is_active else 'false' }}"
+    >
+      {% if option.dot %}<span class="chip__dot" style="background: {{ option.dot }}"></span>{% endif %}
+      {{ option.label }}
+    </a>
+  {% endfor %}
+</div>

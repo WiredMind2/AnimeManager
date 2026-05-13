@@ -21,7 +21,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
-    from file_managers.base import BaseFileManager
+    from adapters.file.base import BaseFileManager
 except ImportError:
     # Create mock if import fails
     class BaseFileManager:
@@ -74,11 +74,11 @@ class BaseFileManagerTestBase(ABC):
         self.mock_patches = []
 
         # Mock logger
-        logger_patch = patch("logger.Logger.__init__", return_value=None)
+        logger_patch = patch("shared.telemetry.logger.Logger.__init__", return_value=None)
         self.mock_logger = logger_patch.start()
         self.mock_patches.append(logger_patch)
 
-        log_patch = patch("logger.log")
+        log_patch = patch("shared.telemetry.logger.log")
         self.mock_log = log_patch.start()
         self.mock_patches.append(log_patch)
 

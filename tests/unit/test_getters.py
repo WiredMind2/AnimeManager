@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from classes import Anime, Torrent
-from getters import Getters
+from adapters.legacy.legacy_classes import Anime, Torrent
+from shared.config.getters import Getters
 
 
 class TestGettersStaticMethods:
@@ -137,7 +137,7 @@ class TestGettersInstanceMethods:
             }
         }
 
-        with patch("getters.db_managers") as mock_db_managers:
+        with patch("shared.config.getters.db_managers") as mock_db_managers:
             mock_db_class = MagicMock()
             mock_db_managers.databases = {"sqlite": mock_db_class}
             mock_instance = MagicMock()
@@ -151,14 +151,14 @@ class TestGettersInstanceMethods:
     @pytest.mark.timeout(30)
     def test_getDatabase_no_self(self):
         """Test getDatabase with None self uses Constants."""
-        with patch("getters.Constants") as mock_constants:
+        with patch("shared.config.getters.Constants") as mock_constants:
             mock_constants_instance = MagicMock()
             mock_constants.return_value = mock_constants_instance
             mock_constants_instance.settings = {
                 "database_managers": {"last_db_used": "sqlite", "sqlite": {}}
             }
 
-            with patch("getters.db_managers") as mock_db_managers:
+            with patch("shared.config.getters.db_managers") as mock_db_managers:
                 mock_db_class = MagicMock()
                 mock_db_managers.databases = {"sqlite": mock_db_class}
                 mock_instance = MagicMock()

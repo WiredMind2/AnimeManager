@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Torrent search — AnimeManager{% endblock %}
+{% block topbar_title %}Torrent search{% endblock %}
+
+{% block topbar_actions %}
+  <a class="btn btn--ghost" href="{{ url_for('web_downloads') }}">Active downloads</a>
+{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <div>
+      <h1 class="page-head__title">Torrent search</h1>
+      <p class="page-head__subtitle">
+        Query the bundled search engines through the SDK. Comma-separate to merge multiple terms.
+      </p>
+    </div>
+  </header>
+
+  <form action="{{ url_for('web_torrents') }}" method="get" class="form-row" style="margin-bottom: var(--sp-6)">
+    <input class="input" name="term" placeholder="e.g. SubsPlease Bleach 1080p" value="{{ term or '' }}" />
+    {% if anime_id %}<input type="hidden" name="anime_id" value="{{ anime_id }}" />{% endif %}
+    <button class="btn btn--primary" type="submit">Search</button>
+  </form>
+
+  {% if results %}
+    <section>
+      {% include "partials/torrent_filters_bar.html" %}
+      <div class="table-pager-wrap" data-paginate-wrap>
+        <div class="table-wrap table-wrap--scroll">
+        <table class="table table--torrents" data-sortable>
+          <colgroup>
+            <col class="col--release" />
+            <col class="col--publisher" />
+            <col class="col--quality" />
+            <col class="col--codec" />
+            <col class="col--source" />
+            <col class="col--season" />
+            <col class="col--episode" />
+            <col class="col--size" />
+            <col class="col--seeds" />
+            <col class="col--leech" />
+            <col class="col--actions" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th data-sort="name" data-sort-type="text">Release</th>
+              <th data-sort="pub" data-sort-type="text">Publisher</th>
+              <th class="num" data-sort="res" data-sort-type="number">Quality</th>
+              <th data-sort="codec" data-sort-type="text">Codec</th>
+              <th data-sort="source" data-sort-type="text">Source</th>
+              <th class="num" data-sort="season" data-sort-type="number">S</th>
+              <th class="num" data-sort="episode" data-sort-type="number">Ep</th>
+              <th class="num" data-sort="size" data-sort-type="number">Size</th>
+              <th class="num" data-sort="seeds" data-sort-type="number" data-sort-default="desc">Seeds</th>
+              <th class="num" data-sort="leech" data-sort-type="number">Leech</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody data-paginate>
+            {% for row in results %}
+              {% include "partials/anime_torrent_row.html" %}
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        {% include "partials/table_pager.html" %}
+      </div>
+      <p class="anime-torrent-empty" data-stream-filter-empty
+         style="display:none; color: var(--text-faint); font-size: 13px; margin-top: var(--sp-4)">
+        No releases match the current filters.
+        <button type="button" class="btn btn--ghost btn--small"
+                data-torrent-filter-reset>Reset filters</button>
+      </p>
+    </section>
+  {% elif term %}
+    {% with icon='⌕',
+            title='No matches for that term',
+            hint='Try a broader query or remove publisher prefixes.' %}
+      {% include "partials/empty_state.html" %}
+    {% endwith %}
+  {% else %}
+    {% with icon='⌕',
+            title='Search torrents',
+            hint='Enter a query above. Tip: from an anime page click “Find torrents” to pre-fill it.' %}
+      {% include "partials/empty_state.html" %}
+    {% endwith %}
+  {% endif %}
+{% endblock %}

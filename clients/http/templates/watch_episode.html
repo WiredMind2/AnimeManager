@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Watch {{ anime.title }} — AnimeManager{% endblock %}
+
+{% block topbar_title %}Watch · {{ anime.title|truncate(48, true, '…') }}{% endblock %}
+
+{% block topbar_actions %}
+  <a class="btn btn--ghost" href="{{ url_for('web_anime_detail', anime_id=anime.id) }}">← Back to details</a>
+{% endblock %}
+
+{% block content %}
+  <section class="watch-view" data-player-host>
+    <div class="player-panel watch-view__panel"
+         data-player-panel
+         data-play-anime-id="{{ anime.id }}"
+         data-play-endpoint="{{ url_for('web_action_play', anime_id=anime.id) }}"
+         data-episode-progress-url="{{ url_for('web_action_episode_progress', anime_id=anime.id) }}"
+         data-episode-resume-map='{{ episode_resume_map | tojson }}'
+         data-player-auto-file-id="{{ selected_file_id }}"
+         data-player-auto-file-title="{{ selected_file_title }}"
+         data-player-track-map='{{ track_map | tojson }}'
+         data-player-auto-fullscreen="0">
+      <div class="player-panel__video-wrap watch-view__video-wrap">
+        <media-controller class="watch-view__controller">
+          <video class="player-panel__video watch-view__video"
+                 data-player-video
+                 slot="media"
+                 playsinline
+                 preload="metadata"
+                 crossorigin="anonymous"></video>
+          <media-loading-indicator slot="centered-chrome"></media-loading-indicator>
+          <media-control-bar>
+            <media-play-button></media-play-button>
+            <media-seek-backward-button seek-offset="10"></media-seek-backward-button>
+            <media-seek-forward-button seek-offset="10"></media-seek-forward-button>
+            <media-time-range></media-time-range>
+            <media-time-display show-duration></media-time-display>
+            <media-mute-button></media-mute-button>
+            <media-volume-range></media-volume-range>
+            <media-pip-button></media-pip-button>
+            <media-fullscreen-button></media-fullscreen-button>
+          </media-control-bar>
+        </media-controller>
+        <div class="player-panel__status" data-player-status>
+          Click play to start.
+        </div>
+      </div>
+      <div class="player-panel__meta">
+        <span data-player-title>{{ selected_file_title or "Nothing playing" }}</span>
+        <span data-player-error class="badge badge--bad" hidden></span>
+      </div>
+      <div class="player-panel__controls">
+        <label class="label">
+          Audio
+          <select class="input player-panel__select" data-player-audio>
+            {% if selected_audio_tracks %}
+              {% for t in selected_audio_tracks %}
+                <option value="{{ t.id }}">{{ t.label }}</option>
+              {% endfor %}
+            {% else %}
+              <option value="">Default</option>
+            {% endif %}
+          </select>
+        </label>
+        <label class="label">
+          Subtitle
+          <select class="input player-panel__select" data-player-subtitle>
+            <option value="">Off</option>
+            {% for t in selected_subtitle_tracks %}
+              <option value="{{ t.id }}">{{ t.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </div>
+
+    {% if episode_files %}
+      <div class="table-wrap watch-view__table">
+        <table class="table">
+          <thead>
+            <tr>
+              <th class="truncate">Episode file</th>
+              <th class="num">Season</th>
+              <th class="num">Episode</th>
+              <th class="num">Size</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in episode_files %}
+              <tr>
+                <td class="truncate" title="{{ item.title }}">{{ item.title }}</td>
+                <td class="num">{{ item.season if item.season is not none else '—' }}</td>
+                <td class="num">{{ item.episode if item.episode is not none else '—' }}</td>
+                <td class="num">{{ (((item.size_bytes or 0) / 1024 / 1024)|round(1)|string ~ ' MB') if item.size_bytes else '—' }}</td>
+                <td class="num">
+                  <button class="btn btn--ghost btn--small"
+                          type="button"
+                          data-play-file-id="{{ item.file_id }}"
+                          data-play-title="{{ item.title }}">
+                    Play
+                  </button>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

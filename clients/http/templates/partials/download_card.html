@@ -1,0 +1,47 @@
+{# Single torrent card used in both the active / seeding / completed
+   sections of the downloads page. The JS WebSocket renderer mirrors
+   this exact structure so toggling between server-rendered and live
+   updates stays seamless. ``dl`` is the normalised dict produced by
+   ``_normalize_overview_row``. #}
+{% set pct = (dl.progress_pct if dl.progress_pct is not none else 0.0) | float %}
+{% set bucket = dl.category or 'active' %}
+<article class="download-card"
+         data-downloads-card
+         data-bucket="{{ bucket }}"
+         {% if dl.hash %}data-hash="{{ dl.hash }}"{% endif %}>
+  <div class="download-card__body">
+    <div class="download-card__title">
+      {{ dl.name }}
+      {% if dl.anime_title and dl.anime_title != dl.name %}
+        <span class="download-card__subtitle">· {{ dl.anime_title }}</span>
+      {% endif %}
+    </div>
+
+    <div class="progress" aria-label="Torrent progress">
+      <div class="progress__bar" style="width: {{ pct }}%"></div>
+    </div>
+
+    <div class="download-card__meta">
+      <span><strong style="color: var(--text)">{{ "%.1f"|format(pct) }}%</strong> complete</span>
+      {% if dl.size_human %}<span>{{ dl.size_human }}</span>{% endif %}
+      {% if dl.dl_speed_human %}<span>{{ dl.dl_speed_human }} ↓</span>{% endif %}
+      {% if dl.up_speed_human %}<span>{{ dl.up_speed_human }} ↑</span>{% endif %}
+      {% if dl.eta_human %}<span>ETA {{ dl.eta_human }}</span>{% endif %}
+      {% if dl.state %}<span class="badge">{{ dl.state }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="download-card__actions">
+    {% if dl.anime_id %}
+      <a class="btn btn--ghost" href="{{ url_for('web_anime_detail', anime_id=dl.anime_id) }}">Open anime</a>
+      {% if bucket == 'active' %}
+        <form method="post" action="{{ url_for('web_action_cancel', anime_id=dl.anime_id) }}">
+          <button class="btn btn--danger" type="submit"
+                  data-confirm="Cancel this download?">
+            Cancel
+          </button>
+        </form>
+      {% endif %}
+    {% endif %}
+  </div>
+</article>

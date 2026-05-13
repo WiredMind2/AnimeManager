@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} — AnimeManager{% endblock %}
+
+{% block topbar_actions %}
+  <a class="btn btn--ghost" href="{{ url_for('web_torrents') }}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3v12"/><path d="M6 9l6 6 6-6"/></svg>
+    Find torrents
+  </a>
+  <a class="btn btn--primary" href="{{ url_for('web_downloads') }}">Downloads</a>
+{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <div>
+      <h1 class="page-head__title">{{ page_title }}</h1>
+      <p class="page-head__subtitle">
+        {% if q %}
+          Showing results for <em>“{{ q }}”</em>. Local catalog first, then remote providers stream in as they reply.
+        {% elif active_filter and active_filter != 'DEFAULT' %}
+          Library filtered by <strong>{{ active_filter|capitalize }}</strong>. Switch filters to refine.
+        {% else %}
+          Your full anime catalog. Filter, search, and queue downloads — every action goes through the embedded SDK.
+        {% endif %}
+      </p>
+    </div>
+    <div class="page-head__meta">
+      {% if streaming_search %}
+        <span data-library-stream-count>
+          <span class="page-head__count" data-library-count>0</span> streamed
+        </span>
+        <span class="badge badge--accent" data-library-stream-state="connecting">Connecting…</span>
+      {% else %}
+        <span><span class="page-head__count">{{ items|length }}</span> on page</span>
+        {% if has_next %}<span class="badge badge--accent">more available</span>{% endif %}
+      {% endif %}
+    </div>
+  </header>
+
+  {% include "partials/filter_chips.html" %}
+
+  {% if streaming_search %}
+    <section
+      class="grid"
+      data-library-stream
+      data-library-stream-path="{{ search_ws_path }}"
+      data-library-stream-query="{{ q }}"
+    ></section>
+
+    <p class="page-head__subtitle" data-library-stream-empty hidden>
+      No results yet. Local catalog returned nothing and remote providers either failed or are still in flight.
+    </p>
+
+    <noscript>
+      <p class="page-head__subtitle">
+        Live streaming requires JavaScript. <a href="{{ url_for('web_library') }}?q={{ q }}&page=1">Reload the static results.</a>
+      </p>
+    </noscript>
+  {% elif items %}
+    <section class="grid">
+      {% for item in items %}
+        {% include "partials/anime_card.html" %}
+      {% endfor %}
+    </section>
+
+    <nav class="pager" aria-label="Pagination">
+      <span>
+        Showing <strong>{{ list_start + 1 }}</strong>–<strong>{{ list_start + items|length }}</strong>
+      </span>
+      <div class="pager__actions">
+        {% if prev_url %}
+          <a class="btn" href="{{ prev_url }}">← Previous</a>
+        {% else %}
+          <span class="btn" aria-disabled="true">← Previous</span>
+        {% endif %}
+        {% if next_url %}
+          <a class="btn" href="{{ next_url }}">Next →</a>
+        {% else %}
+          <span class="btn" aria-disabled="true">Next →</span>
+        {% endif %}
+      </div>
+    </nav>
+  {% else %}
+    {% with icon='⌀',
+            title='No anime to show',
+            hint='Try a different filter, broaden your search, or hit the torrent search to seed the library.' %}
+      {% include "partials/empty_state.html" %}
+    {% endwith %}
+  {% endif %}
+{% endblock %}

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from animeAPI import AnilistCo, JikanMoe, KitsuIo, MyAnimeListNet
+from adapters.api import AnilistCo, JikanMoe, KitsuIo, MyAnimeListNet
 from tests.unit.animeAPI.test_common_api_suite import DummyDB
 
 API_MODULES = [AnilistCo, JikanMoe, KitsuIo, MyAnimeListNet]

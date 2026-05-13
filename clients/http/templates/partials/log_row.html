@@ -1,0 +1,17 @@
+<li
+  class="log-row log-row--{{ (record.level or 'INFO')|lower }}"
+  data-log-row
+  data-log-id="{{ record.id }}"
+  data-log-level="{{ record.level or 'INFO' }}"
+  data-log-logger="{{ record.logger or '' }}"
+  data-log-category="{{ record.category or 'OTHER' }}"
+>
+  <time class="log-row__ts" datetime="{{ record.ts }}">{{ record.ts | int }}</time>
+  <span class="log-row__level">{{ record.level or 'INFO' }}</span>
+  <span class="log-row__category" title="{{ record.category or 'OTHER' }}">{{ record.category or 'OTHER' }}</span>
+  <span class="log-row__logger" title="{{ record.logger or '' }}">{{ record.logger or '' }}</span>
+  <span class="log-row__msg">{{ record.message }}</span>
+  {% if record.exc_info %}
+    <pre class="log-row__exc">{{ record.exc_info }}</pre>
+  {% endif %}
+</li>

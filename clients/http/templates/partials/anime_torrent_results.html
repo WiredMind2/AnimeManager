@@ -1,0 +1,94 @@
+{% if search_error %}
+  <div class="flash flash--error" role="alert">{{ search_error }}</div>
+{% endif %}
+
+{% if term %}
+  <p class="anime-torrent-summary"
+     style="color: var(--text-faint); font-size: 12px; margin-bottom: var(--sp-3)">
+    {% if fallback_used %}Using saved search terms / title:{% else %}Search:{% endif %}
+    <strong style="color: var(--text-muted)">{{ term }}</strong>
+    ·
+    <span data-stream-count>0</span>
+    <span data-stream-count-suffix>results</span>
+    <span data-stream-visible-info
+          style="margin-left: var(--sp-2); color: var(--text-faint)"></span>
+    <span class="meta" data-stream-status
+          style="margin-left: var(--sp-3); font-size: 11px; letter-spacing: 0.14em;
+                 color: var(--accent); text-transform: uppercase">
+      Searching…
+    </span>
+  </p>
+
+  {# Filter bar -- the <select> options are populated by app.js as rows
+     stream in (data-torrent-filters). Each <select> filters on a
+     single facet; combined they form an AND filter. The bar is
+     always visible so users discover the feature even before the
+     first row arrives. #}
+  {% include "partials/torrent_filters_bar.html" %}
+
+  <div class="table-pager-wrap" data-paginate-wrap>
+    <div class="table-wrap table-wrap--scroll">
+    <table class="table table--torrents" data-sortable>
+      <colgroup>
+        <col class="col--release" />
+        <col class="col--publisher" />
+        <col class="col--quality" />
+        <col class="col--codec" />
+        <col class="col--source" />
+        <col class="col--season" />
+        <col class="col--episode" />
+        <col class="col--size" />
+        <col class="col--seeds" />
+        <col class="col--leech" />
+        <col class="col--actions" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th data-sort="name" data-sort-type="text">Release</th>
+          <th data-sort="pub" data-sort-type="text">Publisher</th>
+          <th class="num" data-sort="res" data-sort-type="number">Quality</th>
+          <th data-sort="codec" data-sort-type="text">Codec</th>
+          <th data-sort="source" data-sort-type="text">Source</th>
+          <th class="num" data-sort="season" data-sort-type="number">S</th>
+          <th class="num" data-sort="episode" data-sort-type="number">Ep</th>
+          <th class="num" data-sort="size" data-sort-type="number">Size</th>
+          <th class="num" data-sort="seeds" data-sort-type="number" data-sort-default="desc">Seeds</th>
+          <th class="num" data-sort="leech" data-sort-type="number">Leech</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody data-stream-rows data-paginate
+             data-stream-url="{{ url_for('web_anime_torrent_stream', anime_id=anime_id) }}?term={{ term|urlencode }}">
+      </tbody>
+    </table>
+    </div>
+    {% include "partials/table_pager.html" %}
+  </div>
+
+  <p class="anime-torrent-empty"
+     data-stream-empty
+     style="display:none; color: var(--text-faint); font-size: 13px; margin-top: var(--sp-4)">
+    No releases matched <strong>{{ term }}</strong>. Add a more specific
+    search term above or refine the saved terms.
+  </p>
+  <p class="anime-torrent-empty"
+     data-stream-filter-empty
+     style="display:none; color: var(--text-faint); font-size: 13px; margin-top: var(--sp-4)">
+    No releases match the current filters.
+    <button type="button" class="btn btn--ghost btn--small"
+            data-torrent-filter-reset>Reset filters</button>
+  </p>
+
+  <noscript>
+    <p style="color: var(--text-faint); font-size: 13px; margin-top: var(--sp-4)">
+      Live result streaming requires JavaScript.
+      <a href="{{ url_for('web_torrents') }}?term={{ term|urlencode }}&anime_id={{ anime_id }}">
+        Open the full torrent search page instead →
+      </a>
+    </p>
+  </noscript>
+{% else %}
+  <p style="color: var(--text-faint); font-size: 13px">
+    Enter a search term above to look for releases.
+  </p>
+{% endif %}

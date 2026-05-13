@@ -14,24 +14,16 @@ try:
 except Exception:
     pass
 
-# Import core modules for package functionality
+# Import canonical composition root only.
 try:
-    from . import classes, constants, getters, logger
-    from .animeManager import Manager
+    from .composition import build_embedded_facade
 except ImportError:
-    # Fallback for standalone mode
     try:
-        import classes
-        import constants
-        import getters
-        import logger
-        from animeManager import Manager
+        from composition import build_embedded_facade
     except ImportError:
-        # If Manager import fails, set to None
-        Manager = None
+        build_embedded_facade = None  # type: ignore
 
 __version__ = "1.0.0"
 __author__ = "Your Name"
 
-# Make the main modules and Manager class available at package level
-__all__ = ["classes", "constants", "getters", "logger", "Manager"]
+__all__ = ["build_embedded_facade"]

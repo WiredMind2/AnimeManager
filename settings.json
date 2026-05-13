@@ -27,6 +27,18 @@
     "timeout": 30,
     "rate_limit": 60
   },
+  "feature_flags": {
+    "new_ingestion_pipeline": true,
+    "db_gateway_writes_only": true,
+    "strict_download_url_validation": true,
+    "secure_db_bootstrap": true
+  },
+  "api_credentials": {
+    "myanimelist": {
+      "client_id": "",
+      "client_secret": ""
+    }
+  },
   "file_managers": {
     "last_fm_used": "Local",
     "Local": {

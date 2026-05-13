@@ -1,0 +1,40 @@
+{% set status_label = item.status or 'UNKNOWN' %}
+{% set status_class = {
+  'AIRING': 'dot--airing',
+  'FINISHED': 'dot--finished',
+  'UPCOMING': 'dot--upcoming',
+  'UNKNOWN': 'dot--unknown'
+}.get(status_label|upper, 'dot--unknown') %}
+{% set tag = item.tag or 'NONE' %}
+<a href="{{ url_for('web_anime_detail', anime_id=item.id) }}" class="card">
+  <div class="card__poster">
+    {% if item.picture %}
+      <img
+        src="{{ item.picture }}"
+        alt="{{ item.title }}"
+        loading="lazy"
+        referrerpolicy="no-referrer"
+        onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card__poster-empty',textContent:'{{ (item.title or '?')|truncate(28, true, '…')|e }}'}))"
+      />
+    {% else %}
+      <div class="card__poster-empty">{{ (item.title or '?')|truncate(28, true, '…') }}</div>
+    {% endif %}
+
+    <span class="card__status" title="{{ status_label }}">
+      <span class="dot {{ status_class }}"></span>
+      {{ status_label|capitalize }}
+    </span>
+
+    {% if item.liked %}
+      <span class="card__like" aria-label="Liked">♥</span>
+    {% endif %}
+
+    <span class="card__overlay" aria-hidden="true"></span>
+  </div>
+  <span class="card__title" data-tag="{{ tag|upper }}">{{ item.title }}</span>
+  <span class="card__meta">
+    {% if item.episodes %}<span>{{ item.episodes }} ep</span>{% endif %}
+    {% if item.duration %}<span>{{ item.duration }} min</span>{% endif %}
+    {% if tag and tag|upper != 'NONE' %}<span>{{ tag|capitalize }}</span>{% endif %}
+  </span>
+</a>

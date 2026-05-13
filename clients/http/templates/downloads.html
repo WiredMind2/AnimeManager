@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Downloads — AnimeManager{% endblock %}
+{% block topbar_title %}Downloads{% endblock %}
+
+{% block topbar_actions %}
+  <a class="btn btn--ghost" href="{{ url_for('web_torrents') }}">Find more</a>
+  <button class="btn btn--primary"
+          data-downloads-refresh
+          hx-get="{{ url_for('web_downloads_panel') }}"
+          hx-target="#downloads-panel"
+          hx-swap="outerHTML">
+    Refresh
+  </button>
+{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <div>
+      <h1 class="page-head__title">Downloads &amp; seeding</h1>
+      <p class="page-head__subtitle">
+        Live view of every torrent the app is downloading, seeding or
+        keeping on disk. Streaming over WebSocket
+        <span data-downloads-status="connecting"
+              class="badge badge--muted"
+              data-downloads-status-target>connecting…</span>
+      </p>
+    </div>
+    <div class="page-head__meta">
+      <span><span class="page-head__count" data-downloads-count="active">{{ counts.active }}</span> active</span>
+      <span><span class="page-head__count" data-downloads-count="seeding">{{ counts.seeding }}</span> seeding</span>
+      <span><span class="page-head__count" data-downloads-count="completed">{{ counts.completed }}</span> completed</span>
+    </div>
+  </header>
+
+  {# ``partials/downloads_panel.html`` is the canonical wrapper -- it
+     renders its own ``<div id="downloads-panel">`` with the
+     ``data-downloads-*`` hooks so that HTMX `hx-swap="outerHTML"`
+     reuses the same node identity on the polling fallback path. #}
+  {% include "partials/downloads_panel.html" %}
+{% endblock %}

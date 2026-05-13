@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from constants import Constants
+from shared.config.constants import Constants
 
 
 class TestConstants:

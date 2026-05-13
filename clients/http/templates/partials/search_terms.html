@@ -1,0 +1,32 @@
+<div id="search-terms">
+  {% if terms %}
+    <div class="term-list">
+      {% for term in terms %}
+        <span class="term">
+          {{ term }}
+          <button class="term__remove"
+                  type="button"
+                  title="Remove"
+                  aria-label="Remove {{ term }}"
+                  hx-delete="{{ url_for('web_action_remove_term', anime_id=anime.id) }}?term={{ term|urlencode }}"
+                  hx-target="#search-terms"
+                  hx-swap="outerHTML">
+            ×
+          </button>
+        </span>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p style="font-size: 13px; color: var(--text-faint); margin-bottom: var(--sp-3)">
+      No custom search terms yet — the anime title will be used as the default search query.
+    </p>
+  {% endif %}
+
+  <form class="form-row"
+        hx-post="{{ url_for('web_action_add_term', anime_id=anime.id) }}"
+        hx-target="#search-terms"
+        hx-swap="outerHTML">
+    <input class="input" name="term" placeholder="Add a search term (e.g. SubsPlease 1080p)" autocomplete="off" />
+    <button class="btn btn--primary" type="submit">Add</button>
+  </form>
+</div>

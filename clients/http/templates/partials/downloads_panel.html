@@ -1,0 +1,51 @@
+{# Server-rendered initial snapshot of the downloads page. The same
+   markup is also produced client-side from the WebSocket payload by
+   the ``wireDownloadsWebsocket`` helper in app.js; keep the shapes in
+   sync so a page that swaps from polling to live updates does not
+   reflow. #}
+{% set sections = [
+  ('active',    'Active downloads', 'Currently downloading data from peers.', 'No downloads in progress.'),
+  ('seeding',   'Seeding',           'Completed torrents that are still uploading to peers.', 'Nothing is being seeded right now.'),
+  ('completed', 'Completed',         'Finished torrents that have stopped seeding.', 'No completed torrents in the client.'),
+  ('error',     'Errored',           'Torrents the client could not finish (missing files, tracker errors, …).', 'No errored torrents.'),
+] %}
+
+<div id="downloads-panel"
+     data-downloads-panel
+     data-downloads-ws-path="/ui/downloads/ws"
+     data-downloads-poll-url="{{ url_for('web_downloads_panel') }}">
+  {% set total_visible = (overview.active|length) + (overview.seeding|length) + (overview.completed|length) + (overview.error|length) + (overview.other|length) %}
+  {% if total_visible == 0 %}
+    {% with icon='↓',
+            title='No downloads yet',
+            hint='Start one from the torrent search or an anime detail page — it will appear here in real time.' %}
+      {% include "partials/empty_state.html" %}
+    {% endwith %}
+  {% endif %}
+
+  {% for key, heading, blurb, empty_text in sections %}
+    {% set rows = overview[key] or [] %}
+    <section class="downloads-section"
+             data-downloads-section="{{ key }}"
+             {% if not rows %}data-downloads-empty="1"{% endif %}>
+      <header class="downloads-section__head">
+        <div>
+          <h2 class="downloads-section__title">
+            {{ heading }}
+            <span class="badge" data-downloads-section-count>{{ rows|length }}</span>
+          </h2>
+          <p class="downloads-section__hint">{{ blurb }}</p>
+        </div>
+      </header>
+
+      <div class="downloads-section__list" data-downloads-list="{{ key }}">
+        {% if not rows %}
+          <p class="downloads-section__empty" data-downloads-section-empty>{{ empty_text }}</p>
+        {% endif %}
+        {% for dl in rows %}
+          {% include "partials/download_card.html" %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endfor %}
+</div>

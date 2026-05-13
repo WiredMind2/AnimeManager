@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+{% block title %}Settings — AnimeManager{% endblock %}
+{% block topbar_title %}Settings{% endblock %}
+
+{# -- Recursive renderer for the settings tree ----------------------- #}
+{% macro render_node(node) %}
+  {% if node.kind == 'group' %}
+    {% if node.children %}
+      <fieldset class="settings-group settings-group--depth-{{ node.depth }}{% if node.is_bool_only %} settings-group--toggles{% endif %}">
+        {% if node.depth > 0 and node.label %}
+          <legend class="settings-group__legend">{{ node.label }}</legend>
+        {% endif %}
+        <div class="settings-group__children">
+          {% for child in node.children %}
+            {{ render_node(child) }}
+          {% endfor %}
+        </div>
+      </fieldset>
+    {% else %}
+      <fieldset class="settings-group settings-group--empty">
+        {% if node.label %}<legend class="settings-group__legend">{{ node.label }}</legend>{% endif %}
+        <p class="settings-field__hint">Empty — add entries via the advanced editor below.</p>
+      </fieldset>
+    {% endif %}
+
+  {% elif node.kind == 'bool' %}
+    <label class="settings-toggle">
+      <input type="hidden" name="__bool__" value="{{ node.name }}" />
+      <input
+        type="checkbox"
+        class="settings-toggle__input"
+        name="{{ node.name }}"
+        value="true"
+        {% if node.value %}checked{% endif %}
+      />
+      <span class="settings-toggle__label">{{ node.label }}</span>
+      <code class="settings-toggle__path">{{ node.name }}</code>
+    </label>
+
+  {% elif node.kind in ('int', 'float') %}
+    <div class="settings-field">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <input
+        class="input"
+        id="f-{{ node.name }}"
+        name="{{ node.name }}"
+        type="number"
+        {% if node.kind == 'float' %}step="any"{% else %}step="1"{% endif %}
+        value="{{ node.value }}"
+      />
+    </div>
+
+  {% elif node.kind == 'password' %}
+    <div class="settings-field">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <input
+        class="input"
+        id="f-{{ node.name }}"
+        name="{{ node.name }}"
+        type="password"
+        autocomplete="new-password"
+        value="{{ node.value }}"
+      />
+    </div>
+
+  {% elif node.kind == 'select' %}
+    <div class="settings-field">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <select class="input" id="f-{{ node.name }}" name="{{ node.name }}">
+        {% if node.value and node.value not in node.options %}
+          <option value="{{ node.value }}" selected>{{ node.value }} (current, not configured)</option>
+        {% endif %}
+        {% for opt in node.options %}
+          <option value="{{ opt }}" {% if opt == node.value %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+  {% elif node.kind == 'color' %}
+    <div class="settings-field settings-field--color">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <div class="color-input">
+        <input
+          class="color-input__picker"
+          id="f-{{ node.name }}"
+          name="{{ node.name }}"
+          type="color"
+          value="{{ node.value }}"
+          data-color-sync="t-{{ node.name }}"
+        />
+        <input
+          class="color-input__text input"
+          id="t-{{ node.name }}"
+          type="text"
+          value="{{ node.value }}"
+          maxlength="7"
+          pattern="^#[0-9a-fA-F]{6}$"
+          aria-label="{{ node.label }} hex value"
+          data-color-mirror="f-{{ node.name }}"
+        />
+      </div>
+    </div>
+
+  {% elif node.kind == 'color_ref' %}
+    <div class="settings-field settings-field--color-ref">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <div class="color-ref">
+        <span
+          class="color-ref__swatch"
+          data-color-swatch-for="f-{{ node.name }}"
+          style="background: {{ node.palette.get(node.value, 'transparent') }}"
+          aria-hidden="true"
+        ></span>
+        <select
+          class="input color-ref__select"
+          id="f-{{ node.name }}"
+          name="{{ node.name }}"
+          data-color-ref
+        >
+          {% if node.value and node.value not in node.options %}
+            <option value="{{ node.value }}" selected data-color-hex="">
+              {{ node.value }} (missing)
+            </option>
+          {% endif %}
+          {% for opt in node.options %}
+            <option
+              value="{{ opt }}"
+              {% if opt == node.value %}selected{% endif %}
+              data-color-hex="{{ node.palette.get(opt, '') }}"
+            >
+              {{ opt }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+  {% elif node.kind == 'path' %}
+    <div class="settings-field settings-field--path">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <div class="form-row path-input">
+        <input
+          class="input path-input__text"
+          id="f-{{ node.name }}"
+          name="{{ node.name }}"
+          type="text"
+          value="{{ node.value }}"
+          spellcheck="false"
+        />
+        <button
+          type="button"
+          class="btn path-input__browse"
+          data-fb-open="#f-{{ node.name }}"
+          aria-label="Browse for {{ node.label }}"
+        >
+          Browse…
+        </button>
+      </div>
+    </div>
+
+  {% elif node.kind == 'multi_choice' %}
+    <div class="settings-field settings-field--multi">
+      <div class="settings-field__label">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </div>
+      <p class="settings-field__hint">
+        Tick a category to keep capturing it. Unticked categories are
+        dropped from the live log viewer at capture time.
+      </p>
+      <input type="hidden" name="__multi__" value="{{ node.name }}" />
+      <div class="multi-choice-grid">
+        {% for opt in node.options %}
+          {% set opt_value = opt.value if opt is mapping else opt %}
+          {% set opt_label = opt.label if opt is mapping and opt.label else opt_value %}
+          {% set is_on = opt_value|string|upper in node.selected %}
+          <label class="multi-choice-grid__item{% if not is_on %} is-off{% endif %}">
+            <input
+              type="checkbox"
+              name="{{ node.name }}"
+              value="{{ opt_value }}"
+              {% if is_on %}checked{% endif %}
+            />
+            <span class="multi-choice-grid__label">{{ opt_label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </div>
+
+  {% elif node.kind == 'list' %}
+    <div class="settings-field">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <textarea
+        class="textarea settings-list"
+        id="f-{{ node.name }}"
+        name="{{ node.name }}"
+        rows="4"
+        spellcheck="false"
+        placeholder="One value per line"
+      >{{ node.value }}</textarea>
+      <p class="settings-field__hint">One {{ node.elem_kind }} value per line.</p>
+    </div>
+
+  {% elif node.kind == 'json' %}
+    <div class="settings-field">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <textarea
+        class="textarea settings-json-inline"
+        id="f-{{ node.name }}"
+        name="{{ node.name }}"
+        rows="5"
+        spellcheck="false"
+      >{{ node.value }}</textarea>
+      <p class="settings-field__hint">JSON value.</p>
+    </div>
+
+  {% else %}{# str / fallback #}
+    <div class="settings-field">
+      <label class="settings-field__label" for="f-{{ node.name }}">
+        {{ node.label }}
+        <code class="settings-field__path">{{ node.name }}</code>
+      </label>
+      <input
+        class="input"
+        id="f-{{ node.name }}"
+        name="{{ node.name }}"
+        type="text"
+        value="{{ node.value }}"
+      />
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+  <header class="page-head">
+    <div>
+      <h1 class="page-head__title">Settings</h1>
+      <p class="page-head__subtitle">
+        Fields below are rendered from the active <code style="font-family: var(--font-mono); color: var(--accent)">settings.json</code>
+        and saved through <code style="font-family: var(--font-mono); color: var(--accent)">update_settings</code>.
+        Sections are ordered by typical importance; less-used ones are collapsed by default.
+        Use the advanced editor at the bottom to add or remove keys.
+      </p>
+    </div>
+    <nav class="settings-toc" aria-label="Sections">
+      <div class="settings-toc__actions">
+        <button type="button" class="chip" data-settings-expand="all">Expand all</button>
+        <button type="button" class="chip" data-settings-expand="none">Collapse all</button>
+      </div>
+      <div class="settings-toc__links">
+        {% for section in sections %}
+          <a
+            class="chip settings-toc__chip settings-toc__chip--tier-{{ section.tier }}"
+            href="#section-{{ section.name }}"
+            data-tier="{{ section.tier }}"
+          >
+            {{ section.section_label }}
+          </a>
+        {% endfor %}
+      </div>
+    </nav>
+  </header>
+
+  {% if validation_error %}
+    <div class="flash flash--error">{{ validation_error }}</div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('web_settings') }}" class="settings-form" id="settings-form">
+    {% for section in sections %}
+      <details
+        id="section-{{ section.name }}"
+        class="settings-section settings-section--tier-{{ section.tier }}{% if section.is_bool_only %} settings-section--toggles{% endif %}"
+        data-settings-section
+        {% if section.open_by_default %}open{% endif %}
+      >
+        <summary class="settings-section__head">
+          <div class="settings-section__head-text">
+            <h2 class="settings-section__title">{{ section.section_label }}</h2>
+            {% if section.description %}
+              <p class="settings-section__description">{{ section.description }}</p>
+            {% endif %}
+          </div>
+          <div class="settings-section__head-meta">
+            {% if section.tier == 3 %}
+              <span class="badge">Legacy</span>
+            {% elif section.tier == 2 %}
+              <span class="badge">Optional</span>
+            {% endif %}
+            <code class="settings-section__path">settings.{{ section.name }}</code>
+          </div>
+        </summary>
+        <div class="settings-section__body">
+          {% if section.children %}
+            {% for child in section.children %}
+              {{ render_node(child) }}
+            {% endfor %}
+          {% else %}
+            <p class="settings-field__hint">Empty section — use the advanced editor below to populate it.</p>
+          {% endif %}
+        </div>
+      </details>
+    {% endfor %}
+
+    <details class="settings-advanced">
+      <summary class="settings-advanced__summary">
+        Advanced — edit raw <code>settings.json</code>
+      </summary>
+      <div class="settings-advanced__body">
+        <p class="settings-field__hint">
+          Anything pasted here is merged on save and takes precedence over the
+          fields above. Leave empty to only apply the structured fields.
+        </p>
+        <textarea
+          class="textarea"
+          name="settings_json"
+          spellcheck="false"
+          placeholder="{ &quot;ui&quot;: { &quot;theme&quot;: &quot;dark&quot; } }"
+        >{{ raw_settings_json or '' }}</textarea>
+        <details class="settings-advanced__current">
+          <summary>Show current settings.json</summary>
+          <pre class="settings-advanced__pre">{{ current_settings_json }}</pre>
+        </details>
+      </div>
+    </details>
+
+    <div class="settings-form__actions">
+      <a class="btn btn--ghost" href="{{ url_for('web_settings') }}">Reset</a>
+      <button class="btn btn--primary" type="submit">Save changes</button>
+    </div>
+  </form>
+
+  {# -- File browser modal (shared across path fields) ---------------- #}
+  <dialog id="file-browser" class="fb-modal" aria-labelledby="fb-modal-title">
+    <form method="dialog" class="fb-modal__inner">
+      <header class="fb-modal__head">
+        <h3 id="fb-modal-title" class="fb-modal__title">Browse filesystem</h3>
+        <button
+          type="button"
+          class="fb-modal__close"
+          aria-label="Close"
+          data-fb-close
+        >
+          ×
+        </button>
+      </header>
+      <div class="fb-modal__nav">
+        <input
+          type="text"
+          id="fb-current-path"
+          class="input fb-modal__path"
+          aria-label="Current path"
+          spellcheck="false"
+          placeholder="Path"
+        />
+        <button
+          type="button"
+          class="btn"
+          data-fb-go
+        >Go</button>
+      </div>
+      <div
+        id="fb-content"
+        class="fb-modal__content"
+        hx-target="#fb-content"
+        hx-swap="innerHTML"
+      >
+        <p class="settings-field__hint" style="padding: var(--sp-4)">
+          Pick a path field's “Browse…” button to populate this dialog.
+        </p>
+      </div>
+      <footer class="fb-modal__foot">
+        <button type="button" class="btn btn--ghost" data-fb-close>Cancel</button>
+        <button type="button" class="btn btn--primary" data-fb-select>
+          Use selected path
+        </button>
+      </footer>
+      <input type="hidden" id="fb-target-selector" />
+    </form>
+  </dialog>
+{% endblock %}

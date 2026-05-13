@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Logs — AnimeManager{% endblock %}
+{% block topbar_title %}Logs{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <div>
+      <h1 class="page-head__title">Live logs</h1>
+      <p class="page-head__subtitle">
+        Streaming tail of every Python logger captured by the embedded
+        runtime. Filters and live updates run entirely in-process — no
+        external log file is required.
+      </p>
+    </div>
+    <div class="page-head__meta">
+      <span><span class="page-head__count" data-log-count>{{ records|length }}</span> shown</span>
+      <span class="badge" data-log-status="connecting">connecting…</span>
+      <span class="badge" data-log-buffered>{{ total_in_buffer }} buffered</span>
+    </div>
+  </header>
+
+  <div class="log-toolbar">
+    <button class="btn btn--ghost" type="button" data-log-toggle-pause aria-pressed="false">
+      <span data-log-pause-label>Pause</span>
+    </button>
+    <button class="btn btn--ghost" type="button" data-log-download>Download visible</button>
+    <form
+      method="post"
+      action="{{ url_for('web_logs_clear') }}"
+      style="display: inline-flex"
+      hx-post="{{ url_for('web_logs_clear') }}"
+      hx-target="body"
+      hx-swap="outerHTML"
+    >
+      <button class="btn btn--danger" type="submit"
+              data-confirm="Clear the in-memory log buffer? (Live tail keeps going)">
+        Clear buffer
+      </button>
+    </form>
+  </div>
+
+  <form
+    class="log-filters"
+    method="get"
+    action="{{ url_for('web_logs') }}"
+    data-log-filters
+    role="search"
+  >
+    <label class="log-filters__field">
+      <span class="log-filters__label">Min level</span>
+      <select name="level" class="input log-filters__select" data-log-filter="level">
+        <option value="" {% if not active_filter_level %}selected{% endif %}>All</option>
+        {% for choice in level_choices %}
+          <option value="{{ choice.value }}"
+                  {% if active_filter_level == choice.value %}selected{% endif %}>
+            {{ choice.label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label class="log-filters__field">
+      <span class="log-filters__label">Logger</span>
+      <input
+        type="text"
+        name="logger"
+        class="input log-filters__input"
+        value="{{ active_filter_logger }}"
+        placeholder="e.g. clients.http"
+        autocomplete="off"
+        data-log-filter="logger"
+      />
+    </label>
+
+    <label class="log-filters__field log-filters__field--grow">
+      <span class="log-filters__label">Search message</span>
+      <input
+        type="search"
+        name="q"
+        class="input log-filters__input"
+        value="{{ active_filter_q }}"
+        placeholder="contains…"
+        autocomplete="off"
+        data-log-filter="q"
+      />
+    </label>
+
+    <div class="log-filters__actions">
+      <button type="submit" class="btn btn--primary">Apply</button>
+      <a class="btn btn--ghost" href="{{ url_for('web_logs') }}">Reset</a>
+    </div>
+
+    <label class="log-filters__toggle">
+      <input type="checkbox" data-log-autoscroll checked />
+      <span>Auto-scroll</span>
+    </label>
+    <label class="log-filters__toggle">
+      <input type="checkbox" data-log-wrap />
+      <span>Wrap lines</span>
+    </label>
+  </form>
+
+  <div class="log-categories" data-log-categories aria-label="Category filter">
+    <span class="log-categories__label">Categories</span>
+    <div class="log-categories__chips">
+      {% for chip in category_chips %}
+        <button
+          type="button"
+          class="chip log-cat-chip log-cat-chip--{{ chip.name|lower }}{% if chip.active %} is-active{% endif %}{% if chip.disabled_in_settings %} is-muted{% endif %}"
+          data-log-category-chip
+          data-category="{{ chip.name }}"
+          aria-pressed="{{ 'true' if chip.active else 'false' }}"
+          {% if chip.disabled_in_settings %}title="Disabled in settings — won't appear even if you tick it here. Edit settings.logs.enabled_categories to re-enable."{% endif %}
+        >
+          <span class="log-cat-chip__dot" aria-hidden="true"></span>
+          {{ chip.name }}
+        </button>
+      {% endfor %}
+    </div>
+    <div class="log-categories__actions">
+      <button type="button" class="btn btn--ghost btn--small" data-log-category-all>Show all</button>
+      <a class="btn btn--ghost btn--small" href="{{ url_for('web_settings') }}#section-logs">Configure…</a>
+    </div>
+  </div>
+
+  <section
+    class="log-console"
+    data-log-console
+    data-log-stream-url="{{ url_for('web_logs_stream') }}"
+    data-log-last-id="{{ last_id }}"
+    aria-live="polite"
+  >
+    <ol class="log-list" data-log-list>
+      {% for record in records %}
+        {% include "partials/log_row.html" %}
+      {% endfor %}
+    </ol>
+    <div class="log-list__empty"
+         data-log-empty
+         {% if records %}hidden{% endif %}>
+      {% with icon='〿',
+              title='No log entries to show',
+              hint='Adjust the filters above or trigger an action — new records appear here instantly.' %}
+        {% include "partials/empty_state.html" %}
+      {% endwith %}
+    </div>
+  </section>
+{% endblock %}

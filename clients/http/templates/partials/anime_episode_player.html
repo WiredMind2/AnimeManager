@@ -1,0 +1,85 @@
+<section id="anime-player" class="detail__section">
+  <div class="detail__section-title">
+    <h3>Episode player</h3>
+    <span class="meta">
+      {% if episode_files %}{{ episode_files|length }} file{{ '' if episode_files|length == 1 else 's' }} ready{% else %}No local episode files found{% endif %}
+    </span>
+  </div>
+
+  {% if episode_files %}
+    <div class="table-wrap">
+      <table class="table table--anime-episodes">
+        <colgroup>
+          <col class="col--episode-file" />
+          <col class="col--season" />
+          <col class="col--episode" />
+          <col class="col--size" />
+          <col class="col--progress" />
+          <col class="col--actions" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="truncate">Episode file</th>
+            <th class="num">Season</th>
+            <th class="num">Episode</th>
+            <th class="num">Size</th>
+            <th>Progress</th>
+            <th class="num">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in episode_files %}
+            <tr>
+              <td class="truncate" title="{{ item.title }}">{{ item.title }}</td>
+              <td class="num">{{ item.season if item.season is not none else '—' }}</td>
+              <td class="num">{{ item.episode if item.episode is not none else '—' }}</td>
+              <td class="num">{{ (((item.size_bytes or 0) / 1024 / 1024)|round(1)|string ~ ' MB') if item.size_bytes else '—' }}</td>
+              <td>
+                <form
+                  method="post"
+                  action="{{ url_for('web_action_episode_progress', anime_id=anime.id) }}"
+                  hx-post="{{ url_for('web_action_episode_progress', anime_id=anime.id) }}"
+                  hx-target="#anime-player"
+                  hx-swap="outerHTML"
+                  hx-trigger="change from:select"
+                  style="display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap"
+                >
+                  <input type="hidden" name="file_id" value="{{ item.file_id }}" />
+                  <select class="input" name="status" style="min-width: 140px; height: 32px">
+                    {% set st = (item.watch_status or 'UNSEEN')|upper %}
+                    <option value="UNSEEN" {% if st == 'UNSEEN' %}selected{% endif %}>Not started</option>
+                    <option value="IN_PROGRESS" {% if st == 'IN_PROGRESS' %}selected{% endif %}>In progress</option>
+                    <option value="SEEN" {% if st == 'SEEN' %}selected{% endif %}>Seen</option>
+                  </select>
+                  <noscript><button class="btn btn--small" type="submit">Save</button></noscript>
+                </form>
+              </td>
+              <td class="num" style="white-space: nowrap">
+                <a class="btn btn--ghost btn--small"
+                   href="{{ url_for('web_anime_watch', anime_id=anime.id) }}?file_id={{ item.file_id }}">
+                  Play
+                </a>
+                <form
+                  method="post"
+                  action="{{ url_for('web_action_episode_delete', anime_id=anime.id) }}"
+                  hx-post="{{ url_for('web_action_episode_delete', anime_id=anime.id) }}"
+                  hx-target="#anime-player"
+                  hx-swap="outerHTML"
+                  hx-confirm="Delete this file from disk? This cannot be undone."
+                  style="display: inline"
+                >
+                  <input type="hidden" name="file_id" value="{{ item.file_id }}" />
+                  <button class="btn btn--small btn--danger" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p style="color: var(--text-faint); font-size: 13px">
+      Download an episode first. The web player automatically transcodes files for browser playback.
+    </p>
+  {% endif %}
+</section>

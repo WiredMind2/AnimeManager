@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}{{ anime.title }} — AnimeManager{% endblock %}
+
+{% block topbar_title %}{{ anime.title|truncate(48, true, '…') }}{% endblock %}
+
+{% block topbar_actions %}
+  <a class="btn btn--ghost" href="{{ url_for('web_library') }}">← Library</a>
+  <a class="btn btn--ghost"
+     href="#anime-torrents"
+     data-scroll-to="#anime-torrents">
+    Find torrents
+  </a>
+{% endblock %}
+
+{% block content %}
+  <section class="detail">
+    <div class="detail__poster">
+      {% if anime.picture %}
+        <img src="{{ anime.picture }}" alt="{{ anime.title }}" referrerpolicy="no-referrer" />
+      {% endif %}
+    </div>
+
+    <div>
+      <div class="detail__head">
+        <span class="detail__eyebrow">{% if anime.status %}{{ anime.status|capitalize }}{% else %}Anime{% endif %} · ID {{ anime.id }}</span>
+        <h1 class="detail__title">{{ anime.title }}</h1>
+        {% if anime.title_synonyms %}
+          <p class="detail__synonyms">{{ anime.title_synonyms | join(' · ') }}</p>
+        {% endif %}
+
+        <div class="detail__stats">
+          {% if anime.episodes %}<span class="badge">{{ anime.episodes }} episodes</span>{% endif %}
+          {% if anime.duration %}<span class="badge">{{ anime.duration }} min · ep</span>{% endif %}
+          {% if anime.rating %}<span class="badge">{{ anime.rating }}</span>{% endif %}
+          {% for g in (anime.genres or [])[:6] %}
+            <span class="badge">{{ g }}</span>
+          {% endfor %}
+          {% if user_state and user_state.get('tag') %}
+            <span class="badge badge--accent">Tag · {{ user_state.tag }}</span>
+          {% endif %}
+          {% if user_state and user_state.get('liked') %}
+            <span class="badge badge--good">Liked</span>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if anime.synopsis %}
+        <p class="detail__synopsis">{{ anime.synopsis }}</p>
+      {% else %}
+        <p class="detail__synopsis" style="color: var(--text-faint)">No synopsis available.</p>
+      {% endif %}
+
+      {% include "partials/anime_actions.html" %}
+    </div>
+  </section>
+
+  <section class="detail__section" id="anime-torrents">
+    <div class="detail__section-title">
+      <h3>Torrent search</h3>
+      <span class="meta">Find releases without leaving this page</span>
+    </div>
+
+    <form class="form-row"
+          id="anime-torrent-form"
+          hx-get="{{ url_for('web_anime_torrent_search', anime_id=anime.id) }}"
+          hx-target="#anime-torrent-results"
+          hx-swap="innerHTML"
+          hx-indicator="#anime-torrent-spinner"
+          style="margin-bottom: var(--sp-5)">
+      <button class="btn btn--ghost"
+              type="button"
+              data-torrent-term-open>
+        Search options
+      </button>
+      <button class="btn btn--primary" type="submit">Search</button>
+      <span id="anime-torrent-spinner" class="htmx-indicator">
+        <span class="spinner"></span>
+      </span>
+    </form>
+
+    <div id="torrent-term-modal"
+         class="modal"
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="torrent-term-modal-title"
+         hidden>
+      <div class="modal__backdrop" data-torrent-term-close></div>
+      <div class="modal__dialog modal__dialog--compact" role="document">
+        <header class="modal__header">
+          <h2 id="torrent-term-modal-title" class="modal__title">Torrent search options</h2>
+          <button class="modal__close"
+                  type="button"
+                  aria-label="Close torrent search options"
+                  data-torrent-term-close>×</button>
+        </header>
+        <div class="modal__body modal__body--panel">
+          <div class="field" style="margin: 0">
+            <label class="label" for="anime-torrent-term">Override terms</label>
+            <input class="input"
+                   id="anime-torrent-term"
+                   form="anime-torrent-form"
+                   name="term"
+                   placeholder="Optional: comma-separated term override (defaults to saved terms / title)"
+                   autocomplete="off" />
+            <p class="meta">Leave blank to use saved terms (or the anime title when none are saved).</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="anime-torrent-results"
+         hx-get="{{ url_for('web_anime_torrent_search', anime_id=anime.id) }}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <p style="color: var(--text-faint); font-size: 13px">
+        Loading suggested releases…
+      </p>
+    </div>
+  </section>
+
+  {% include "partials/anime_episode_player.html" %}
+
+  <section class="detail__section">
+    <div class="detail__section-title">
+      <h3>Downloaded episodes</h3>
+      <span class="meta">
+        {% if anime_torrents %}{{ anime_torrents|length }} torrent{{ '' if anime_torrents|length == 1 else 's' }}{% else %}Nothing downloaded yet{% endif %}
+      </span>
+    </div>
+
+    {% if anime_torrents %}
+      <div class="table-wrap">
+      <table class="table table--anime-downloads">
+        <colgroup>
+          <col class="col--release" />
+          <col class="col--size" />
+          <col class="col--progress" />
+          <col class="col--state" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="truncate">Release</th>
+            <th class="num">Size</th>
+            <th class="num">Progress</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in anime_torrents %}
+            {% set pct = ((row.progress or 0) * 100)|round(1) if row.progress is not none else None %}
+            <tr>
+              <td class="truncate" title="{{ row.name }}">
+                {{ row.name or row.hash or '—' }}
+                {% if row.path %}<div style="font-size:11px; color: var(--text-faint)">{{ row.path }}</div>{% endif %}
+              </td>
+              <td class="num">{{ row.size_human or '—' }}</td>
+              <td class="num" style="min-width: 120px">
+                {% if pct is not none %}
+                  <div class="progress" aria-label="Download progress">
+                    <div class="progress__bar" style="width: {{ pct }}%"></div>
+                  </div>
+                  <span style="font-size: 11px; color: var(--text-muted)">{{ pct }}%</span>
+                {% else %}—{% endif %}
+              </td>
+              <td>
+                {% set state = (row.state or 'SAVED')|upper %}
+                {% if state == 'COMPLETE' %}
+                  <span class="badge badge--good">{{ state }}</span>
+                {% elif state == 'DOWNLOADING' %}
+                  <span class="badge badge--accent">{{ state }}</span>
+                {% else %}
+                  <span class="badge">{{ state }}</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <p style="color: var(--text-faint); font-size: 13px">
+        Nothing downloaded yet — pick a release from the torrent search above to start.
+      </p>
+    {% endif %}
+  </section>
+
+  {% if relations %}
+    <section class="detail__section">
+      <div class="detail__section-title">
+        <h3>Related</h3>
+        <span class="meta">{{ relations|length }} entries</span>
+      </div>
+      <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Relation</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rel in relations %}
+            <tr>
+              <td>{{ rel.title or rel.name or '—' }}</td>
+              <td><span class="badge">{{ rel.type or 'related' }}</span></td>
+              <td class="num">
+                {% if rel.id %}
+                  <a class="btn btn--ghost" href="{{ url_for('web_anime_detail', anime_id=rel.id) }}">Open</a>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </section>
+  {% endif %}
+
+  {% if trailer_embed %}
+    <div id="trailer-modal"
+         class="modal"
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="trailer-modal-title"
+         hidden>
+      <div class="modal__backdrop" data-trailer-close></div>
+      <div class="modal__dialog" role="document">
+        <header class="modal__header">
+          <h2 id="trailer-modal-title" class="modal__title">{{ anime.title }} — trailer</h2>
+          <button class="modal__close"
+                  type="button"
+                  aria-label="Close trailer"
+                  data-trailer-close>×</button>
+        </header>
+        <div class="modal__body">
+          <div class="modal__video">
+            <iframe
+              data-trailer-frame
+              title="{{ anime.title }} trailer"
+              src="about:blank"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowfullscreen
+              referrerpolicy="strict-origin-when-cross-origin"
+              loading="lazy"></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

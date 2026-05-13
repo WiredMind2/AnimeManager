@@ -23,7 +23,7 @@ from .base_file_manager_tests import (BaseFileManagerTestBase,
                                       FileManagerPerformanceTestBase)
 
 try:
-    from file_managers.local_disk import LocalFileManager
+    from adapters.file.local_disk import LocalFileManager
 
     LOCAL_DISK_AVAILABLE = True
 except ImportError:
@@ -47,14 +47,14 @@ class TestLocalDiskFileManager(BaseFileManagerTestBase, unittest.TestCase):
 
         # Mock tkinter.filedialog.askdirectory to avoid displaying folder selection window
         askdirectory_patch = patch(
-            "file_managers.local_disk.askdirectory",
+            "adapters.file.local_disk.askdirectory",
             return_value=os.path.join("C:", "fake", "path"),
         )
         self.mock_askdirectory = askdirectory_patch.start()
         self.mock_patches.append(askdirectory_patch)
 
         # Mock persist_manager_settings to prevent overwriting actual settings
-        persist_patch = patch("general_utils.persist_manager_settings")
+        persist_patch = patch("shared.utils.general.persist_manager_settings")
         self.mock_persist = persist_patch.start()
         self.mock_patches.append(persist_patch)
 
@@ -213,24 +213,24 @@ class TestLocalDiskPerformance(FileManagerPerformanceTestBase, unittest.TestCase
         self.mock_patches = []
 
         # Mock logger
-        logger_patch = patch("logger.Logger.__init__", return_value=None)
+        logger_patch = patch("shared.telemetry.logger.Logger.__init__", return_value=None)
         self.mock_logger = logger_patch.start()
         self.mock_patches.append(logger_patch)
 
-        log_patch = patch("logger.log")
+        log_patch = patch("shared.telemetry.logger.log")
         self.mock_log = log_patch.start()
         self.mock_patches.append(log_patch)
 
         # Mock tkinter.filedialog.askdirectory to avoid displaying folder selection window
         askdirectory_patch = patch(
-            "file_managers.local_disk.askdirectory",
+            "adapters.file.local_disk.askdirectory",
             return_value=os.path.join("C:", "fake", "path"),
         )
         self.mock_askdirectory = askdirectory_patch.start()
         self.mock_patches.append(askdirectory_patch)
 
         # Mock persist_manager_settings to prevent overwriting actual settings
-        persist_patch = patch("general_utils.persist_manager_settings")
+        persist_patch = patch("shared.utils.general.persist_manager_settings")
         self.mock_persist = persist_patch.start()
         self.mock_patches.append(persist_patch)
 
@@ -317,20 +317,20 @@ class TestLocalDiskEdgeCases(unittest.TestCase):
         self.mock_patches = []
 
         # Mock logger
-        logger_patch = patch("logger.Logger.__init__", return_value=None)
+        logger_patch = patch("shared.telemetry.logger.Logger.__init__", return_value=None)
         self.mock_logger = logger_patch.start()
         self.mock_patches.append(logger_patch)
 
         # Mock tkinter.filedialog.askdirectory to avoid displaying folder selection window
         askdirectory_patch = patch(
-            "file_managers.local_disk.askdirectory",
+            "adapters.file.local_disk.askdirectory",
             return_value=os.path.join("C:", "fake", "path"),
         )
         self.mock_askdirectory = askdirectory_patch.start()
         self.mock_patches.append(askdirectory_patch)
 
         # Mock persist_manager_settings to prevent overwriting actual settings
-        persist_patch = patch("general_utils.persist_manager_settings")
+        persist_patch = patch("shared.utils.general.persist_manager_settings")
         self.mock_persist = persist_patch.start()
         self.mock_patches.append(persist_patch)
 

@@ -2,7 +2,7 @@ import types
 
 import pytest
 
-from animeAPI import AnilistCo, JikanMoe, KitsuIo, MyAnimeListNet
+from adapters.api import AnilistCo, JikanMoe, KitsuIo, MyAnimeListNet
 
 
 def _setup_dummy_db(monkeypatch):
@@ -33,8 +33,11 @@ def _setup_dummy_db(monkeypatch):
         def sql(self, *args, **kwargs):
             return []
 
+        def procedure(self, name, *args):
+            return (name, *args), []
+
     monkeypatch.setattr(
-        "animeAPI.APIUtils.APIUtils.getDatabase", lambda self: DummyDB()
+        "adapters.api.APIUtils.APIUtils.getDatabase", lambda self: DummyDB()
     )
 
 

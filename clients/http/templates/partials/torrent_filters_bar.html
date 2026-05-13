@@ -1,0 +1,83 @@
+{# Shared filter chip bar for the torrent search tables.
+
+   Each `<select>` is populated dynamically by `wireTorrentFilters`
+   in app.js as rows arrive (SSE) or are present at render time
+   (full-page /ui/torrents). Selected values form an AND filter
+   applied via `data-filter-hidden` on each `<tr>`.
+
+   The bar is visible from the start so the feature is discoverable;
+   selects that have no values yet keep their single "All" option and
+   the "filtered" counter stays at 0. #}
+<div class="torrent-filters" data-torrent-filters role="region" aria-label="Filter torrent results">
+  <span class="torrent-filters__title">Filter:</span>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Publisher</span>
+    <select data-torrent-filter="pub" class="torrent-filters__select" aria-label="Filter by publisher">
+      <option value="">All publishers</option>
+    </select>
+  </label>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Quality</span>
+    <select data-torrent-filter="res" class="torrent-filters__select" aria-label="Filter by resolution">
+      <option value="">All qualities</option>
+    </select>
+  </label>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Codec</span>
+    <select data-torrent-filter="codec" class="torrent-filters__select" aria-label="Filter by codec">
+      <option value="">All codecs</option>
+    </select>
+  </label>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Source</span>
+    <select data-torrent-filter="source" class="torrent-filters__select" aria-label="Filter by source">
+      <option value="">All sources</option>
+    </select>
+  </label>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Provider</span>
+    <select data-torrent-filter="provider" class="torrent-filters__select" aria-label="Filter by provider">
+      <option value="">All providers</option>
+    </select>
+  </label>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Season</span>
+    <select data-torrent-filter="season" class="torrent-filters__select" aria-label="Filter by season">
+      <option value="">All seasons</option>
+    </select>
+  </label>
+  {# Episode range filter -- two compact <input type="number"> boxes.
+     A row matches when its [data-ep-start, data-ep-end] interval
+     overlaps the [min, max] selection. Either bound is optional.
+     Setting min=max behaves like an "episode equals" filter; batches
+     match any range because their bounds are [1, 99999]. #}
+  <div class="torrent-filters__field torrent-filters__field--range"
+       data-torrent-filter-range-group="episode"
+       role="group" aria-label="Filter by episode number">
+    <span class="torrent-filters__label">Episode</span>
+    <div class="torrent-filters__range">
+      <input type="number" min="0" inputmode="numeric"
+             class="torrent-filters__input"
+             data-torrent-filter-range="episode"
+             data-range-bound="min"
+             placeholder="Min" aria-label="Minimum episode" />
+      <span class="torrent-filters__range-sep" aria-hidden="true">–</span>
+      <input type="number" min="0" inputmode="numeric"
+             class="torrent-filters__input"
+             data-torrent-filter-range="episode"
+             data-range-bound="max"
+             placeholder="Max" aria-label="Maximum episode" />
+    </div>
+  </div>
+  <label class="torrent-filters__field">
+    <span class="torrent-filters__label">Type</span>
+    <select data-torrent-filter="episode-kind" class="torrent-filters__select" aria-label="Filter by release type">
+      <option value="">Any type</option>
+      <option value="single">Single episode</option>
+      <option value="range">Batch / range</option>
+      <option value="none">Unknown</option>
+    </select>
+  </label>
+  <button type="button" class="btn btn--ghost btn--small torrent-filters__reset"
+          data-torrent-filter-reset>Reset</button>
+</div>

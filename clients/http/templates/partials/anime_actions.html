@@ -1,0 +1,73 @@
+<div id="anime-actions" class="detail__actions">
+  <form
+    method="post"
+    action="{{ url_for('web_action_like', anime_id=anime.id) }}"
+    hx-post="{{ url_for('web_action_like', anime_id=anime.id) }}"
+    hx-target="#anime-actions"
+    hx-swap="outerHTML"
+    style="display:inline"
+  >
+    <input
+      type="hidden"
+      name="liked"
+      value="{{ 'false' if (user_state and user_state.liked) else 'true' }}"
+    />
+    <button
+      class="btn {% if user_state and user_state.liked %}btn--danger{% endif %}"
+      type="submit"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="{% if user_state and user_state.liked %}currentColor{% else %}none{% endif %}"
+        stroke="currentColor"
+      >
+        <path d="M12 21s-7-4.5-9.5-9A5.5 5.5 0 0 1 12 6a5.5 5.5 0 0 1 9.5 6c-2.5 4.5-9.5 9-9.5 9z" />
+      </svg>
+      {% if user_state and user_state.liked %}Unlike{% else %}Like{% endif %}
+    </button>
+  </form>
+
+  <form
+    method="post"
+    action="{{ url_for('web_action_tag', anime_id=anime.id) }}"
+    hx-post="{{ url_for('web_action_tag', anime_id=anime.id) }}"
+    hx-target="#anime-actions"
+    hx-swap="outerHTML"
+    hx-trigger="change from:select, submit"
+    style="display:inline-flex; gap: var(--sp-2); align-items: center"
+  >
+    <select
+      class="input"
+      name="tag"
+      style="height: 36px; padding: 0 var(--sp-3); width: auto"
+    >
+      {% for tag in ['NONE','WATCHING','WATCHLIST','SEEN'] %}
+        <option
+          value="{{ tag }}"
+          {% if user_state and (user_state.tag or 'NONE')|upper == tag %}selected{% endif %}
+        >
+          {{ tag|capitalize }}
+        </option>
+      {% endfor %}
+    </select>
+    <noscript><button class="btn" type="submit">Save</button></noscript>
+  </form>
+
+  {% if anime.trailer %}
+    {% set _trailer_embed = anime.trailer|youtube_embed %}
+    {% if _trailer_embed %}
+      <button class="btn"
+              type="button"
+              data-trailer-open
+              data-trailer-src="{{ _trailer_embed }}"
+              aria-haspopup="dialog"
+              aria-controls="trailer-modal">
+        Watch trailer
+      </button>
+    {% else %}
+      <a class="btn" href="{{ anime.trailer }}" target="_blank" rel="noreferrer">
+        Watch trailer
+      </a>
+    {% endif %}
+  {% endif %}
+</div>

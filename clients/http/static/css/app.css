@@ -1,0 +1,3476 @@
+/* AnimeManager Web UI — design tokens + components.
+ * Single-file CSS, no preprocessor required.
+ * Tokens follow web-design skill guidance: neutral foundation + one accent,
+ * 4px spacing scale, intentional radii, restrained motion.
+ */
+
+:root {
+  /* Tells the UA to render native form controls (select dropdown,
+     scrollbars, date pickers, ...) in a dark variant so they match
+     the rest of the app. Without this, Chrome on Windows opens
+     <select> dropdowns with a white background. */
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg: #0e0f11;
+  --surface: #16181c;
+  --surface-2: #1c1f24;
+  --surface-3: #23272e;
+  --surface-hover: #2a2f37;
+
+  /* Borders */
+  --border: #23272e;
+  --border-strong: #353a44;
+
+  /* Text */
+  --text: #eceef1;
+  --text-muted: #9ca3af;
+  --text-faint: #6b7280;
+  --text-on-accent: #061319;
+
+  /* Semantic */
+  --accent: #56d8ef;
+  --accent-hover: #7be3f2;
+  --accent-soft: rgba(86, 216, 239, 0.12);
+  --success: #98e22b;
+  --warning: #e79622;
+  --danger: #f92472;
+  --info: #56d8ef;
+
+  /* Tag palette (matches settings.json UI.tagcolors) */
+  --tag-none: #f0f0ff;
+  --tag-seen: #98e22b;
+  --tag-watching: #e79622;
+  --tag-watchlist: #56d8ef;
+
+  /* Spacing scale (4px) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* Radii */
+  --r-1: 6px;
+  --r-2: 10px;
+  --r-3: 14px;
+  --r-4: 20px;
+  --r-full: 999px;
+
+  /* Type */
+  --font-body: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Instrument Serif", "Iowan Old Style", "Apple Garamond",
+    Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  /* Elevation */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 1px rgba(0, 0, 0, 0.2);
+  --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 12px 36px rgba(0, 0, 0, 0.45);
+
+  /* Layout */
+  --rail-w: 248px;
+  --topbar-h: 64px;
+  --content-max: 1480px;
+
+  /* Mobile drawer/menu */
+  --rail-z: 60;
+  --backdrop-z: 55;
+
+  /* iOS / Android display cutouts. Combined with viewport-fit=cover
+   * (set in base.html), these env() values report the inset that the
+   * notch / dynamic island / home indicator / rounded corners take
+   * out of the viewport. On every other platform they evaluate to 0
+   * so the desktop layout is unaffected. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* Tablet & smaller — slimmer rail, less padding. */
+@media (max-width: 1100px) {
+  :root {
+    --content-max: 100%;
+  }
+}
+
+/* Mobile — collapse the rail entirely; use a slide-out drawer instead. */
+@media (max-width: 720px) {
+  :root {
+    --topbar-h: 56px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+h1 {
+  /* Scales fluidly from 26px on small phones to 48px on desktop and
+   * shrinks the floor enough that long titles never blow out the
+   * viewport on a 360px screen. */
+  font-size: clamp(1.625rem, 4.5vw, 3rem);
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+h2 {
+  font-size: clamp(1.25rem, 3.2vw, 1.75rem);
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+h3 {
+  font-size: clamp(1.05rem, 2.4vw, 1.3rem);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+h4 {
+  font-size: 1.05rem;
+  font-family: var(--font-body);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+p {
+  margin: 0;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Layout shell
+ * -------------------------------------------------------------------------- */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, #0c0d0f 0%, #0e0f11 60%);
+  /* Honor the notch / home indicator on iOS — these env() values are
+   * 0px everywhere else so desktop padding is unchanged. */
+  padding: calc(var(--sp-6) + var(--safe-top)) var(--sp-4)
+    calc(var(--sp-6) + var(--safe-bottom))
+    calc(var(--sp-4) + var(--safe-left));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+/* Backdrop shown only when the mobile drawer is open. */
+.rail-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: var(--backdrop-z);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.rail-backdrop.is-open {
+  display: block;
+}
+
+.rail__brand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.rail__brand-mark {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  line-height: 1;
+  color: var(--text);
+}
+
+.rail__brand-accent {
+  color: var(--accent);
+}
+
+.rail__brand-tag {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-left: auto;
+}
+
+.rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail__group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--text-faint);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.rail__link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-1);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.rail__link:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.rail__link.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rail__link svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  stroke-width: 1.75;
+}
+
+.rail__footer {
+  margin-top: auto;
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-4);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  /* Grow the topbar so its blurred background covers the notch area
+   * while the interactive row stays at its original height. Using
+   * `min-height` plus a top padding keeps existing layouts (which
+   * relied on the visual row being --topbar-h tall) intact when the
+   * inset is 0. */
+  min-height: calc(var(--topbar-h) + var(--safe-top));
+  padding: var(--safe-top) calc(var(--sp-8) + var(--safe-right)) 0
+    calc(var(--sp-8) + var(--safe-left));
+  background: rgba(14, 15, 17, 0.85);
+  backdrop-filter: saturate(160%) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar__title {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  margin-right: var(--sp-4);
+  color: var(--text);
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Long titles (e.g. anime detail page) must crop with an ellipsis
+   * instead of pushing the search field off-screen. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Hamburger toggle — hidden on desktop, shown when the rail is hidden. */
+.topbar__menu-toggle {
+  display: none;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  flex: 0 0 auto;
+  padding: 0;
+  margin-right: 4px;
+}
+
+.topbar__menu-toggle:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.topbar__menu-toggle svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+
+.topbar__search {
+  position: relative;
+  flex: 1 1 auto;
+  max-width: 520px;
+}
+
+.topbar__search input {
+  width: 100%;
+  height: 38px;
+  padding: 0 var(--sp-3) 0 36px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.topbar__search input::placeholder {
+  color: var(--text-faint);
+}
+
+.topbar__search input:focus {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+
+.topbar__search svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--text-faint);
+}
+
+.topbar__spacer {
+  flex: 1 1 0;
+}
+
+.topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.content {
+  /* Desktop layout is unchanged when the safe-area insets are 0; on
+   * iPhones in landscape the camera bar pushes the inset right/left
+   * and the home indicator pushes the bottom inset, so we widen the
+   * outer padding to keep content out from under the cutouts. */
+  padding: var(--sp-8) calc(var(--sp-8) + var(--safe-right))
+    calc(var(--sp-12) + var(--safe-bottom))
+    calc(var(--sp-8) + var(--safe-left));
+  max-width: var(--content-max);
+  width: 100%;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Buttons & chips
+ * -------------------------------------------------------------------------- */
+.btn {
+  --btn-bg: var(--surface-2);
+  --btn-fg: var(--text);
+  --btn-border: var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 var(--sp-4);
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border: 1px solid var(--btn-border);
+  border-radius: var(--r-1);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease,
+    color 120ms ease, transform 80ms ease;
+  text-decoration: none;
+}
+
+.btn:hover {
+  --btn-bg: var(--surface-3);
+  --btn-border: var(--border-strong);
+  color: var(--text);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn--small {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  font-size: 12px;
+  gap: 4px;
+}
+
+.btn--primary {
+  --btn-bg: var(--accent);
+  --btn-fg: var(--text-on-accent);
+  --btn-border: var(--accent);
+  font-weight: 600;
+}
+
+.btn--primary:hover {
+  --btn-bg: var(--accent-hover);
+  --btn-border: var(--accent-hover);
+  color: var(--text-on-accent);
+}
+
+.btn--ghost {
+  --btn-bg: transparent;
+}
+
+.btn--danger {
+  --btn-fg: var(--danger);
+}
+
+.btn--icon {
+  width: 36px;
+  padding: 0;
+}
+
+.btn[disabled],
+.btn[aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.chip.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.8;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Page headers
+ * -------------------------------------------------------------------------- */
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-8);
+}
+
+.page-head__title {
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  line-height: 1;
+  color: var(--text);
+}
+
+.page-head__subtitle {
+  margin-top: var(--sp-2);
+  font-size: 14px;
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+.page-head__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.page-head__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Anime card grid
+ * -------------------------------------------------------------------------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--sp-6) var(--sp-5);
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  text-decoration: none;
+  color: inherit;
+  isolation: isolate;
+}
+
+.card__poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--r-2);
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  transition: transform 200ms ease, border-color 160ms ease,
+    box-shadow 200ms ease;
+}
+
+.card:hover .card__poster {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2);
+}
+
+.card__poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.card__poster-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-family: var(--font-display);
+  font-size: 2rem;
+  color: var(--text-faint);
+  padding: var(--sp-4);
+  text-align: center;
+  line-height: 1.1;
+}
+
+.card__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: var(--sp-3);
+  background: linear-gradient(
+    180deg,
+    transparent 40%,
+    rgba(0, 0, 0, 0.75) 100%
+  );
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.card:hover .card__overlay {
+  opacity: 1;
+}
+
+.card__status {
+  position: absolute;
+  top: var(--sp-3);
+  left: var(--sp-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: rgba(14, 15, 17, 0.78);
+  backdrop-filter: blur(6px);
+  border-radius: var(--r-full);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.card__status .chip__dot {
+  width: 5px;
+  height: 5px;
+}
+
+.card__like {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(14, 15, 17, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.card__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.card__meta span + span::before {
+  content: "·";
+  margin-right: var(--sp-2);
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+/* Tag color hints (left border accent) */
+.card__title[data-tag="SEEN"] {
+  color: var(--tag-seen);
+}
+.card__title[data-tag="WATCHING"] {
+  color: var(--tag-watching);
+}
+.card__title[data-tag="WATCHLIST"] {
+  color: var(--tag-watchlist);
+}
+
+/* Status dots */
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.dot.dot--airing {
+  background: var(--warning);
+}
+.dot.dot--finished {
+  background: var(--success);
+}
+.dot.dot--upcoming {
+  background: var(--accent);
+}
+.dot.dot--unknown {
+  background: var(--danger);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Pagination
+ * -------------------------------------------------------------------------- */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--sp-10);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pager__actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Detail page
+ * -------------------------------------------------------------------------- */
+.detail {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: var(--sp-10);
+  margin-bottom: var(--sp-10);
+}
+
+@media (max-width: 800px) {
+  .detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.detail__poster {
+  border-radius: var(--r-3);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  aspect-ratio: 2 / 3;
+  box-shadow: var(--shadow-2);
+}
+
+.detail__poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.detail__eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.detail__title {
+  font-family: var(--font-display);
+  font-size: clamp(2.25rem, 4vw, 3.5rem);
+  line-height: 1;
+  color: var(--text);
+}
+
+.detail__synonyms {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.detail__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.detail__synopsis {
+  margin-top: var(--sp-6);
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--text);
+  max-width: 70ch;
+}
+
+.detail__actions {
+  margin-top: var(--sp-6);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.detail__section {
+  margin-top: var(--sp-10);
+}
+
+.detail__section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+
+.detail__section-title h3 {
+  color: var(--text);
+}
+
+.detail__section-title .meta {
+  font-size: 12px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.player-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+
+.player-panel__video-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  overflow: hidden;
+  background: #000;
+}
+
+.player-panel__video {
+  width: 100%;
+  max-height: 70vh;
+  background: #000;
+}
+
+.player-panel__status {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 12px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.player-panel__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.player-panel__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.player-panel__controls .label {
+  min-width: 180px;
+}
+
+.player-panel__select {
+  margin-top: var(--sp-1);
+}
+
+.watch-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.watch-view__panel {
+  margin-bottom: 0;
+}
+
+.watch-view__video-wrap {
+  min-height: 68vh;
+}
+
+.watch-view__controller {
+  display: block;
+  position: relative;
+  width: 100%;
+  min-height: 68vh;
+  background: #000;
+}
+
+.watch-view__video {
+  width: 100%;
+  min-height: 68vh;
+  max-height: 80vh;
+}
+
+.watch-view__controller:fullscreen,
+.watch-view__controller:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+}
+
+.watch-view__controller:fullscreen .watch-view__video,
+.watch-view__controller:-webkit-full-screen .watch-view__video,
+.watch-view__video:fullscreen,
+.watch-view__video:-webkit-full-screen {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  max-height: none;
+  object-fit: contain;
+  background: #000;
+}
+
+/*
+ * Shaka Player soft subtitles (WebVTT): mimic VLC-style legibility — strong
+ * outline + soft shadow instead of Shaka’s default boxed caption background.
+ * Scoped to the watch page so Shaka is never styled globally elsewhere.
+ */
+.watch-view__controller .shaka-text-container {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  padding: 0 2.5% calc(4% + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+}
+
+.watch-view__controller .shaka-text-container > div {
+  font-size: clamp(0.92rem, 2.65vmin, 1.75rem) !important;
+  line-height: 1.38 !important;
+  max-width: 96%;
+}
+
+.watch-view__controller .libassjs-canvas-parent {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.watch-view__controller .libassjs-canvas-parent canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.watch-view__controller
+  .shaka-text-container
+  span:not(.shaka-text-region):not(.shaka-text-wrapper) {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.015em;
+  /* Drop Shaka’s default “caption box” for plain cues; outline reads on any scene. */
+  background-color: transparent !important;
+  border-radius: 0.12em;
+  /* Multi-layer stroke + glow (VLC-like) without ASS support in the browser. */
+  text-shadow:
+    -1px -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 1px 0 #000,
+    1px 1px 0 #000,
+    -2px 0 0 #000,
+    2px 0 0 #000,
+    0 -2px 0 #000,
+    0 2px 0 #000,
+    0 0 4px rgba(0, 0, 0, 0.95),
+    0 0 14px rgba(0, 0, 0, 0.75),
+    0 2px 6px rgba(0, 0, 0, 0.9) !important;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Forms (search terms, settings, etc.)
+ * -------------------------------------------------------------------------- */
+.input,
+.textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.input:focus,
+.textarea:focus {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 360px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.form-row > .input {
+  flex: 1 1 auto;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+
+.label {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Tables / rows (torrents, downloads)
+ * -------------------------------------------------------------------------- */
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13.5px;
+}
+
+.table thead th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.table tbody td {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.table .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.table .truncate {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Torrent search tables: many narrow columns + one flexible Release
+ * column. We DROP `table-layout: fixed` so the Release column can
+ * absorb the remaining width while the numeric/metadata columns
+ * size to their content. The parent `.table-wrap--scroll` provides
+ * horizontal overflow so narrow viewports keep all columns
+ * accessible. */
+.table--torrents {
+  min-width: 1100px;
+}
+
+.table-wrap--scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table--torrents .col--release {
+  width: auto;
+  min-width: 320px;
+}
+
+.table--torrents .col--publisher { width: 140px; }
+.table--torrents .col--quality   { width: 76px; }
+.table--torrents .col--codec     { width: 86px; }
+.table--torrents .col--source    { width: 130px; }
+.table--torrents .col--season    { width: 52px; }
+.table--torrents .col--episode   { width: 70px; }
+.table--torrents .col--size      { width: 90px; }
+.table--torrents .col--seeds     { width: 78px; }
+.table--torrents .col--leech     { width: 76px; }
+.table--torrents .col--actions   { width: 120px; }
+
+.table--torrents tbody td.col--release {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.table--torrents tbody tr {
+  transition: background-color 120ms ease;
+}
+
+.table--torrents tbody tr:hover {
+  background: var(--surface-2);
+}
+
+@media (max-width: 720px) {
+  .table--torrents .col--publisher { width: 110px; }
+  .table--torrents .col--source    { width: 110px; }
+  .table--torrents .col--actions   { width: 96px; }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Torrent search: truncated release name + hover tooltip
+ * -------------------------------------------------------------------------- */
+.torrent-name {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  position: relative;
+}
+
+/* Pop the full release name in a floating tooltip when the row is
+ * hovered. The browser still gets the `title=` attribute as a
+ * fallback for slow connections / keyboard navigation. We use
+ * `tr:hover .torrent-name::after` so any cell in the row triggers
+ * the tooltip, not just the title column. */
+.torrent-name::after {
+  content: attr(data-full-name);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 12;
+  max-width: min(640px, 70vw);
+  padding: 8px 12px;
+  background: var(--surface-3, var(--surface-2));
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+  line-height: 1.4;
+  font-weight: 400;
+  letter-spacing: normal;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+tr:hover .torrent-name::after,
+.torrent-name:focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Suppress the native browser tooltip when the CSS one is active --
+ * we still ship `title=` so screen readers and keyboard users get
+ * the full name. */
+.torrent-name[title] {
+  cursor: help;
+}
+
+/* Publisher cell. Rendered as a <button> so users can click to filter,
+ * but kept visually unobtrusive (no default button chrome). */
+.torrent-meta__pub {
+  display: inline-block;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.torrent-meta__pub:hover,
+.torrent-meta__pub:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+}
+
+.torrent-meta__empty {
+  color: var(--text-faint);
+}
+
+/* Pill / chip used for resolution / codec / source / season etc.
+ * Rendered as a <button> so it's clickable, but styled to look like
+ * a small badge. */
+.torrent-meta__pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.torrent-meta__pill:hover,
+.torrent-meta__pill:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  outline: none;
+}
+
+.torrent-meta__pill + .torrent-meta__pill {
+  margin-left: 4px;
+}
+
+.torrent-meta__pill--muted {
+  color: var(--text-faint);
+}
+
+.torrent-meta__pill--ep {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Sortable column headers (`<table data-sortable>`)
+ * -------------------------------------------------------------------------- */
+.table th.is-sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 22px;
+}
+
+.table th.is-sortable:hover {
+  color: var(--text);
+}
+
+.table th.is-sortable::after {
+  /* Inactive: two faint chevrons hinting "this column is sortable". */
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 8px;
+  height: 12px;
+  transform: translateY(-50%);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(-45deg, transparent 50%, currentColor 50%);
+  background-position: top center, bottom center;
+  background-size: 8px 5px, 8px 5px;
+  background-repeat: no-repeat;
+  opacity: 0.25;
+  transition: opacity 120ms ease;
+}
+
+.table th.is-sortable:hover::after {
+  opacity: 0.55;
+}
+
+.table th.is-sorted::after {
+  /* Active: render only the relevant chevron. */
+  opacity: 1;
+  color: var(--accent);
+}
+
+.table th.is-sorted-asc::after {
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(-45deg, transparent 50%, currentColor 50%);
+  background-position: top center;
+  background-size: 8px 5px;
+}
+
+.table th.is-sorted-desc::after {
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(-45deg, transparent 50%, currentColor 50%);
+  background-position: bottom center;
+  background-size: 8px 5px;
+}
+
+.table th.is-sortable:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+  color: var(--text);
+}
+
+.torrent-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.torrent-filters[hidden] {
+  display: none;
+}
+
+.torrent-filters__title {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  align-self: center;
+  padding-bottom: 2px;
+}
+
+.torrent-filters__reset {
+  align-self: flex-end;
+  margin-bottom: 1px;
+}
+
+.torrent-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+}
+
+/* Range field: a single label sitting above a row of two number
+ * inputs separated by an en-dash. */
+.torrent-filters__field--range {
+  min-width: 170px;
+}
+
+.torrent-filters__range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.torrent-filters__range-sep {
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.torrent-filters__input {
+  width: 70px;
+  padding: 6px 8px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 13px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.torrent-filters__input::-webkit-outer-spin-button,
+.torrent-filters__input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.torrent-filters__input:focus {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.torrent-filters__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.torrent-filters__select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  padding: 6px 28px 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    right 12px top 50%,
+    right 8px top 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.torrent-filters__select:focus {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+/* Native <option> elements ignore most of the parent <select>'s styles.
+   Setting an explicit dark background + light text here keeps the
+   open dropdown panel on-theme even in browsers that do not fully
+   honor `color-scheme: dark` for popups (notably Chromium on Windows). */
+.torrent-filters__select option {
+  background-color: var(--surface-2);
+  color: var(--text);
+}
+
+@media (max-width: 720px) {
+  .torrent-filters {
+    padding: var(--sp-3);
+  }
+  .torrent-filters__field {
+    min-width: 0;
+    flex: 1 1 calc(50% - var(--sp-3));
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.badge--good {
+  color: var(--success);
+  border-color: rgba(152, 226, 43, 0.25);
+  background: rgba(152, 226, 43, 0.08);
+}
+
+.badge--warn {
+  color: var(--warning);
+  border-color: rgba(231, 150, 34, 0.25);
+  background: rgba(231, 150, 34, 0.08);
+}
+
+.badge--bad {
+  color: var(--danger);
+  border-color: rgba(249, 36, 114, 0.25);
+  background: rgba(249, 36, 114, 0.08);
+}
+
+.badge--accent {
+  color: var(--accent);
+  border-color: rgba(86, 216, 239, 0.25);
+  background: var(--accent-soft);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Progress + downloads
+ * -------------------------------------------------------------------------- */
+.progress {
+  width: 100%;
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: var(--r-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.progress__bar {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    rgba(86, 216, 239, 0.7) 100%
+  );
+  border-radius: var(--r-full);
+  transition: width 240ms ease;
+}
+
+.download-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  margin-bottom: var(--sp-3);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.download-card[data-bucket="seeding"] {
+  border-color: rgba(89, 217, 165, 0.35);
+}
+
+.download-card[data-bucket="completed"] {
+  opacity: 0.85;
+}
+
+.download-card[data-bucket="error"] {
+  border-color: rgba(249, 36, 114, 0.55);
+}
+
+.download-card__title {
+  font-weight: 500;
+  margin-bottom: var(--sp-2);
+}
+
+.download-card__subtitle {
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: var(--sp-1);
+  font-size: 13px;
+}
+
+.download-card__meta {
+  display: flex;
+  gap: var(--sp-4);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin-top: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.download-card__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-end;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Downloads page: per-bucket sections
+ * -------------------------------------------------------------------------- */
+.downloads-section {
+  margin-bottom: var(--sp-6);
+}
+
+.downloads-section[data-downloads-empty="1"] {
+  /* Empty sections still render so the user can see the bucket exists,
+   * but they're toned down so the eye lands on the populated ones. */
+  opacity: 0.65;
+}
+
+.downloads-section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+
+.downloads-section__title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.downloads-section__title .badge {
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.downloads-section__hint {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.downloads-section__empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+  padding: var(--sp-3) var(--sp-1) 0;
+}
+
+.badge--muted {
+  background: var(--surface-elevated, var(--surface));
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Empty / loading / error states
+ * -------------------------------------------------------------------------- */
+.state {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-2);
+  padding: var(--sp-12) var(--sp-6);
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.state__icon {
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  color: var(--text-faint);
+  margin-bottom: var(--sp-3);
+}
+
+.state__title {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  color: var(--text);
+  margin-bottom: var(--sp-2);
+}
+
+.state__hint {
+  font-size: 14px;
+  max-width: 48ch;
+  margin: 0 auto;
+}
+
+.flash {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-1);
+  font-size: 13px;
+  margin-bottom: var(--sp-4);
+  border: 1px solid var(--border);
+}
+
+.flash--success {
+  border-color: rgba(152, 226, 43, 0.25);
+  background: rgba(152, 226, 43, 0.06);
+  color: var(--success);
+}
+
+.flash--error {
+  border-color: rgba(249, 36, 114, 0.25);
+  background: rgba(249, 36, 114, 0.06);
+  color: var(--danger);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Settings page
+ * -------------------------------------------------------------------------- */
+.settings-toc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-width: 720px;
+  align-items: flex-end;
+}
+
+.settings-toc__actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.settings-toc__actions .chip {
+  cursor: pointer;
+  background: transparent;
+  border-color: var(--border-strong);
+}
+
+.settings-toc__actions .chip:hover {
+  background: var(--surface-2);
+}
+
+.settings-toc__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+.settings-toc__chip--tier-2 {
+  opacity: 0.85;
+}
+
+.settings-toc__chip--tier-3 {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.settings-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  overflow: hidden;
+  scroll-margin-top: calc(var(--topbar-h) + var(--sp-4));
+}
+
+.settings-section--tier-2 {
+  border-color: var(--border);
+}
+
+.settings-section--tier-3 {
+  border-color: var(--border);
+  opacity: 0.96;
+}
+
+.settings-section[open] {
+  box-shadow: var(--shadow-1);
+}
+
+.settings-section > .settings-section__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  background: linear-gradient(180deg, var(--surface-2) 0%, var(--surface) 100%);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.settings-section > .settings-section__head::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section > .settings-section__head::before {
+  content: "▸";
+  flex: 0 0 auto;
+  margin-top: 6px;
+  margin-right: var(--sp-3);
+  font-size: 14px;
+  color: var(--text-faint);
+  transition: transform 160ms ease;
+}
+
+.settings-section[open] > .settings-section__head::before {
+  transform: rotate(90deg);
+}
+
+.settings-section[open] > .settings-section__head {
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section__head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-section__head:hover {
+  background: var(--surface-3);
+}
+
+.settings-section__head-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-section__title {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  line-height: 1.15;
+  color: var(--text);
+}
+
+.settings-section__description {
+  margin-top: var(--sp-1);
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+.settings-section__path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-faint);
+  background: var(--surface-3);
+  padding: 2px 8px;
+  border-radius: var(--r-1);
+  white-space: nowrap;
+}
+
+.settings-section__body {
+  padding: var(--sp-5) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.settings-section--toggles .settings-section__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--sp-3);
+}
+
+.settings-group {
+  margin: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.settings-group--depth-1 {
+  background: var(--surface-2);
+}
+
+.settings-group--depth-2,
+.settings-group--depth-3 {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.settings-group--empty {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.settings-group__legend {
+  font-family: var(--font-body);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-faint);
+  padding: 0 var(--sp-2);
+}
+
+.settings-group__children {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+
+.settings-group--toggles > .settings-group__children {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-2);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.settings-field__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.settings-field__path,
+.settings-toggle__path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+
+.settings-field__hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.settings-list,
+.settings-json-inline {
+  min-height: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.settings-list {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.settings-json-inline {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.settings-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.settings-toggle:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.settings-toggle__input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  grid-row: 1 / span 2;
+}
+
+.settings-toggle__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.settings-toggle__path {
+  grid-column: 2;
+  font-size: 11px;
+}
+
+.settings-advanced {
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+}
+
+.settings-advanced__summary {
+  list-style: none;
+  cursor: pointer;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: 13px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.settings-advanced__summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-advanced__summary::before {
+  content: "▸";
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.settings-advanced[open] .settings-advanced__summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-advanced__summary code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.settings-advanced__body {
+  padding: 0 var(--sp-4) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.settings-advanced__body .textarea {
+  min-height: 160px;
+}
+
+.settings-advanced__current summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: var(--sp-2) 0;
+}
+
+.settings-advanced__pre {
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.settings-form__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  position: sticky;
+  /* Lift above the home indicator on iOS by adding the bottom inset
+   * to the sticky offset (0 on every other platform). */
+  bottom: calc(var(--sp-4) + var(--safe-bottom));
+  padding: var(--sp-3) var(--sp-4);
+  background: rgba(14, 15, 17, 0.92);
+  backdrop-filter: saturate(160%) blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  z-index: 5;
+}
+
+/* -- Color picker / color reference ---------------------------------- */
+.color-input {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.color-input__picker {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 44px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  background: var(--surface-2);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.color-input__picker::-webkit-color-swatch-wrapper {
+  padding: 2px;
+  border-radius: var(--r-1);
+}
+
+.color-input__picker::-webkit-color-swatch {
+  border: 0;
+  border-radius: 4px;
+}
+
+.color-input__picker::-moz-color-swatch {
+  border: 0;
+  border-radius: 4px;
+}
+
+.color-input__text {
+  flex: 0 1 140px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.color-ref {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.color-ref__swatch {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-1);
+  border: 1px solid var(--border-strong);
+  background-image:
+    linear-gradient(45deg, var(--surface-3) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--surface-3) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--surface-3) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--surface-3) 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  background-color: transparent;
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.18);
+}
+
+.color-ref__select {
+  flex: 1 1 auto;
+}
+
+/* -- Path field ------------------------------------------------------- */
+.path-input {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: stretch;
+}
+
+.path-input__text {
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.path-input__browse {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* -- File browser modal ---------------------------------------------- */
+.fb-modal {
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-3);
+}
+
+.fb-modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.fb-modal__inner {
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+
+.fb-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.fb-modal__title {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  color: var(--text);
+}
+
+.fb-modal__close {
+  background: transparent;
+  color: var(--text-faint);
+  border: 0;
+  font-size: 22px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-1);
+  cursor: pointer;
+}
+
+.fb-modal__close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.fb-modal__nav {
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.fb-modal__path {
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.fb-modal__content {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 240px;
+  background: var(--surface);
+}
+
+.fb-modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.fb-listing__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2) 0;
+}
+
+.fb-listing__list li {
+  padding: 0;
+}
+
+.fb-listing__error {
+  margin: var(--sp-3) var(--sp-5);
+}
+
+.fb-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-5);
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+
+.fb-entry:hover {
+  background: var(--surface-2);
+}
+
+.fb-entry__icon {
+  width: 18px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.fb-entry__name {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fb-entry__meta {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fb-entry--up {
+  color: var(--accent);
+}
+
+.fb-entry--file {
+  color: var(--text-muted);
+}
+
+.fb-entry--file.is-selected,
+.fb-entry--dir.is-selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .settings-section > .settings-section__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .settings-section__path {
+    align-self: flex-start;
+  }
+
+  .settings-toc {
+    align-items: flex-start;
+    max-width: none;
+    width: 100%;
+  }
+
+  .settings-toc__links {
+    justify-content: flex-start;
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Tag manager
+ * -------------------------------------------------------------------------- */
+.term-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.term {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.term__remove {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-faint);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.term__remove:hover {
+  background: var(--surface-3);
+  color: var(--danger);
+}
+
+/* -------------------------------------------------------------------------- *
+ * HTMX feedback
+ * -------------------------------------------------------------------------- */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Responsive
+ * -------------------------------------------------------------------------- */
+
+/* Tablet — collapse rail width a bit, tighten padding. */
+@media (max-width: 1100px) {
+  :root {
+    --rail-w: 220px;
+  }
+
+  .topbar {
+    padding: var(--safe-top) calc(var(--sp-6) + var(--safe-right)) 0
+      calc(var(--sp-6) + var(--safe-left));
+  }
+
+  .content {
+    padding: var(--sp-6) calc(var(--sp-6) + var(--safe-right))
+      calc(var(--sp-10) + var(--safe-bottom))
+      calc(var(--sp-6) + var(--safe-left));
+  }
+
+  .page-head__title {
+    font-size: clamp(1.75rem, 4.4vw, 2.4rem);
+  }
+}
+
+/* Mobile — hide the rail by default, expose a hamburger drawer. */
+@media (max-width: 860px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar__menu-toggle {
+    display: inline-flex;
+  }
+
+  /* Convert the sticky rail into an off-canvas drawer. */
+  .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100dvh;
+    height: 100vh;
+    width: min(280px, 82vw);
+    z-index: var(--rail-z);
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    box-shadow: var(--shadow-3);
+    transform: translateX(-100%);
+    transition: transform 220ms ease;
+    overflow-y: auto;
+    /* When the drawer slides in over the notch, push the brand link
+     * down by safe-top and respect left/bottom insets too. */
+    padding: calc(var(--sp-5) + var(--safe-top))
+      var(--sp-4)
+      calc(var(--sp-5) + var(--safe-bottom))
+      calc(var(--sp-4) + var(--safe-left));
+  }
+
+  .rail.is-open {
+    transform: translateX(0);
+  }
+
+  /* Lock background scroll while the drawer is open. */
+  body.menu-open {
+    overflow: hidden;
+  }
+
+  .content {
+    padding: var(--sp-5) calc(var(--sp-4) + var(--safe-right))
+      calc(var(--sp-10) + var(--safe-bottom))
+      calc(var(--sp-4) + var(--safe-left));
+  }
+
+  .topbar {
+    padding: var(--safe-top) calc(var(--sp-4) + var(--safe-right)) 0
+      calc(var(--sp-4) + var(--safe-left));
+    gap: var(--sp-3);
+  }
+
+  .topbar__title {
+    font-size: 1.05rem;
+    margin-right: var(--sp-2);
+    /* Title sits next to the burger and shares row 1 with the search
+     * field — shrink aggressively (down to ellipsis) before pushing
+     * the input off-screen. */
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 34vw;
+  }
+
+  /* Search input shares row 1 with the title; it expands to fill the
+   * remaining width once the title has hit its max. min-width: 0
+   * lets it shrink past its content size on very narrow phones. */
+  .topbar__search {
+    flex: 1 1 140px;
+    min-width: 100px;
+    max-width: none;
+  }
+
+  .topbar__search input {
+    height: 36px;
+  }
+
+  .topbar__spacer {
+    display: none;
+  }
+
+  /* Topbar wraps to a second row only when action buttons can't fit
+   * next to title+search on row 1 — natural flex-wrap, no forced
+   * second row. Pages without topbar actions therefore render a
+   * single-row topbar. */
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: calc(var(--topbar-h) + var(--safe-top));
+    padding-top: calc(var(--sp-2) + var(--safe-top));
+    padding-bottom: var(--sp-2);
+    row-gap: var(--sp-2);
+  }
+
+  /* Actions: don't shrink, so when they can't fit on row 1 they wrap
+   * cleanly to a new row aligned to the right edge of the topbar. */
+  .topbar__actions {
+    gap: var(--sp-1);
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+
+  /* Page head: stack title above meta on mobile. */
+  .page-head {
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-6);
+  }
+
+  .page-head__title {
+    /* Tighter floor so very long page titles don't get cropped by the
+     * viewport edge but still feel like a hero element. */
+    font-size: clamp(1.5rem, 7vw, 2rem);
+  }
+
+  .page-head__subtitle {
+    font-size: 13px;
+  }
+
+  /* Detail page: smaller poster column, scale the hero title down. */
+  .detail__title {
+    font-size: clamp(1.75rem, 7vw, 2.5rem);
+  }
+
+  .detail__synopsis {
+    font-size: 14.5px;
+  }
+
+  /* Cards: tighter grid on phones. */
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: var(--sp-4) var(--sp-3);
+  }
+
+  /* Tables: let them scroll horizontally inside a wrapper. */
+  .table {
+    font-size: 12.5px;
+  }
+
+  .table thead th,
+  .table tbody td {
+    padding: var(--sp-2) var(--sp-3);
+  }
+
+  /* On phones the torrent table's actions column dominates — drop the
+   * column widths and let it scroll horizontally if the user really
+   * wants the desktop layout. The card-style fallback below kicks in
+   * for the most common case. */
+  .table--torrents .col--size,
+  .table--torrents .col--seeds,
+  .table--torrents .col--leech {
+    width: auto;
+  }
+
+  /* Download-card layout: drop the side-by-side, stack vertically. */
+  .download-card {
+    grid-template-columns: 1fr;
+  }
+
+  .download-card__actions {
+    align-items: stretch !important;
+    flex-direction: row !important;
+    flex-wrap: wrap;
+  }
+
+  .download-card__meta {
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-3);
+  }
+
+  /* Settings: less padding, ensure two-line head + path stack nicely
+   * (the existing @720 rule already handles the head; tighten the
+   * body padding here so the cards don't overflow). */
+  .settings-section__body {
+    padding: var(--sp-4) var(--sp-4);
+  }
+
+  .settings-section > .settings-section__head {
+    padding: var(--sp-4) var(--sp-4);
+  }
+
+  .settings-section--toggles .settings-section__body,
+  .settings-group--toggles > .settings-group__children {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-form__actions {
+    flex-direction: column;
+    align-items: stretch;
+    bottom: calc(var(--sp-2) + var(--safe-bottom));
+  }
+
+  .settings-form__actions .btn {
+    width: 100%;
+  }
+
+  /* Flash messages need a bit of breathing room. */
+  .flash {
+    margin-bottom: var(--sp-3);
+  }
+
+  /* Pager stacks vertically below the grid on phones. */
+  .pager {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    text-align: center;
+  }
+
+  .pager__actions {
+    justify-content: space-between;
+  }
+
+  .pager__actions .btn {
+    flex: 1 1 0;
+  }
+
+  /* File browser modal full-width on small screens. */
+  .fb-modal {
+    width: 96vw;
+    max-height: 92dvh;
+    max-height: 92vh;
+  }
+}
+
+/* Very small phones — drop poster column above synopsis. */
+@media (max-width: 480px) {
+  .content {
+    padding: var(--sp-4) calc(var(--sp-3) + var(--safe-right))
+      calc(var(--sp-8) + var(--safe-bottom))
+      calc(var(--sp-3) + var(--safe-left));
+  }
+
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: var(--sp-3) var(--sp-2);
+  }
+
+  .card__title {
+    font-size: 12.5px;
+  }
+
+  .topbar {
+    /* Keep the safe-area inset and the wrap-mode top padding intact;
+     * only override the horizontal side padding here. */
+    padding-left: calc(var(--sp-3) + var(--safe-left));
+    padding-right: calc(var(--sp-3) + var(--safe-right));
+  }
+}
+
+/* Make every <table> horizontally scrollable when wrapped in
+ * `.table-wrap` (used to be inline scroll on .table — now opt-in via
+ * the partial wrapper for tables that can't restructure into cards). */
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--r-2);
+  /* Hint that the table can be scrolled. */
+  scrollbar-width: thin;
+}
+
+.table-wrap > .table {
+  min-width: 560px;
+}
+
+/* Anime detail page tables should keep all columns visible in the
+ * viewport while still giving the key text columns ("Episode" and
+ * "Release") extra room whenever the container is wide enough. */
+.table-wrap > .table--anime-episodes,
+.table-wrap > .table--anime-downloads {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.table--anime-episodes .col--episode-file { width: 34%; }
+.table--anime-episodes .col--season       { width: 10%; }
+.table--anime-episodes .col--episode      { width: 28%; }
+.table--anime-episodes .col--size         { width: 14%; }
+.table--anime-episodes .col--actions      { width: 14%; }
+
+.table--anime-downloads .col--release     { width: 56%; }
+.table--anime-downloads .col--size        { width: 12%; }
+.table--anime-downloads .col--progress    { width: 18%; }
+.table--anime-downloads .col--state       { width: 14%; }
+
+/* -------------------------------------------------------------------------- *
+ * Modal (trailer dialog, future overlays)
+ * -------------------------------------------------------------------------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-6);
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
+.modal__dialog {
+  position: relative;
+  width: min(960px, 100%);
+  max-height: calc(100vh - var(--sp-12));
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal__dialog--compact {
+  width: min(560px, 100%);
+}
+
+.modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.modal__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.modal__close {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.modal__close:hover {
+  color: var(--text);
+  background: var(--surface-3);
+  border-color: var(--border);
+}
+
+.modal__body {
+  padding: 0;
+  overflow: auto;
+  background: #000;
+}
+
+.modal__body--panel {
+  padding: var(--sp-4);
+  background: var(--surface);
+}
+
+.modal__video {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.modal__video iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Table pagination (`.table-pager`)
+ *
+ * Distinct from the older `.pager` (link-based, used on /library) — the
+ * `.table-pager` is a client-side, JS-driven control that lives in a
+ * `.table-pager-wrap` directly under a table and offers First / Prev /
+ * Next / Last navigation plus a "per page" selector. JS hides the bar
+ * (via the `hidden` attribute) when the result set is short enough to
+ * not warrant pagination.
+ * -------------------------------------------------------------------------- */
+.table-pager-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.table-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3) var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.table-pager[hidden] {
+  display: none;
+}
+
+.table-pager__info {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  letter-spacing: 0.01em;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.table-pager__controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.table-pager__page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  padding: 0 var(--sp-2);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.table-pager__btn {
+  height: 30px;
+  min-width: 36px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.table-pager__size {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  white-space: nowrap;
+}
+
+.table-pager__size-select {
+  width: auto;
+  height: 30px;
+  padding: 0 26px 0 8px;
+  font-size: 12.5px;
+}
+
+.table-pager__size-label {
+  color: var(--text-faint);
+}
+
+@media (max-width: 720px) {
+  .table-pager {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-2);
+    padding: var(--sp-2);
+  }
+  .table-pager__info {
+    text-align: center;
+  }
+  .table-pager__controls {
+    justify-content: center;
+  }
+  .table-pager__size {
+    justify-content: space-between;
+  }
+  /* Hide the verbose "Prev" / "Next" labels on narrow screens — the
+   * chevrons alone communicate the action and we save horizontal
+   * room for the page counter. */
+  .table-pager__btn-label {
+    display: none;
+  }
+  .table-pager__page {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Live log viewer (/ui/logs)
+ *
+ * Two-column layout: a sticky filter bar above the console, and a
+ * monospaced console with one row per record. Each row is a CSS grid
+ * row so the timestamp, level pill, logger name, and message stay
+ * column-aligned regardless of message length.
+ *
+ * The console uses ``contain: strict`` so the browser can skip layout
+ * work for off-screen rows when the buffer fills with thousands of
+ * entries.
+ * -------------------------------------------------------------------------- */
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.log-filters {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 0.6fr)
+    minmax(160px, 1fr)
+    minmax(220px, 1.4fr)
+    auto;
+  gap: var(--sp-3);
+  align-items: end;
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+}
+
+.log-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.log-filters__field--grow {
+  grid-column: span 1;
+}
+
+.log-filters__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.log-filters__select,
+.log-filters__input {
+  height: 36px;
+}
+
+.log-filters__actions {
+  display: inline-flex;
+  gap: var(--sp-2);
+  align-self: end;
+}
+
+.log-filters__toggle {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-right: var(--sp-3);
+  cursor: pointer;
+  user-select: none;
+}
+
+.log-filters__toggle input {
+  accent-color: var(--accent);
+}
+
+/* Category chip strip ------------------------------------------------- */
+.log-categories {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+}
+
+.log-categories__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.log-categories__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.log-categories__actions {
+  display: inline-flex;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+
+.log-cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  transition: color 100ms ease, background 100ms ease, border-color 100ms ease;
+  user-select: none;
+}
+
+.log-cat-chip:hover {
+  color: var(--text);
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.log-cat-chip.is-active {
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.log-cat-chip.is-active:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.log-cat-chip.is-muted {
+  opacity: 0.45;
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+
+.log-cat-chip.is-muted:hover {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.log-cat-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+.log-cat-chip.is-active .log-cat-chip__dot {
+  opacity: 1;
+}
+
+/* Color-code each category so the eye picks up category clusters even
+ * inside the dense console rows below. */
+.log-cat-chip--db_error,
+.log-cat-chip--db_update    { --cat: #f29ec1; }
+.log-cat-chip--disk_error   { --cat: #f08c54; }
+.log-cat-chip--main_state   { --cat: #b3a8ff; }
+.log-cat-chip--network,
+.log-cat-chip--network_data { --cat: #6cbef0; }
+.log-cat-chip--server,
+.log-cat-chip--http         { --cat: #56d8ef; }
+.log-cat-chip--settings     { --cat: #98e22b; }
+.log-cat-chip--time         { --cat: #ffce4f; }
+.log-cat-chip--thread       { --cat: #c590ff; }
+.log-cat-chip--download     { --cat: #e79622; }
+.log-cat-chip--search       { --cat: #5ee2c8; }
+.log-cat-chip--startup      { --cat: #a4d8ff; }
+.log-cat-chip--other        { --cat: #9ca3af; }
+
+.log-cat-chip .log-cat-chip__dot {
+  background: var(--cat, currentColor);
+}
+
+.log-console {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  overflow: hidden;
+  /* Pin to a generous height so the viewer scrolls internally instead
+   * of stretching the whole page — important when the buffer is full. */
+  height: clamp(420px, 70vh, 920px);
+  display: flex;
+  flex-direction: column;
+}
+
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  contain: strict;
+}
+
+.log-list:empty + .log-list__empty:not([hidden]) {
+  display: block;
+}
+
+.log-list__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  padding: var(--sp-6);
+}
+
+.log-list__empty[hidden] {
+  display: none;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns:
+    minmax(78px, 96px)   /* time */
+    72px                 /* level */
+    minmax(96px, 130px)  /* category */
+    minmax(120px, 220px) /* logger */
+    minmax(0, 1fr);      /* message */
+  gap: 0 var(--sp-3);
+  padding: 2px var(--sp-3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.log-row:hover {
+  background: var(--surface-2);
+}
+
+.log-row[data-log-flash] {
+  animation: log-row-flash 1s ease-out;
+}
+
+@keyframes log-row-flash {
+  0% { background: var(--accent-soft); }
+  100% { background: transparent; }
+}
+
+.log-row__ts {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-row__level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: var(--r-1);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.log-row__logger {
+  color: var(--accent);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  opacity: 0.85;
+}
+
+.log-row__category {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* Match the per-category accent used on the chip strip so a record's
+ * category is identifiable at a glance even while scrolling. */
+.log-row[data-log-category="DB_ERROR"]     .log-row__category,
+.log-row[data-log-category="DB_UPDATE"]    .log-row__category { color: #f29ec1; }
+.log-row[data-log-category="DISK_ERROR"]   .log-row__category { color: #f08c54; }
+.log-row[data-log-category="MAIN_STATE"]   .log-row__category { color: #b3a8ff; }
+.log-row[data-log-category="NETWORK"]      .log-row__category,
+.log-row[data-log-category="NETWORK_DATA"] .log-row__category { color: #6cbef0; }
+.log-row[data-log-category="SERVER"]       .log-row__category,
+.log-row[data-log-category="HTTP"]         .log-row__category { color: #56d8ef; }
+.log-row[data-log-category="SETTINGS"]     .log-row__category { color: #98e22b; }
+.log-row[data-log-category="TIME"]         .log-row__category { color: #ffce4f; }
+.log-row[data-log-category="THREAD"]       .log-row__category { color: #c590ff; }
+.log-row[data-log-category="DOWNLOAD"]     .log-row__category { color: #e79622; }
+.log-row[data-log-category="SEARCH"]       .log-row__category { color: #5ee2c8; }
+.log-row[data-log-category="STARTUP"]      .log-row__category { color: #a4d8ff; }
+
+.log-row__msg {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.log-row__exc {
+  grid-column: 4 / -1;
+  margin: 4px 0 6px;
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--danger);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* Level palette. Each row gets a tinted left-border so the eye picks
+ * up severity even when scrolling past at speed. */
+.log-row--debug    { color: var(--text-muted); }
+.log-row--debug    .log-row__level { background: rgba(86, 216, 239, 0.10); color: var(--text-muted); }
+
+.log-row--info     .log-row__level { background: rgba(86, 216, 239, 0.16); color: var(--info); }
+
+.log-row--warning  { box-shadow: inset 3px 0 0 var(--warning); }
+.log-row--warning  .log-row__level { background: rgba(231, 150, 34, 0.18); color: var(--warning); }
+
+.log-row--error    { box-shadow: inset 3px 0 0 var(--danger); }
+.log-row--error    .log-row__level { background: rgba(249, 36, 114, 0.18); color: var(--danger); }
+.log-row--error    .log-row__msg { color: #ffbed1; }
+
+.log-row--critical { box-shadow: inset 3px 0 0 var(--danger); background: rgba(249, 36, 114, 0.08); }
+.log-row--critical .log-row__level { background: var(--danger); color: white; }
+.log-row--critical .log-row__msg { color: #ffd1de; font-weight: 600; }
+
+/* Wrap-lines toggle: respect the user's preference for full message
+ * wrapping over the default single-line tail. */
+.log-console.is-wrap .log-row {
+  white-space: normal;
+}
+
+.log-console.is-wrap .log-row__logger {
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .log-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+  .log-filters__field--grow {
+    grid-column: 1 / -1;
+  }
+  .log-filters__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+  .log-filters__toggle {
+    grid-column: 1 / -1;
+  }
+  .log-row {
+    grid-template-columns:
+      minmax(64px, 80px)
+      56px
+      minmax(0, 1fr);
+    grid-template-areas:
+      "ts level category"
+      "logger logger logger"
+      "msg msg msg";
+    gap: 2px var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    white-space: normal;
+  }
+  .log-row__ts       { grid-area: ts; }
+  .log-row__level    { grid-area: level; }
+  .log-row__category { grid-area: category; text-align: right; }
+  .log-row__logger   { grid-area: logger; overflow: hidden; text-overflow: ellipsis; }
+  .log-row__msg      { grid-area: msg; }
+  .log-row__exc      { grid-column: 1 / -1; }
+
+  .log-categories {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .log-categories__actions {
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+}
+
+/* Multi-choice toggle grid (Settings → log categories). */
+.multi-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.multi-choice-grid__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 100ms ease, background 100ms ease, color 100ms ease;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+}
+
+.multi-choice-grid__item:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.multi-choice-grid__item.is-off {
+  opacity: 0.55;
+}
+
+.multi-choice-grid__item input {
+  accent-color: var(--accent);
+}
+
+.multi-choice-grid__item:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(86, 216, 239, 0.08);
+}

@@ -1,0 +1,45 @@
+<header class="topbar">
+  <button
+    type="button"
+    class="topbar__menu-toggle"
+    aria-label="Open navigation"
+    aria-expanded="false"
+    aria-controls="primary-rail"
+    data-menu-toggle
+  >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
+    </svg>
+  </button>
+  <span class="topbar__title">{% block topbar_title %}{{ page_title or "Library" }}{% endblock %}</span>
+  <form
+    action="{{ url_for('web_library') }}"
+    method="get"
+    class="topbar__search"
+    role="search"
+    data-debounce="350"
+  >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+    <input
+      type="search"
+      name="q"
+      value="{{ q or '' }}"
+      placeholder="Search anime by title…"
+      autocomplete="off"
+      aria-label="Search anime"
+    />
+    {% if filter %}<input type="hidden" name="filter" value="{{ filter }}" />{% endif %}
+  </form>
+  <span class="topbar__spacer"></span>
+  <div class="topbar__actions">
+    <span class="htmx-indicator" aria-hidden="true">
+      <span class="spinner"></span>
+    </span>
+    {% block topbar_actions %}{% endblock %}
+  </div>
+</header>

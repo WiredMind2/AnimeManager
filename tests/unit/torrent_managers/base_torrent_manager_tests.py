@@ -21,8 +21,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
-    from classes import Torrent
-    from torrent_managers.base import BaseTorrentManager, TorrentListFilter
+    from adapters.legacy.legacy_classes import Torrent
+    from adapters.torrent.base import BaseTorrentManager, TorrentListFilter
 except ImportError:
     # Create mocks if imports fail
     class BaseTorrentManager:
@@ -76,7 +76,7 @@ class BaseTorrentManagerTestBase(ABC):
         self.mock_patches = []
 
         # Mock GUI components
-        dialog_patch = patch("torrent_managers.base.LoginDialog")
+        dialog_patch = patch("adapters.torrent.base.LoginDialog")
         self.mock_login_dialog = dialog_patch.start()
         self.mock_patches.append(dialog_patch)
 
@@ -389,7 +389,7 @@ class TorrentManagerPerformanceTestBase(ABC):
         self.mock_patches = []
 
         # Mock external connections
-        dialog_patch = patch("torrent_managers.base.LoginDialog")
+        dialog_patch = patch("adapters.torrent.base.LoginDialog")
         self.mock_login_dialog = dialog_patch.start()
         self.mock_patches.append(dialog_patch)
 
@@ -485,12 +485,12 @@ class TorrentManagerIntegrationTestBase(ABC):
         self.mock_patches = []
 
         # Mock GUI components
-        dialog_patch = patch("torrent_managers.base.LoginDialog")
+        dialog_patch = patch("adapters.torrent.base.LoginDialog")
         self.mock_login_dialog = dialog_patch.start()
         self.mock_patches.append(dialog_patch)
 
         # Mock logging
-        log_patch = patch("logger.log")
+        log_patch = patch("shared.telemetry.logger.log")
         self.mock_log = log_patch.start()
         self.mock_patches.append(log_patch)
 

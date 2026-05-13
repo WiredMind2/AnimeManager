@@ -1,0 +1,68 @@
+{# Directory listing partial rendered inside the file-browser dialog.
+
+   The wrapping <div data-fb-listing> exposes the current absolute
+   path to the client-side JS via the data attribute, which keeps the
+   hidden path input in sync after every HTMX swap.
+#}
+<div
+  class="fb-listing"
+  data-fb-listing
+  data-fb-current-path="{{ current_path }}"
+>
+  {% if error %}
+    <p class="flash flash--error fb-listing__error">{{ error }}</p>
+  {% endif %}
+
+  <ul class="fb-listing__list">
+    {% if parent_path %}
+      <li>
+        <button
+          type="button"
+          class="fb-entry fb-entry--up"
+          hx-get="{{ url_for('web_browse') }}?path={{ parent_path|urlencode }}"
+          data-fb-path="{{ parent_path }}"
+        >
+          <span class="fb-entry__icon" aria-hidden="true">↑</span>
+          <span class="fb-entry__name">.. (parent)</span>
+        </button>
+      </li>
+    {% endif %}
+
+    {% for entry in entries %}
+      <li>
+        {% if entry.is_dir %}
+          <button
+            type="button"
+            class="fb-entry fb-entry--dir"
+            hx-get="{{ url_for('web_browse') }}?path={{ entry.path|urlencode }}"
+            data-fb-path="{{ entry.path }}"
+            title="{{ entry.path }}"
+          >
+            <span class="fb-entry__icon" aria-hidden="true">📁</span>
+            <span class="fb-entry__name">{{ entry.name }}</span>
+          </button>
+        {% else %}
+          <button
+            type="button"
+            class="fb-entry fb-entry--file"
+            data-fb-path="{{ entry.path }}"
+            data-fb-file
+            title="{{ entry.path }}"
+          >
+            <span class="fb-entry__icon" aria-hidden="true">📄</span>
+            <span class="fb-entry__name">{{ entry.name }}</span>
+            {% if entry.size_human %}
+              <span class="fb-entry__meta">{{ entry.size_human }}</span>
+            {% endif %}
+          </button>
+        {% endif %}
+      </li>
+    {% endfor %}
+
+    {% if not entries and not parent_path %}
+      <li class="fb-listing__empty">
+        <p class="settings-field__hint">No entries — this folder is empty or inaccessible.</p>
+      </li>
+    {% endif %}
+  </ul>
+</div>

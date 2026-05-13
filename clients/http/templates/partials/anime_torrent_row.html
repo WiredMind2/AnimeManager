@@ -1,0 +1,179 @@
+{# Single <tr> row used by the synchronous result partial, the SSE
+   streaming endpoint, and the standalone /ui/torrents page.
+
+   Required context:
+     row       -- dict with name, size, size_human, seeds, leech, link, hash
+                  and an optional ``parsed`` sub-dict produced by
+                  ``adapters.search.title_parser.parse_title``.
+     anime_id  -- the parent anime id (optional). When set, the actions
+                  cell renders a Download form; otherwise an Open link.
+
+   Layout columns (match the <thead> in both result templates):
+     Release | Publisher | Quality | Codec | Source | Season | Episode |
+     Size | Seeds | Leech | Actions
+
+   ``data-*`` attributes mirror the parsed facets so the JS filter +
+   sort layers can hide / reorder rows without touching the DOM
+   structure. ``data-sort-*`` siblings hold the *numeric* sort key for
+   columns whose textual value isn't naturally orderable (e.g. ``S2``
+   vs ``Season 2``).
+#}
+{%- set parsed = row.parsed or {} -%}
+{%- set ep_kind = parsed.episode_kind or 'none' -%}
+{%- set ep_label = '' -%}
+{%- set ep_sort = -1 -%}
+{%- if ep_kind == 'single' and parsed.episode is not none -%}
+  {%- set ep_label = parsed.episode|string -%}
+  {%- set ep_sort = parsed.episode -%}
+{%- elif ep_kind == 'range' -%}
+  {%- if parsed.episode_start is not none and parsed.episode_end is not none -%}
+    {%- set ep_label = parsed.episode_start|string ~ '–' ~ parsed.episode_end|string -%}
+    {%- set ep_sort = parsed.episode_start -%}
+  {%- elif parsed.is_batch -%}
+    {%- set ep_label = 'Batch' -%}
+    {%- set ep_sort = 100000 -%}
+  {%- endif -%}
+{%- endif -%}
+{%- set season_label = parsed.season|string if parsed.season is not none else '' -%}
+{%- set res_sort = 0 -%}
+{%- if parsed.resolution == '2160p' -%}{%- set res_sort = 2160 -%}
+{%- elif parsed.resolution == '1440p' -%}{%- set res_sort = 1440 -%}
+{%- elif parsed.resolution == '1080p' -%}{%- set res_sort = 1080 -%}
+{%- elif parsed.resolution == '720p' -%}{%- set res_sort = 720 -%}
+{%- elif parsed.resolution == '480p' -%}{%- set res_sort = 480 -%}
+{%- endif -%}
+{# Numeric episode bounds used by the "Episode" range filter.
+   - single episode -> [n, n]
+   - range          -> [start, end]
+   - batch          -> [1, 99999] (sentinel meaning "covers everything")
+   - unknown        -> "" (no bounds, filter excludes the row when active) #}
+{%- set ep_start = '' -%}
+{%- set ep_end = '' -%}
+{%- if ep_kind == 'single' and parsed.episode is not none -%}
+  {%- set ep_start = parsed.episode -%}
+  {%- set ep_end = parsed.episode -%}
+{%- elif ep_kind == 'range' -%}
+  {%- if parsed.episode_start is not none and parsed.episode_end is not none -%}
+    {%- set ep_start = parsed.episode_start -%}
+    {%- set ep_end = parsed.episode_end -%}
+  {%- elif parsed.is_batch -%}
+    {%- set ep_start = 1 -%}
+    {%- set ep_end = 99999 -%}
+  {%- endif -%}
+{%- endif -%}
+<tr
+  data-pub="{{ parsed.publisher or '' }}"
+  data-pub-display="{{ parsed.publisher_display or '' }}"
+  data-res="{{ parsed.resolution or '' }}"
+  data-codec="{{ parsed.codec or '' }}"
+  data-source="{{ parsed.source or '' }}"
+  data-provider="{{ parsed.provider or '' }}"
+  data-season="{{ parsed.season if parsed.season is not none else '' }}"
+  data-episode="{{ parsed.episode if parsed.episode is not none else (parsed.episode_start if parsed.episode_start is not none else '') }}"
+  data-ep-start="{{ ep_start }}"
+  data-ep-end="{{ ep_end }}"
+  data-episode-kind="{{ ep_kind }}"
+  data-batch="{{ 'true' if parsed.is_batch else 'false' }}"
+  data-confidence="{{ parsed.parse_confidence or 0 }}"
+  data-sort-name="{{ row.name|lower }}"
+  data-sort-res="{{ res_sort }}"
+  data-sort-season="{{ parsed.season if parsed.season is not none else -1 }}"
+  data-sort-episode="{{ ep_sort }}"
+  data-sort-size="{{ row.size or 0 }}"
+  data-sort-seeds="{{ row.seeds or 0 }}"
+  data-sort-leech="{{ row.leech or 0 }}"
+>
+  <td class="col--release">
+    <div class="torrent-name" title="{{ row.name }}" data-full-name="{{ row.name }}">
+      {{ row.name }}
+    </div>
+  </td>
+  <td class="col--publisher">
+    {% if parsed.publisher_display %}
+      <button type="button" class="torrent-meta__pub"
+              data-filter-trigger="pub"
+              data-filter-value="{{ parsed.publisher }}"
+              title="Filter by {{ parsed.publisher_display }}">{{ parsed.publisher_display }}</button>
+    {% else %}
+      <span class="torrent-meta__empty">—</span>
+    {% endif %}
+  </td>
+  <td class="col--quality num">
+    {% if parsed.resolution %}
+      <button type="button" class="torrent-meta__pill"
+              data-filter-trigger="res"
+              data-filter-value="{{ parsed.resolution }}"
+              title="Filter by {{ parsed.resolution }}">{{ parsed.resolution }}</button>
+    {% else %}—{% endif %}
+  </td>
+  <td class="col--codec">
+    {% if parsed.codec %}
+      <button type="button" class="torrent-meta__pill torrent-meta__pill--muted"
+              data-filter-trigger="codec"
+              data-filter-value="{{ parsed.codec }}"
+              title="Filter by {{ parsed.codec }}">{{ parsed.codec }}</button>
+    {% else %}—{% endif %}
+  </td>
+  <td class="col--source">
+    {% if parsed.source and parsed.source != 'OTHER' %}
+      <button type="button" class="torrent-meta__pill torrent-meta__pill--muted"
+              data-filter-trigger="source"
+              data-filter-value="{{ parsed.source }}"
+              title="Filter by {{ parsed.source }}">{{ parsed.source }}</button>
+    {% endif %}
+    {% if parsed.provider %}
+      <button type="button" class="torrent-meta__pill torrent-meta__pill--muted"
+              data-filter-trigger="provider"
+              data-filter-value="{{ parsed.provider }}"
+              title="Filter by {{ parsed.provider }}">{{ parsed.provider }}</button>
+    {% endif %}
+    {% if not (parsed.source and parsed.source != 'OTHER') and not parsed.provider %}—{% endif %}
+  </td>
+  <td class="col--season num">
+    {% if season_label %}
+      <button type="button" class="torrent-meta__pill torrent-meta__pill--ep"
+              data-filter-trigger="season"
+              data-filter-value="{{ season_label }}"
+              title="Filter by Season {{ season_label }}">S{{ season_label }}</button>
+    {% else %}—{% endif %}
+  </td>
+  <td class="col--episode num">
+    {% if ep_label %}
+      {% if ep_kind == 'range' %}
+        <button type="button" class="torrent-meta__pill torrent-meta__pill--ep"
+                data-filter-trigger="episode-kind"
+                data-filter-value="range"
+                title="Filter to episode ranges / batches">{{ ep_label }}</button>
+      {% else %}
+        <button type="button" class="torrent-meta__pill torrent-meta__pill--ep"
+                data-filter-trigger="episode-kind"
+                data-filter-value="single"
+                title="Filter to single episodes">{{ ep_label }}</button>
+      {% endif %}
+    {% else %}—{% endif %}
+  </td>
+  <td class="col--size num">{{ row.size_human or row.size or '—' }}</td>
+  <td class="col--seeds num">
+    {% if row.seeds and row.seeds|int > 5 %}
+      <span class="badge badge--good">{{ row.seeds }}</span>
+    {% elif row.seeds %}
+      <span class="badge">{{ row.seeds }}</span>
+    {% else %}—{% endif %}
+  </td>
+  <td class="col--leech num">{{ row.leech or '—' }}</td>
+  <td class="col--actions num" style="white-space: nowrap">
+    {% if row.link %}
+      {% if anime_id %}
+        <form method="post"
+              action="{{ url_for('web_action_start_download', anime_id=anime_id) }}"
+              style="display:inline">
+          <input type="hidden" name="url" value="{{ row.link }}" />
+          {% if row.hash %}<input type="hidden" name="hash_value" value="{{ row.hash }}" />{% endif %}
+          <button class="btn btn--primary btn--small" type="submit">Download</button>
+        </form>
+      {% else %}
+        <a class="btn btn--small" href="{{ row.link }}" target="_blank" rel="noreferrer">Open</a>
+      {% endif %}
+    {% endif %}
+  </td>
+</tr>
