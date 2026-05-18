@@ -400,10 +400,10 @@ class AnilistCoWrapper(APIUtils):
             if len(rels) > 0:
                 self.save_relations(id, rels)
 
-        # Mapped animes
-        mal_id = a.get("mal_id")
+        # Mapped animes (GraphQL field is idMal on Media)
+        mal_id = a.get("idMal") or a.get("mal_id")
         if mal_id:
-            self.save_mapped(out.id, [("mal_id", mal_id)])
+            out.id = self.save_mapped(out.id, [("mal_id", mal_id)])
 
         # Characters
         if a.get("characters"):

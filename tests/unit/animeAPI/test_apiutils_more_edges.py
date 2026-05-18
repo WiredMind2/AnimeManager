@@ -17,6 +17,7 @@ import pytest
 
 from adapters.api.APIUtils import (
     APICache,
+    APIUtils,
     DummyDB,
     EnhancedSession,
     cached_api_request,
@@ -261,6 +262,82 @@ class TestAPIUtilsQueue:
         while not new_q.empty():
             items.append(new_q.get())
         assert items == ["a", "b"]
+
+
+class _SQLiteLock:
+    def __init__(self, con):
+        self._con = con
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _SQLiteAPIUtilsDB:
+    def __init__(self):
+        import sqlite3
+
+        self.con = sqlite3.connect(":memory:")
+        self.cur = self.con.cursor()
+        self.cur.executescript(
+            """
+            CREATE TABLE anime (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                picture TEXT,
+                date_from INTEGER,
+                date_to INTEGER,
+                synopsis TEXT,
+                episodes INTEGER,
+                duration INTEGER,
+                rating TEXT,
+                status TEXT,
+                broadcast TEXT,
+                trailer TEXT
+            );
+            CREATE TABLE indexList (
+                id INTEGER PRIMARY KEY,
+                mal_id INTEGER,
+                kitsu_id INTEGER,
+                anilist_id INTEGER,
+                anidb_id INTEGER
+            );
+            """
+        )
+        self.con.commit()
+
+    def get_lock(self):
+        return _SQLiteLock(self.con)
+
+    def sql(self, query, params=(), save=False, **_kwargs):
+        self.cur.execute(query, params)
+        if save:
+            self.con.commit()
+        if query.lstrip().upper().startswith("SELECT"):
+            return self.cur.fetchall()
+        return []
+
+
+def test_save_mapped_returns_canonical_id():
+    u = object.__new__(APIUtils)
+    u.log = lambda *_a, **_k: None
+    u.database = _SQLiteAPIUtilsDB()
+    u.database.sql("INSERT INTO anime(id, title) VALUES(?, ?)", (1, "A"), save=True)
+    u.database.sql("INSERT INTO anime(id, title) VALUES(?, ?)", (2, "B"), save=True)
+    u.database.sql(
+        "INSERT INTO indexList(id, mal_id) VALUES(?, ?)", (1, 100), save=True
+    )
+    u.database.sql(
+        "INSERT INTO indexList(id, kitsu_id) VALUES(?, ?)", (2, 200), save=True
+    )
+
+    canonical = APIUtils.save_mapped(u, 2, [("mal_id", 100)])
+
+    assert canonical in {1, 2}
+    rows = u.database.sql("SELECT id FROM anime ORDER BY id")
+    assert len(rows) == 1
 
 
 # ---------------------------------------------------------------------------

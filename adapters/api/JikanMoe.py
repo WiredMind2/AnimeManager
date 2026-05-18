@@ -284,7 +284,8 @@ class JikanMoeWrapper(APIUtils):
                         api_id = match.group(1)
                         mapped.append((api_key, api_id))
 
-            self.save_mapped(int(a["mal_id"]), mapped)
+            canonical_id = self.save_mapped(int(a["mal_id"]), mapped)
+            out["id"] = canonical_id
 
         return out
 

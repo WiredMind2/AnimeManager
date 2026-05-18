@@ -1422,6 +1422,9 @@ FLUSH PRIVILEGES;
 
         # SQL injection fix: validate the metadata table name
         key = self._validate_table_name(key)
+        if key == "genres":
+            return self._fetch_genre_metadata_for_id(id.get("id"))
+
         arg = " AND ".join(map(lambda e: f"{e}=%s", id.keys()))
         sql = f"SELECT value FROM {key} WHERE {arg};"
 

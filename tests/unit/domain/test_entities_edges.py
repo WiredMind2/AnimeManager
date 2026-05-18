@@ -12,7 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from domain.entities import AnimeEntity, TorrentEntity, from_legacy_anime
+from domain.entities import (
+    AnimeEntity,
+    TorrentEntity,
+    from_legacy_anime,
+    title_variants_for_torrent_search,
+)
 
 
 class TestAnimeEntityDefaults:
@@ -41,6 +46,39 @@ class TestAnimeEntityDefaults:
 
     def test_zero_id_allowed(self):
         AnimeEntity(id=0, title="")
+
+
+class TestTitleVariantsForTorrentSearch:
+    def test_main_then_synonyms_deduped_case_insensitive(self):
+        assert title_variants_for_torrent_search(
+            {"title": "Bleach", "title_synonyms": ["BLEACH", " ブリーチ "]}
+        ) == ["Bleach", "ブリーチ"]
+
+    def test_synonyms_only_when_main_missing(self):
+        assert title_variants_for_torrent_search(
+            {"title": None, "title_synonyms": ["Alpha", "Beta"]}
+        ) == ["Alpha", "Beta"]
+
+    def test_non_dict_returns_empty(self):
+        assert title_variants_for_torrent_search(object()) == []
+
+    def test_title_synonyms_callable_raising_is_ignored(self):
+        def boom():
+            raise RuntimeError("lazy load failed")
+
+        assert title_variants_for_torrent_search(
+            {"title": "Only", "title_synonyms": boom}
+        ) == ["Only"]
+
+    def test_title_synonyms_non_sequence_coerced_to_single_variant(self):
+        assert title_variants_for_torrent_search(
+            {"title": "Main", "title_synonyms": 99}
+        ) == ["Main", "99"]
+
+    def test_title_variants_skips_none_and_blank_synonym_entries(self):
+        assert title_variants_for_torrent_search(
+            {"title": "Main", "title_synonyms": ["Alt", None, "  ", "Alt"]}
+        ) == ["Main", "Alt"]
 
 
 class TestTorrentEntityDefaults:
@@ -150,3 +188,22 @@ class TestFromLegacyAnime:
         assert e.status == "FINISHED"
         assert e.episodes == 12
         assert e.rating == "R+"
+
+    def test_from_legacy_anime_getattr_failure_degrades_field(self):
+        class LegacyRow:
+            def __iter__(self):
+                return iter({"id": 1, "title": "t", "picture": None}.items())
+
+            def __getattr__(self, name):
+                if name == "picture":
+                    raise ConnectionError("simulated DB decode failure")
+                raise AttributeError(name)
+
+        e = from_legacy_anime(LegacyRow())
+        assert e.picture is None
+
+    def test_from_legacy_anime_materialize_exception_returns_none(self):
+        e = from_legacy_anime(
+            {"id": 1, "title": "t", "picture": lambda: 1 / 0}
+        )
+        assert e.picture is None

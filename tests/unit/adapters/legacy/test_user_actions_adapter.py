@@ -255,3 +255,21 @@ def test_db_errors_surface_as_infrastructure_error():
         adapter.set_like(1, True, 1)
     with pytest.raises(InfrastructureError):
         adapter.get_user_state(1, 1)
+
+
+def test_episode_progress_roundtrip(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(1, 1, "ep-abc", "IN_PROGRESS", position_seconds=120.5)
+    m = adapter.get_episode_progress_map(1, 1)
+    assert m["ep-abc"]["status"] == "IN_PROGRESS"
+    assert m["ep-abc"]["position_seconds"] == 120.5
+    adapter.set_episode_progress(1, 1, "ep-abc", "SEEN", position_seconds=900.0)
+    assert adapter.get_episode_progress_map(1, 1)["ep-abc"]["status"] == "SEEN"
+    adapter.delete_episode_progress(1, 1, "ep-abc")
+    assert adapter.get_episode_progress_map(1, 1) == {}
+
+
+def test_episode_progress_rejects_bad_status(adapter_unique):
+    adapter, _ = adapter_unique
+    with pytest.raises(InfrastructureError):
+        adapter.set_episode_progress(1, 1, "ep-x", "BOGUS", position_seconds=None)

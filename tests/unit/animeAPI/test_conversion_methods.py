@@ -1,4 +1,5 @@
 import types
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -65,6 +66,12 @@ def test_anilist_convert_methods(monkeypatch):
     assert data is not None
     assert "title" in data and data["title"] is not None
     assert "title_synonyms" in data
+
+    a_mal = dict(a)
+    a_mal["idMal"] = 42
+    api.save_mapped = MagicMock(return_value=99)
+    data_mal = api._convertAnime(a_mal)
+    api.save_mapped.assert_called_once_with(1, [("mal_id", 42)])
 
     # Character conversion
     c = {

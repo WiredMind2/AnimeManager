@@ -132,64 +132,117 @@ class AnimeAPI:
 
         return f
 
+    def _mal_credentials_configured(self) -> bool:
+        """Return True when MAL OAuth credentials are available."""
+        settings_data = getattr(self, "settings", {}) or {}
+        settings_creds = {}
+        if isinstance(settings_data, dict):
+            api_creds = settings_data.get("api_credentials")
+            if isinstance(api_creds, dict):
+                settings_creds = api_creds.get("myanimelist") or {}
+        try:
+            from shared.security import load_secret
+        except ImportError:
+            return False
+        client_id = load_secret(
+            "ANIMEMANAGER_MAL_CLIENT_ID",
+            settings={"ANIMEMANAGER_MAL_CLIENT_ID": settings_creds.get("client_id")},
+        )
+        client_secret = load_secret(
+            "ANIMEMANAGER_MAL_CLIENT_SECRET",
+            settings={
+                "ANIMEMANAGER_MAL_CLIENT_SECRET": settings_creds.get("client_secret")
+            },
+        )
+        return bool(client_id and client_secret)
+
+    def _load_provider_module(self, name: str):
+        module = None
+        for mod_prefix in ("adapters.api", "animeAPI", ""):
+            mod_name = f"{mod_prefix}.{name}" if mod_prefix else name
+            try:
+                module = importlib.import_module(mod_name)
+            except Exception:
+                module = None
+                continue
+            else:
+                break
+        return module
+
+    def _append_provider(self, name: str, *args, **kwargs) -> bool:
+        """Load one provider wrapper by module stem name. Returns True on success."""
+        if name == "MyAnimeListNet" and not self._mal_credentials_configured():
+            self.log(
+                "ANIME_SEARCH",
+                "Skipping MyAnimeListNet (OAuth credentials not configured)",
+            )
+            return False
+
+        module = self._load_provider_module(name)
+        if module is None:
+            self.log("ANIME_SEARCH", name, "module import failed")
+            return False
+
+        cls_name = name + "Wrapper"
+        cls = getattr(module, cls_name, None)
+        if cls is None:
+            self.log(
+                "ANIME_SEARCH",
+                f"{cls_name} not found in module {module.__name__}",
+            )
+            return False
+
+        try:
+            from adapters.api.provider_contract import validate_provider
+
+            instance = cls(*args, **kwargs)
+            missing = validate_provider(instance)
+            if missing:
+                self.log(
+                    "ANIME_SEARCH",
+                    f"{cls_name} missing required surface: {', '.join(missing)}",
+                )
+                return False
+        except NotImplementedError:
+            return False
+        except Exception:
+            self.log(
+                "ANIME_SEARCH",
+                f"Error while loading {name} API wrapper: \n{traceback.format_exc()}",
+            )
+            return False
+        else:
+            try:
+                instance.reroute_sql_queue(self.sql_queue)
+            except Exception:
+                pass
+            self.apis.append(instance)
+            return True
+
     def load_apis(self, apis="all", *args, **kwargs):
         if apis == "all":
             api_names = []
             ignore = (
                 "__init__.py",
                 "APIUtils.py",
+                "provider_contract.py",
                 "tests.py",
                 "MyAnimeListNet.py",
             )
             root = os.path.dirname(__file__)
             sys.path.append(root)  # legacy fallback for bare-name imports
             for f in os.listdir(root):
-                if f not in ignore and f[-3:] == ".py":
-                    name = f[:-3]
-                    api_names.append(name)
+                if f not in ignore and f.endswith(".py"):
+                    api_names.append(f[:-3])
         else:
-            api_names = apis
+            api_names = list(apis)
 
         for name in api_names:
-            module = None
-            for mod_prefix in ("adapters.api", "animeAPI", ""):
-                mod_name = f"{mod_prefix}.{name}" if mod_prefix else name
-                try:
-                    module = importlib.import_module(mod_name)
-                except Exception:
-                    module = None
-                    continue
-                else:
-                    break
-            if module is None:
-                self.log("ANIME_SEARCH", name, "module import failed")
-                continue
+            self._append_provider(name, *args, **kwargs)
 
-            cls_name = name + "Wrapper"
-            cls = getattr(module, cls_name, None)
-            if cls is None:
-                self.log(
-                    "ANIME_SEARCH",
-                    f"{cls_name} not found in module {module.__name__}",
-                )
-                continue
-
-            try:
-                instance = cls(*args, **kwargs)
-            except NotImplementedError:
-                continue
-            except Exception:
-                self.log(
-                    "ANIME_SEARCH",
-                    f"Error while loading {name} API wrapper: \n{traceback.format_exc()}",
-                )
-                continue
-            else:
-                try:
-                    instance.reroute_sql_queue(self.sql_queue)
-                except Exception:
-                    pass
-                self.apis.append(instance)
+        # MAL is opt-in at discovery time but auto-loaded when creds exist.
+        if apis == "all" and "MyAnimeListNet" not in api_names:
+            self._append_provider("MyAnimeListNet", *args, **kwargs)
 
         if len(self.apis) == 0:
             self.log("ANIME_SEARCH", "No apis found!")

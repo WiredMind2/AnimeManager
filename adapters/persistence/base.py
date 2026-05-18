@@ -591,11 +591,68 @@ class BaseDB:
 
         return items
 
+    def _fetch_genre_metadata(self, item_ids):
+        """Return ``{anime_id: [genre name, ...]}`` resolving ``genresIndex`` ids."""
+        ids: list[int] = []
+        for raw in item_ids or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in ids)
+        sql = (
+            "SELECT g.id, COALESCE(gi.value, g.value) AS value "
+            "FROM genres g "
+            "LEFT JOIN genresIndex gi ON gi.id = g.value "
+            f"WHERE g.id IN ({placeholders})"
+        )
+        try:
+            results = self.sql(sql, tuple(ids))
+        except Exception:
+            sql = f"SELECT id, value FROM genres WHERE id IN ({placeholders})"
+            results = self.sql(sql, tuple(ids))
+
+        metadata: dict[int, list] = {}
+        for result in results or []:
+            if not result:
+                continue
+            try:
+                item_id = int(result[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            value = result[1] if len(result) > 1 else None
+            if value is None:
+                continue
+            metadata.setdefault(item_id, []).append(value)
+        return metadata
+
+    def _fetch_genre_metadata_for_id(self, anime_id):
+        """Genre names for one anime (see :meth:`_fetch_genre_metadata`)."""
+        try:
+            key = int(anime_id)
+        except (TypeError, ValueError):
+            return []
+        return self._fetch_genre_metadata([key]).get(key, [])
+
     def _fetch_bulk_metadata(self, item_ids, keys):
         """Fetch metadata for multiple items and keys in batch queries"""
         metadata = {}
 
         for key in keys:
+            if key == "genres":
+                try:
+                    genre_map = self._fetch_genre_metadata(item_ids)
+                    for item_id, values in genre_map.items():
+                        if item_id not in metadata:
+                            metadata[item_id] = {}
+                        metadata[item_id][key] = values
+                except Exception as e:
+                    self.log("ERROR", f"Failed to fetch bulk metadata for key {key}: {e}")
+                continue
+
             # Build query for this metadata key
             placeholders = ','.join(['?' for _ in item_ids])
             sql = f"SELECT id, value FROM {key} WHERE id IN ({placeholders})"

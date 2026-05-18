@@ -106,6 +106,19 @@ Environment setup
 
       python run.py api --host 0.0.0.0 --port 8081
 
+7. **Run the Next.js web client (new UI)**
+
+   .. code-block:: bash
+
+      cd next-web
+      cp .env.example .env.local
+      npm install
+      npm run dev
+
+   To make Python redirect legacy ``/ui/*`` HTML routes to Next during
+   cutover, set ``ANIMEMANAGER_NEXT_UI_URL=http://127.0.0.1:3000`` in
+   the API process environment.
+
 Code style
 ----------
 

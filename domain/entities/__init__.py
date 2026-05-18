@@ -138,4 +138,47 @@ def from_legacy_anime(anime: Any) -> AnimeEntity:
     )
 
 
-__all__ = ["AnimeEntity", "TorrentEntity", "from_legacy_anime"]
+def title_variants_for_torrent_search(anime: Any) -> list[str]:
+    """Build ordered, de-duplicated torrent search terms from anime metadata."""
+    if isinstance(anime, dict):
+        data = anime
+    elif hasattr(anime, "keys") and callable(getattr(anime, "keys", None)):
+        try:
+            data = dict(anime)
+        except Exception:
+            return []
+    else:
+        return []
+
+    def _clean(value: Any) -> str:
+        return str(value or "").strip()
+
+    main = _clean(data.get("title"))
+    synonyms = _to_list(_materialize(data.get("title_synonyms")))
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(term: str) -> None:
+        text = _clean(term)
+        if not text:
+            return
+        key = text.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(text)
+
+    if main:
+        _add(main)
+    for synonym in synonyms:
+        _add(synonym)
+    return out
+
+
+__all__ = [
+    "AnimeEntity",
+    "TorrentEntity",
+    "from_legacy_anime",
+    "title_variants_for_torrent_search",
+]
