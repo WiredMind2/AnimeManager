@@ -14,13 +14,17 @@ plain HTML form so the app works without JavaScript.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import ipaddress
 import logging
+import os
 import queue
 import re
 import threading
-from pathlib import Path
+import time
+import types
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlparse
 
@@ -45,6 +49,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 try:  # pragma: no cover - import path differs depending on launch mode
+    from ...shared.config.getters import Getters
+    from ...domain.entities import title_variants_for_torrent_search
     from ...domain.errors import (
         AnimeManagerError,
         NotFoundError,
@@ -54,8 +60,10 @@ try:  # pragma: no cover - import path differs depending on launch mode
     from ..sdk import ClientSDK
     from . import log_buffer, settings_form
 except ImportError:  # pragma: no cover
+    from shared.config.getters import Getters  # type: ignore  # noqa: F401
     from clients.sdk import ClientSDK
     from clients.http import log_buffer, settings_form  # type: ignore  # noqa: F401
+    from domain.entities import title_variants_for_torrent_search  # type: ignore  # noqa: F401
     from domain.errors import (  # type: ignore  # noqa: F401
         AnimeManagerError,
         NotFoundError,
@@ -64,6 +72,24 @@ except ImportError:  # pragma: no cover
     )
 
 _LOG = logging.getLogger(__name__)
+
+# Per-anime metadata refresh throttle (max once per hour).
+_METADATA_REFRESH_TS: dict[int, float] = {}
+_METADATA_REFRESH_INTERVAL_S = 3600.0
+
+
+def _maybe_refresh_anime_metadata(sdk: ClientSDK, anime_id: int) -> None:
+    """Best-effort metadata refresh when opening anime detail (rate limited)."""
+    now = time.monotonic()
+    last = _METADATA_REFRESH_TS.get(int(anime_id))
+    if last is not None and (now - last) < _METADATA_REFRESH_INTERVAL_S:
+        return
+    _METADATA_REFRESH_TS[int(anime_id)] = now
+    try:
+        getattr(sdk, "refresh_anime_metadata", lambda _id: None)(anime_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("auto refresh_anime_metadata failed: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Resource paths
@@ -156,6 +182,414 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _format_unix_date(value: Any) -> str | None:
+    """Best-effort ``YYYY-MM-DD`` formatter for Unix timestamps."""
+    try:
+        stamp = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if stamp <= 0:
+        return None
+    try:
+        return dt.datetime.fromtimestamp(
+            stamp, tz=dt.timezone.utc
+        ).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        source = value
+    else:
+        source = [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in source:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+_UNKNOWN_GENRE = "Unknown genre"
+
+
+def _detail_field(label: str, value: Any, *, hint: str | None = None) -> dict[str, str] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    row: dict[str, str] = {"label": label, "value": text}
+    hint_text = str(hint or "").strip()
+    if hint_text:
+        row["hint"] = hint_text
+    return row
+
+
+def _split_value_hint(text: str) -> tuple[str, str | None]:
+    """Split ``Since 07 Apr 2026 (41 days)`` into value + parenthetical hint."""
+    cleaned = str(text or "").strip()
+    match = re.match(r"^(.*?)(?:\s*\(([^)]+)\))?\s*$", cleaned)
+    if not match:
+        return cleaned, None
+    value = str(match.group(1) or "").strip()
+    hint = str(match.group(2) or "").strip() or None
+    return value, hint
+
+
+def _parse_schedule_line(line: str) -> dict[str, str]:
+    """Map legacy schedule strings to user-facing labels."""
+    text = str(line or "").strip()
+    lower = text.casefold()
+    if lower.startswith("since "):
+        value, hint = _split_value_hint(text[6:])
+        return _detail_field("Airs", value, hint=hint) or {"label": "Airs", "value": text}
+    if lower.startswith("from "):
+        value, hint = _split_value_hint(text[5:])
+        return _detail_field("Started", value, hint=hint) or {"label": "Started", "value": text}
+    if lower.startswith("to "):
+        value, hint = _split_value_hint(text[3:])
+        return _detail_field("Ended", value, hint=hint) or {"label": "Ended", "value": text}
+    if lower.startswith("next episode"):
+        if lower.startswith("next episode on "):
+            value = text[16:].strip()
+        elif lower.startswith("next episode: "):
+            value = text[14:].strip()
+        else:
+            value = text[14:].strip()
+        return _detail_field("Next episode", value) or {"label": "Next episode", "value": text}
+    if lower.startswith("latest episode"):
+        value = text.split(":", 1)[-1].strip() if ":" in text else text[15:].strip()
+        return _detail_field("Latest episode", value) or {"label": "Latest episode", "value": text}
+    if "days left" in lower:
+        value, hint = _split_value_hint(text)
+        return _detail_field("Premieres", value, hint=hint) or {"label": "Premieres", "value": text}
+    return {"label": "Timeline", "value": text}
+
+
+def _lookup_genre_index_names(index_ids: list[str]) -> dict[str, str]:
+    """Resolve ``genresIndex`` ids to display names."""
+    numeric: list[int] = []
+    for raw in index_ids:
+        try:
+            numeric.append(int(str(raw).strip()))
+        except (TypeError, ValueError):
+            continue
+    if not numeric:
+        return {}
+    try:
+        db = Getters.getDatabase(None)
+        placeholders = ",".join("?" for _ in numeric)
+        sql = f"SELECT id, value FROM genresIndex WHERE id IN ({placeholders})"
+        rows = db.sql(sql, tuple(numeric))
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, str] = {}
+    for row in rows or []:
+        if not row or len(row) < 2:
+            continue
+        key = str(row[0]).strip()
+        name = str(row[1] or "").strip()
+        if key and name:
+            out[key] = name
+    return out
+
+
+def _resolve_genre_tags(anime_id: int | None, raw_genres: Any) -> list[str]:
+    """Return human-readable genre names, never raw index ids."""
+    if anime_id is not None:
+        try:
+            db = Getters.getDatabase(None)
+            fetcher = getattr(db, "_fetch_genre_metadata_for_id", None)
+            if callable(fetcher):
+                resolved = _string_list(fetcher(anime_id))
+                if resolved:
+                    return resolved
+        except Exception:  # noqa: BLE001
+            pass
+
+    raw_values = _string_list(raw_genres)
+    if not raw_values:
+        return []
+
+    numeric_ids = [value for value in raw_values if value.isdigit()]
+    index_names = _lookup_genre_index_names(numeric_ids)
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        if value.isdigit():
+            name = index_names.get(value)
+            label = name or _UNKNOWN_GENRE
+        else:
+            label = value
+        key = label.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(label)
+    return out
+
+
+def _build_anime_detail_view(
+    anime: dict[str, Any],
+    *,
+    anime_id: int | None,
+    terms: list[str],
+    computed_status_text: str,
+    schedule_lines: list[str],
+) -> dict[str, Any]:
+    """Grouped, display-safe fields for the anime detail template."""
+    title = str(anime.get("title") or "").strip()
+    alt_titles = [
+        value
+        for value in _string_list(anime.get("title_synonyms"))
+        if value.casefold() != title.casefold()
+    ]
+    genre_tags = _resolve_genre_tags(anime_id, anime.get("genres"))
+
+    airing_fields: list[dict[str, str]] = []
+    status_field = _detail_field("Status", computed_status_text)
+    if status_field:
+        airing_fields.append(status_field)
+    for line in schedule_lines:
+        airing_fields.append(_parse_schedule_line(line))
+
+    metadata_fields: list[dict[str, str]] = []
+    for label, value in (
+        ("Start date", _format_unix_date(anime.get("date_from"))),
+        ("End date", _format_unix_date(anime.get("date_to"))),
+        ("Broadcast", anime.get("broadcast")),
+        ("Last seen", anime.get("last_seen")),
+    ):
+        field = _detail_field(label, value)
+        if field:
+            metadata_fields.append(field)
+    if terms:
+        field = _detail_field("Saved search terms", ", ".join(_string_list(terms)))
+        if field:
+            metadata_fields.append(field)
+
+    return {
+        "alt_titles": alt_titles,
+        "genre_tags": genre_tags,
+        "airing_fields": airing_fields,
+        "metadata_fields": metadata_fields,
+    }
+
+
+def anime_detail_display_for_api(
+    sdk: ClientSDK,
+    anime_id: int,
+    *,
+    anime: dict[str, Any] | None = None,
+    terms: list[str] | None = None,
+) -> dict[str, Any]:
+    """JSON display extras for :func:`clients.http.app.ui_api_anime_bundle`."""
+    resolved = anime if isinstance(anime, dict) else sdk.get_anime(anime_id) or {}
+    terms_list = list(terms if terms is not None else sdk.get_search_terms(anime_id) or [])
+    settings: dict[str, Any] = {}
+    try:
+        settings = sdk.get_settings() or {}
+    except Exception:  # noqa: BLE001
+        settings = {}
+
+    trailer_embed: str | None = None
+    computed_status = "UNKNOWN"
+    computed_status_text = "Unknown"
+    computed_status_color = ""
+    schedule_lines: list[str] = []
+    alt_titles: list[str] = []
+    detail_genre_tags: list[str] = []
+    detail_airing_fields: list[dict[str, str]] = []
+    detail_metadata_fields: list[dict[str, str]] = []
+
+    if isinstance(resolved, dict):
+        trailer_embed = _youtube_embed_url(resolved.get("trailer"))
+        computed_status, schedule_lines = _legacy_status_lines(resolved)
+        computed_status_text, computed_status_color = _status_theme_meta(
+            settings, computed_status
+        )
+        detail_view = _build_anime_detail_view(
+            resolved,
+            anime_id=anime_id,
+            terms=terms_list,
+            computed_status_text=computed_status_text,
+            schedule_lines=schedule_lines,
+        )
+        alt_titles = detail_view["alt_titles"]
+        detail_genre_tags = detail_view["genre_tags"]
+        detail_airing_fields = detail_view["airing_fields"]
+        detail_metadata_fields = detail_view["metadata_fields"]
+
+    relations: list[dict[str, Any]] = []
+    try:
+        relations = _enrich_relations_with_user_tag(
+            sdk, list(sdk.get_relations(anime_id) or [])
+        )
+    except Exception:  # noqa: BLE001
+        relations = []
+
+    return {
+        "trailer_embed": trailer_embed,
+        "alt_titles": alt_titles,
+        "detail_genre_tags": detail_genre_tags,
+        "detail_airing_fields": detail_airing_fields,
+        "detail_metadata_fields": detail_metadata_fields,
+        "computed_status": computed_status,
+        "computed_status_text": computed_status_text,
+        "computed_status_color": computed_status_color,
+        "relations": relations,
+    }
+
+
+def watch_context_for_api(
+    sdk: ClientSDK,
+    anime_id: int,
+    *,
+    file_id: str = "",
+    user_id: int = DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Watch-page player context for Next.js (mirrors ``web_anime_watch``)."""
+    anime = sdk.get_anime(anime_id)
+    try:
+        episode_files = list(sdk.list_episode_files(anime_id, user_id=user_id) or [])
+    except Exception:  # noqa: BLE001
+        episode_files = []
+
+    selected_file_id = str(file_id or "").strip()
+    if not selected_file_id and episode_files:
+        selected_file_id = str(episode_files[0].get("file_id") or "")
+    selected_title = ""
+    selected_audio_tracks: list[dict[str, Any]] = []
+    selected_subtitle_tracks: list[dict[str, Any]] = []
+    for item in episode_files:
+        if str(item.get("file_id") or "") == selected_file_id:
+            selected_title = str(item.get("title") or "")
+            selected_audio_tracks = list(item.get("audio_tracks") or [])
+            selected_subtitle_tracks = list(item.get("subtitle_tracks") or [])
+            break
+
+    track_map: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    episode_resume_map: dict[str, float] = {}
+    for item in episode_files:
+        fid = str(item.get("file_id") or "")
+        if not fid:
+            continue
+        track_map[fid] = {
+            "audio": list(item.get("audio_tracks") or []),
+            "subtitles": list(item.get("subtitle_tracks") or []),
+        }
+        pos_raw = item.get("position_seconds")
+        try:
+            pos = float(pos_raw) if pos_raw is not None else 0.0
+        except (TypeError, ValueError):
+            pos = 0.0
+        if pos >= 10.0:
+            episode_resume_map[fid] = pos
+
+    return {
+        "anime": anime,
+        "episode_files": episode_files,
+        "selected_file_id": selected_file_id,
+        "selected_file_title": selected_title,
+        "selected_audio_tracks": selected_audio_tracks,
+        "selected_subtitle_tracks": selected_subtitle_tracks,
+        "track_map": track_map,
+        "episode_resume_map": episode_resume_map,
+        "play_endpoint": f"/ui/anime/{anime_id}/play",
+        "progress_endpoint": f"/ui/anime/{anime_id}/episode-progress",
+    }
+
+
+def _anime_info_rows(
+    anime: dict[str, Any],
+    *,
+    user_state: dict[str, Any],
+    terms: list[str],
+) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """Legacy tuple API; prefer :func:`_build_anime_detail_view`."""
+    anime_id_raw = anime.get("id")
+    anime_id: int | None
+    try:
+        anime_id = int(anime_id_raw) if anime_id_raw is not None else None
+    except (TypeError, ValueError):
+        anime_id = None
+    view = _build_anime_detail_view(
+        anime,
+        anime_id=anime_id,
+        terms=terms,
+        computed_status_text="",
+        schedule_lines=[],
+    )
+    rows = [
+        (field["label"], field["value"])
+        for field in view["metadata_fields"]
+    ]
+    return view["genre_tags"], view["alt_titles"], rows
+
+
+def _legacy_status_lines(anime: dict[str, Any]) -> tuple[str, list[str]]:
+    """Reuse legacy status/date text policy from ``shared.config.getters``."""
+    obj = types.SimpleNamespace(
+        status=anime.get("status"),
+        date_from=anime.get("date_from"),
+        date_to=anime.get("date_to"),
+        episodes=anime.get("episodes"),
+        broadcast=anime.get("broadcast"),
+    )
+    status = str(Getters.getStatus(obj) or "UNKNOWN").upper()
+
+    class _LegacyShim:
+        @staticmethod
+        def getStatus(anime_obj):
+            return Getters.getStatus(anime_obj)
+
+    try:
+        lines = list(Getters.getDateText(_LegacyShim(), obj) or [])
+    except Exception:  # noqa: BLE001
+        lines = []
+    return status, [str(line).strip() for line in lines if str(line).strip()]
+
+
+def _status_theme_meta(
+    settings: dict[str, Any], status: str
+) -> tuple[str, str]:
+    ui = settings.get("UI", {}) if isinstance(settings, dict) else {}
+    date_states = ui.get("dateStates", {}) if isinstance(ui, dict) else {}
+    state_meta = date_states.get(status, {}) if isinstance(date_states, dict) else {}
+    text = str(state_meta.get("text") or status.title()).strip()
+    color_key = str(state_meta.get("color") or "White").strip()
+    colors = ui.get("colors", {}) if isinstance(ui, dict) else {}
+    color = str(colors.get(color_key) or "").strip()
+    return text, color
+
+
+def _enrich_relations_with_user_tag(
+    sdk: ClientSDK, relations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for rel in relations:
+        row = dict(rel or {})
+        rel_id = row.get("id")
+        rel_tag = "NONE"
+        try:
+            if rel_id is not None:
+                state = sdk.get_user_state(int(rel_id), DEFAULT_USER_ID) or {}
+                rel_tag = str(state.get("tag") or "NONE").upper()
+        except Exception:  # noqa: BLE001
+            rel_tag = "NONE"
+        row["rel_tag"] = rel_tag
+        out.append(row)
+    return out
+
+
 _YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -220,9 +654,9 @@ def _humanize_size(num: Any) -> str | None:
 def _collect_anime_torrents(sdk: ClientSDK, anime_id: int) -> list[dict[str, Any]]:
     """Return the union of saved + in-flight torrents for ``anime_id``.
 
-    The detail page surfaces both the "Downloaded episodes" library
-    (persisted torrent metadata) and any task currently making progress
-    for the same anime, so the user always sees a single accurate list.
+    The anime detail "Episodes & downloads" section shows persisted
+    torrent metadata together with any in-memory task for the same
+    anime so the list stays accurate.
     Missing SDK methods or backend errors degrade to an empty list --
     every other section on the page is independent.
     """
@@ -394,6 +828,32 @@ def _redirect_get(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
+def _post_download_redirect_path(request: Request, anime_id: int) -> str:
+    """Pick a safe 303 target after download start/cancel so users stay on the page they used.
+
+    When the browser sends a same-origin ``Referer`` under ``/ui/``, return
+    that path (and query); otherwise fall back to the anime detail URL.
+    """
+    fallback = f"/ui/anime/{anime_id}"
+    raw = (request.headers.get("referer") or "").strip()
+    if not raw:
+        return fallback
+    try:
+        ref = urlparse(raw)
+    except ValueError:
+        return fallback
+    if ref.scheme not in ("http", "https"):
+        return fallback
+    if (ref.netloc or "").lower() != request.url.netloc.lower():
+        return fallback
+    path = ref.path or ""
+    if not path.startswith("/ui/") or ".." in PurePosixPath(path).parts:
+        return fallback
+    if ref.query:
+        return f"{path}?{ref.query}"
+    return path
+
+
 def _is_htmx(request: Request) -> bool:
     """Return True when the request was issued by HTMX.
 
@@ -431,15 +891,15 @@ def _anime_actions_response(
     return _render(
         request,
         "partials/anime_actions.html",
-        {"anime": anime, "user_state": user_state},
+        {
+            "anime": anime,
+            "user_state": user_state,
+        },
     )
 
 
-def _episode_player_response(request: Request, anime_id: int) -> Response:
-    """Swap the episode table after HTMX mutations; redirect otherwise."""
-    if not _is_htmx(request):
-        return _redirect(f"/ui/anime/{anime_id}")
-    sdk = get_sdk()
+def _anime_episodes_panel_context(sdk: ClientSDK, anime_id: int) -> dict[str, Any]:
+    """Build template context for the merged episode + torrent tables."""
     try:
         anime = sdk.get_anime(anime_id)
     except Exception:  # noqa: BLE001
@@ -451,10 +911,27 @@ def _episode_player_response(request: Request, anime_id: int) -> Response:
     except Exception:  # noqa: BLE001
         _LOG.debug("episode file lookup failed (panel)", exc_info=True)
         episode_files = []
+    anime_torrents = _collect_anime_torrents(sdk, anime_id)
+    return {
+        "anime": anime,
+        "episode_files": episode_files,
+        "anime_torrents": anime_torrents,
+    }
+
+
+def _episode_player_response(request: Request, anime_id: int) -> Response:
+    """Swap the episode table after HTMX mutations; silent 204 for in-player
+    ``fetch`` (avoids 303 + full-page GET during streaming); redirect otherwise.
+    """
+    if request.headers.get("x-am-player-background", "").lower() == "true":
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if not _is_htmx(request):
+        return _redirect(f"/ui/anime/{anime_id}")
+    sdk = get_sdk()
     return _render(
         request,
         "partials/anime_episode_player.html",
-        {"anime": anime, "episode_files": episode_files},
+        _anime_episodes_panel_context(sdk, anime_id),
     )
 
 
@@ -526,13 +1003,36 @@ def _is_client_allowed_for_streaming(request: Request, sdk: ClientSDK) -> bool:
     return bool(ip.is_private or ip.is_loopback or ip.is_link_local)
 
 
+def _next_ui_base_url() -> str:
+    """Return configured Next.js UI origin or empty string when disabled."""
+    return str(os.getenv("ANIMEMANAGER_NEXT_UI_URL", "")).strip().rstrip("/")
+
+
+def _next_ui_redirect_for_request(request: Request) -> RedirectResponse | None:
+    """Redirect `/ui/*` page requests to Next.js when cutover is enabled."""
+    base = _next_ui_base_url()
+    if not base:
+        return None
+    path = request.url.path or "/ui/library"
+    if path.startswith("/ui"):
+        path = path[3:] or "/"
+    query = str(request.url.query or "").strip()
+    target = f"{base}{path}"
+    if query:
+        target = f"{target}?{query}"
+    return RedirectResponse(target, status_code=307)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
 @router.get("/ui", include_in_schema=False)
-def web_ui_root() -> RedirectResponse:
+def web_ui_root(request: Request) -> RedirectResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     return _redirect_get("/ui/library")
 
 
@@ -543,6 +1043,9 @@ def web_library(
     q: str | None = None,
     page: int = 1,
 ) -> HTMLResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     sdk = get_sdk()
     page = max(1, _safe_int(page, 1))
     list_start = (page - 1) * PAGE_SIZE
@@ -801,6 +1304,9 @@ async def web_library_search_ws(websocket: WebSocket) -> None:
 
 @router.get("/ui/anime/{anime_id}", name="web_anime_detail")
 def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     sdk = get_sdk()
     try:
         anime = sdk.get_anime(anime_id)
@@ -817,6 +1323,12 @@ def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
             status_code=404,
         )
 
+    _maybe_refresh_anime_metadata(sdk, anime_id)
+    try:
+        anime = sdk.get_anime(anime_id)
+    except Exception:  # noqa: BLE001
+        pass
+
     user_state: dict[str, Any] = {}
     terms: list[str] = []
     relations: list[dict[str, Any]] = []
@@ -828,23 +1340,49 @@ def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
         terms = list(sdk.get_search_terms(anime_id) or [])
     except Exception:  # noqa: BLE001
         _LOG.debug("search_terms lookup failed", exc_info=True)
+    last_torrent_search_query: str | None = None
+    try:
+        last_torrent_search_query = sdk.get_last_torrent_search_query(anime_id)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("last_torrent_search_query lookup failed", exc_info=True)
     try:
         relations = list(sdk.get_relations(anime_id) or [])
     except Exception:  # noqa: BLE001
         _LOG.debug("relations lookup failed", exc_info=True)
+    relations = _enrich_relations_with_user_tag(sdk, relations)
+
+    settings: dict[str, Any] = {}
+    try:
+        settings = sdk.get_settings() or {}
+    except Exception:  # noqa: BLE001
+        settings = {}
 
     trailer_embed: str | None = None
+    alt_titles: list[str] = []
+    detail_genre_tags: list[str] = []
+    detail_airing_fields: list[dict[str, str]] = []
+    detail_metadata_fields: list[dict[str, str]] = []
+    computed_status = "UNKNOWN"
+    computed_status_text = "Unknown"
+    computed_status_color = ""
+    schedule_lines: list[str] = []
     if isinstance(anime, dict):
         trailer_embed = _youtube_embed_url(anime.get("trailer"))
-
-    anime_torrents = _collect_anime_torrents(sdk, anime_id)
-    try:
-        episode_files = list(
-            sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or []
+        computed_status, schedule_lines = _legacy_status_lines(anime)
+        computed_status_text, computed_status_color = _status_theme_meta(
+            settings, computed_status
         )
-    except Exception:  # noqa: BLE001
-        _LOG.debug("episode file lookup failed", exc_info=True)
-        episode_files = []
+        detail_view = _build_anime_detail_view(
+            anime,
+            anime_id=anime_id,
+            terms=terms,
+            computed_status_text=computed_status_text,
+            schedule_lines=schedule_lines,
+        )
+        alt_titles = detail_view["alt_titles"]
+        detail_genre_tags = detail_view["genre_tags"]
+        detail_airing_fields = detail_view["airing_fields"]
+        detail_metadata_fields = detail_view["metadata_fields"]
 
     return _render(
         request,
@@ -853,13 +1391,83 @@ def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
             "anime": anime,
             "user_state": user_state,
             "terms": terms,
+            "last_torrent_search_query": last_torrent_search_query,
             "relations": relations,
             "active_nav": "library",
             "page_title": anime.get("title") if isinstance(anime, dict) else None,
             "trailer_embed": trailer_embed,
-            "anime_torrents": anime_torrents,
-            "episode_files": episode_files,
+            "alt_titles": alt_titles,
+            "detail_genre_tags": detail_genre_tags,
+            "detail_airing_fields": detail_airing_fields,
+            "detail_metadata_fields": detail_metadata_fields,
+            "computed_status": computed_status,
+            "computed_status_text": computed_status_text,
+            "computed_status_color": computed_status_color,
         },
+    )
+
+
+@router.get("/ui/anime/{anime_id}/characters", name="web_anime_characters")
+def web_anime_characters(request: Request, anime_id: int) -> HTMLResponse:
+    """Cast list from ``characterRelations`` + ``characters`` tables."""
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
+    sdk = get_sdk()
+    try:
+        anime = sdk.get_anime(anime_id)
+    except NotFoundError:
+        return _render(
+            request,
+            "error.html",
+            {
+                "status_code": 404,
+                "status_text": "Not Found",
+                "detail": f"No anime with id {anime_id}.",
+                "active_nav": "library",
+            },
+            status_code=404,
+        )
+
+    characters: list[dict[str, Any]] = []
+    try:
+        characters = list(sdk.list_anime_characters(anime_id) or [])
+    except Exception:  # noqa: BLE001
+        _LOG.debug("list_anime_characters failed", exc_info=True)
+
+    page_title = None
+    if isinstance(anime, dict):
+        title = anime.get("title")
+        if title:
+            page_title = f"Characters · {title}"
+
+    return _render(
+        request,
+        "anime_characters.html",
+        {
+            "anime": anime,
+            "characters": characters,
+            "active_nav": "library",
+            "page_title": page_title,
+        },
+    )
+
+
+@router.get("/ui/anime/{anime_id}/episodes-panel", name="web_anime_episodes_panel")
+def web_anime_episodes_panel(request: Request, anime_id: int) -> HTMLResponse:
+    """HTMX lazy fragment: episode files + torrent rows (heavy ffprobe work)."""
+    sdk = get_sdk()
+    try:
+        sdk.get_anime(anime_id)
+    except NotFoundError:
+        return HTMLResponse(
+            '<p class="meta">Anime not found.</p>',
+            status_code=404,
+        )
+    return _render(
+        request,
+        "partials/anime_episode_player.html",
+        _anime_episodes_panel_context(sdk, anime_id),
     )
 
 
@@ -869,6 +1477,9 @@ def web_anime_watch(
     anime_id: int,
     file_id: str = "",
 ) -> HTMLResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     sdk = get_sdk()
     try:
         anime = sdk.get_anime(anime_id)
@@ -984,6 +1595,58 @@ def web_action_seen(
     return _anime_actions_response(request, anime_id)
 
 
+@router.post("/ui/anime/{anime_id}/refresh", name="web_action_refresh_anime")
+def web_action_refresh_anime(request: Request, anime_id: int) -> Response:
+    sdk = get_sdk()
+    try:
+        getattr(sdk, "refresh_anime_metadata", lambda _id: None)(anime_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("refresh_anime_metadata failed: %s", exc)
+    return _redirect(f"/ui/anime/{anime_id}")
+
+
+@router.post("/ui/anime/{anime_id}/redownload", name="web_action_redownload")
+def web_action_redownload(request: Request, anime_id: int) -> Response:
+    sdk = get_sdk()
+    try:
+        getattr(sdk, "redownload", lambda _id: 0)(anime_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("redownload failed: %s", exc)
+    return _redirect(f"/ui/anime/{anime_id}")
+
+
+@router.post("/ui/anime/{anime_id}/delete-seen", name="web_action_delete_seen_episodes")
+def web_action_delete_seen_episodes(request: Request, anime_id: int) -> Response:
+    sdk = get_sdk()
+    try:
+        getattr(sdk, "delete_seen_episodes", lambda _id, _uid: 0)(
+            anime_id, DEFAULT_USER_ID
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("delete_seen_episodes failed: %s", exc)
+    return _redirect(f"/ui/anime/{anime_id}")
+
+
+@router.post("/ui/anime/{anime_id}/delete-files", name="web_action_delete_all_files")
+def web_action_delete_all_files(request: Request, anime_id: int) -> Response:
+    sdk = get_sdk()
+    try:
+        getattr(sdk, "delete_all_files", lambda _id, _uid: 0)(anime_id, DEFAULT_USER_ID)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("delete_all_files failed: %s", exc)
+    return _redirect(f"/ui/anime/{anime_id}")
+
+
+@router.post("/ui/anime/{anime_id}/remove", name="web_action_remove_anime")
+def web_action_remove_anime(request: Request, anime_id: int) -> Response:
+    sdk = get_sdk()
+    try:
+        getattr(sdk, "delete_anime", lambda _id: False)(anime_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("delete_anime failed: %s", exc)
+    return _redirect("/ui/library")
+
+
 @router.post("/ui/anime/{anime_id}/episode-progress", name="web_action_episode_progress")
 def web_action_episode_progress(
     request: Request,
@@ -1024,6 +1687,68 @@ def web_action_episode_delete(
         sdk.delete_episode_file(anime_id, file_id=file_id, user_id=DEFAULT_USER_ID)
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("delete_episode_file failed: %s", exc)
+    return _episode_player_response(request, anime_id)
+
+
+@router.post("/ui/anime/{anime_id}/episode-mark-seen", name="web_action_episode_mark_seen")
+def web_action_episode_mark_seen(
+    request: Request,
+    anime_id: int,
+    file_id: str = Form(""),
+) -> Response:
+    sdk = get_sdk()
+    fid = str(file_id or "").strip()
+    if fid:
+        try:
+            sdk.set_episode_progress(
+                anime_id,
+                user_id=DEFAULT_USER_ID,
+                file_id=fid,
+                status="SEEN",
+                position_seconds=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("episode mark seen failed: %s", exc)
+    return _episode_player_response(request, anime_id)
+
+
+@router.post("/ui/anime/{anime_id}/episode-mark-unseen", name="web_action_episode_mark_unseen")
+def web_action_episode_mark_unseen(
+    request: Request,
+    anime_id: int,
+    file_id: str = Form(""),
+) -> Response:
+    sdk = get_sdk()
+    fid = str(file_id or "").strip()
+    if fid:
+        try:
+            sdk.set_episode_progress(
+                anime_id,
+                user_id=DEFAULT_USER_ID,
+                file_id=fid,
+                status="UNSEEN",
+                position_seconds=0.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("episode mark unseen failed: %s", exc)
+    return _episode_player_response(request, anime_id)
+
+
+@router.post("/ui/anime/{anime_id}/episode-redownload", name="web_action_episode_redownload")
+def web_action_episode_redownload(
+    request: Request,
+    anime_id: int,
+    file_id: str = Form(""),
+) -> Response:
+    sdk = get_sdk()
+    fid = str(file_id or "").strip()
+    if fid:
+        try:
+            getattr(sdk, "redownload_episode", lambda *_a, **_k: False)(
+                anime_id, fid, DEFAULT_USER_ID
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("episode redownload failed: %s", exc)
     return _episode_player_response(request, anime_id)
 
 
@@ -1426,6 +2151,9 @@ def _overview_counts(overview: dict[str, list[dict[str, Any]]]) -> dict[str, int
 
 @router.get("/ui/downloads", name="web_downloads")
 def web_downloads(request: Request) -> HTMLResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     sdk = get_sdk()
     overview = _load_torrents_overview(sdk)
     return _render(
@@ -1556,6 +2284,7 @@ async def web_downloads_ws(websocket: WebSocket) -> None:
 
 @router.post("/ui/anime/{anime_id}/download", name="web_action_start_download")
 def web_action_start_download(
+    request: Request,
     anime_id: int,
     url: str | None = Form(None),
     hash_value: str | None = Form(None),
@@ -1570,17 +2299,17 @@ def web_action_start_download(
         )
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("start_download failed: %s", exc)
-    return _redirect("/ui/downloads")
+    return _redirect(_post_download_redirect_path(request, anime_id))
 
 
 @router.post("/ui/anime/{anime_id}/cancel", name="web_action_cancel")
-def web_action_cancel(anime_id: int) -> RedirectResponse:
+def web_action_cancel(request: Request, anime_id: int) -> RedirectResponse:
     sdk = get_sdk()
     try:
         sdk.cancel_download(anime_id)
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("cancel_download failed: %s", exc)
-    return _redirect("/ui/downloads")
+    return _redirect(_post_download_redirect_path(request, anime_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1594,6 +2323,9 @@ def web_torrents(
     term: str | None = None,
     anime_id: int | None = None,
 ) -> HTMLResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     sdk = get_sdk()
     results: list[dict[str, Any]] = []
     term_clean = (term or "").strip()
@@ -1618,30 +2350,41 @@ def web_torrents(
     )
 
 
-def _resolve_anime_search_term(sdk: ClientSDK, anime_id: int, raw_term: str | None) -> tuple[str, bool]:
-    """Return ``(term, fallback_used)`` for the inline torrent search.
+def _resolve_anime_search_term(
+    sdk: ClientSDK, anime_id: int, raw_term: str | None
+) -> tuple[str, str]:
+    """Return ``(term_clean, torrent_term_source)`` for the inline torrent search.
 
-    Empty / whitespace-only ``raw_term`` falls back to the anime's saved
-    search terms; if none are saved, the anime title is used. This is
-    extracted because both the synchronous partial and the SSE stream
-    need the same resolution logic so they never diverge.
+    Empty / whitespace-only ``raw_term`` falls back in order to: the last
+    successful torrent query for this anime; saved search terms
+    (``title_synonyms`` rows); then the main title plus alternate titles.
+    ``torrent_term_source`` is ``explicit``, ``memory``, ``saved``,
+    ``title``, or ``none``.
     """
     term_clean = (raw_term or "").strip()
     if term_clean:
-        return term_clean, False
+        return term_clean, "explicit"
+    try:
+        last = sdk.get_last_torrent_search_query(anime_id)
+    except Exception:  # noqa: BLE001
+        last = None
+    if last and str(last).strip():
+        return str(last).strip(), "memory"
     try:
         saved = list(sdk.get_search_terms(anime_id) or [])
     except Exception:  # noqa: BLE001
         saved = []
     if saved:
-        return ", ".join(saved), True
+        return ", ".join(saved), "saved"
     try:
         anime = sdk.get_anime(anime_id)
     except Exception:  # noqa: BLE001
-        return "", False
-    if isinstance(anime, dict) and anime.get("title"):
-        return str(anime["title"]).strip(), True
-    return "", False
+        return "", "none"
+    if isinstance(anime, dict):
+        variants = title_variants_for_torrent_search(anime)
+        if variants:
+            return ", ".join(variants), "title"
+    return "", "none"
 
 
 @router.get("/ui/anime/{anime_id}/torrents", name="web_anime_torrent_search")
@@ -1655,21 +2398,22 @@ def web_anime_torrent_search(
     Returns the ``partials/anime_torrent_results.html`` skeleton so the
     anime detail page can swap it in-place. The skeleton wires a live
     SSE connection to :func:`web_anime_torrent_stream`; rows are then
-    appended progressively as engines respond.
+    streamed after the search completes, ordered by seed count.
 
     When ``term`` is empty we fall back to the anime's saved search
-    terms (if any) and finally to its title.
+    terms (if any) and finally to its title and alternate titles.
     """
     sdk = get_sdk()
-    term_clean, fallback_used = _resolve_anime_search_term(sdk, anime_id, term)
+    term_clean, torrent_term_source = _resolve_anime_search_term(sdk, anime_id, term)
     return _render(
         request,
         "partials/anime_torrent_results.html",
         {
             "term": term_clean,
+            "torrent_term_source": torrent_term_source,
             "anime_id": anime_id,
-            "fallback_used": fallback_used,
             "search_error": None,
+            "stream_limit": TORRENT_RESULT_LIMIT,
         },
     )
 
@@ -1685,12 +2429,11 @@ def web_anime_torrent_stream(
     Pushes one ``event: row`` per result (a ready-to-render HTML
     ``<tr>``) as soon as the underlying engines emit it, then a final
     ``event: end`` once the search completes (or a single
-    ``event: error`` if validation fails). The endpoint never
-    materializes the result list, so the user sees the first hits well
-    before the slowest engine finishes.
+    ``event: error`` if validation fails). The client applies the
+    top-k-by-seeds cap in real time while rows stream in.
     """
     sdk = get_sdk()
-    term_clean, _fallback = _resolve_anime_search_term(sdk, anime_id, term)
+    term_clean, _torrent_term_source = _resolve_anime_search_term(sdk, anime_id, term)
 
     def event_stream() -> Iterable[bytes]:
         if not term_clean:
@@ -1708,6 +2451,7 @@ def web_anime_torrent_stream(
         yield b": stream-open\n\n"
 
         emitted = 0
+        stream_failed = False
         try:
             for raw in sdk.stream_torrents(
                 terms, profile="interactive", limit=TORRENT_RESULT_LIMIT
@@ -1723,13 +2467,20 @@ def web_anime_torrent_stream(
                 yield _sse_event("row", html)
                 emitted += 1
         except ValidationError as exc:
+            stream_failed = True
             yield _sse_event("error", str(exc))
         except Exception as exc:  # noqa: BLE001
+            stream_failed = True
             _LOG.warning("inline torrent stream failed: %s", exc)
             yield _sse_event(
                 "error",
                 "Torrent search failed; check the search engines configuration.",
             )
+        if not stream_failed:
+            try:
+                sdk.set_last_torrent_search_query(anime_id, term_clean)
+            except Exception:  # noqa: BLE001
+                _LOG.debug("persist last torrent query failed", exc_info=True)
         yield _sse_event("end", str(emitted))
 
     return StreamingResponse(
@@ -1838,6 +2589,9 @@ def _settings_context(
 
 @router.get("/ui/settings", name="web_settings")
 def web_settings(request: Request) -> HTMLResponse:
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     sdk = get_sdk()
     try:
         current = sdk.get_settings() or {}
@@ -2011,6 +2765,9 @@ def web_logs(
     immediately; the JS layer then upgrades the page by subscribing
     to :func:`web_logs_stream` for live tail updates.
     """
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     # Pick up any settings.json change since the last visit. Cheap on
     # every render because the SDK caches the parsed file.
     _sync_log_buffer_from_settings_safe()
@@ -2319,6 +3076,9 @@ def web_offline(request: Request) -> HTMLResponse:
     The page is intentionally standalone (inline styles, no external
     JS) so it renders even when no other asset is cached.
     """
+    maybe = _next_ui_redirect_for_request(request)
+    if maybe is not None:
+        return maybe
     return templates.TemplateResponse(
         "offline.html",
         {"request": request},

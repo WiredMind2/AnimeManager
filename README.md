@@ -57,6 +57,16 @@ See [`docs/developer/architecture.rst`](docs/developer/architecture.rst)
 for the long-form description and [`clients/README.md`](clients/README.md)
 for client-adapter guidance.
 
+### Refactor stability gate
+
+During the stability refactor program, run before merging metadata or
+architecture changes::
+
+    python scripts/stability_gate.py
+
+See [`docs/developer/stability-slos.rst`](docs/developer/stability-slos.rst)
+and [ADR 0007](docs/adr/0007-stability-refactor.md).
+
 ## Features
 
 * Multi-provider anime metadata (Kitsu, AniList, MyAnimeList, Jikan).
@@ -116,6 +126,29 @@ Browsers hitting `/` are redirected to `/ui/library`; API tooling
 still receives the JSON status payload at `/`. See
 [`docs/features/web_ui.rst`](docs/features/web_ui.rst) for the full
 route map and design notes.
+
+### Next.js web UI (cutover target)
+
+The new App Router frontend lives in `next-web/` and consumes Python
+JSON/SSE/WS endpoints.
+
+```bash
+cd next-web
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+To redirect legacy `/ui/*` HTML routes to the Next.js app during
+cutover, set:
+
+```bash
+ANIMEMANAGER_NEXT_UI_URL=http://127.0.0.1:3000
+```
+
+Realtime endpoints (`/ui/library/ws`, `/ui/downloads/ws`,
+`/ui/anime/{id}/torrents/stream`, `/ui/logs/stream`) remain served by
+the Python backend.
 
 ### Convenience launcher (Windows)
 

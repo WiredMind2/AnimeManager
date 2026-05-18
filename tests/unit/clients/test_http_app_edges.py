@@ -70,6 +70,12 @@ class _SDKBase:
     def remove_search_term(self, anime_id, term):
         return True
 
+    def get_last_torrent_search_query(self, anime_id):
+        return None
+
+    def set_last_torrent_search_query(self, anime_id, query):
+        pass
+
     def get_settings(self):
         return {}
 

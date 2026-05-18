@@ -78,6 +78,7 @@ class FakeSDK:
             "windows": {"mainWindowHeight": 500},
         }
         self._terms: dict[int, list[str]] = {1: ["SubsPlease 1080p"]}
+        self._last_torrent_queries: dict[int, str] = {}
         self._tags: dict[int, str] = {}
         self._likes: dict[int, bool] = {}
         self._playback_sessions: dict[str, dict] = {}
@@ -90,6 +91,48 @@ class FakeSDK:
 
     def _record(self, name: str, *args, **kwargs) -> None:
         self.calls.append((name, args, kwargs))
+
+    def _torrent_rows_for_terms(self, terms: list) -> list[dict]:
+        """Deterministic catalog slice; order is *not* seed-sorted yet."""
+        q = " ".join(str(t) for t in terms).lower()
+        if "youkoso" in q or "kyoushitsu" in q:
+            return [
+                {
+                    "name": "[OtherGroup] Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e - 01 (720p).mkv",
+                    "link": "magnet:?xt=urn:btih:classroom1",
+                    "size": 400_000_000,
+                    "seeds": 900,
+                    "leech": 2,
+                    "hash": "classroom1",
+                },
+                {
+                    "name": "[SubsPlease] Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e - 01 (1080p) [A1B2C3D4].mkv",
+                    "link": "magnet:?xt=urn:btih:classroom2",
+                    "size": 800_000_000,
+                    "seeds": 88,
+                    "leech": 4,
+                    "hash": "classroom2",
+                },
+            ]
+        # Lower-seed row first — callers must sort by seeds (matches production).
+        return [
+            {
+                "name": "[Erai-raws] Bleach S01 - 02 [720p].mkv",
+                "link": "magnet:?xt=urn:btih:def",
+                "size": 524288000,
+                "seeds": 7,
+                "leech": 1,
+                "hash": "def",
+            },
+            {
+                "name": "[SubsPlease] Bleach S01 - 01 [1080p].mkv",
+                "link": "magnet:?xt=urn:btih:abc",
+                "size": 1572864000,
+                "seeds": 42,
+                "leech": 3,
+                "hash": "abc",
+            },
+        ]
 
     # -- read paths ---------------------------------------------------------
     def get_anime_list(self, **kwargs):
@@ -126,8 +169,13 @@ class FakeSDK:
             "picture": "https://example.com/p.jpg",
             "status": "FINISHED",
             "synopsis": "A boy who can see ghosts.",
+            "title_synonyms": ["BLEACH", "Burichi"],
+            "date_from": 1094688000,
+            "date_to": 1398992400,
             "episodes": 366,
             "duration": 24,
+            "rating": "PG-13",
+            "broadcast": "SATURDAY 18:00",
             "genres": ["Action", "Shounen"],
             "trailer": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         }
@@ -140,6 +188,22 @@ class FakeSDK:
 
     def get_relations(self, anime_id: int, relation_type: str = "anime"):
         return [{"id": 9, "title": "Bleach: TYBW", "type": "sequel"}]
+
+    def get_anime_folder(self, anime_id: int):
+        self._record("get_anime_folder", anime_id)
+        return "C:/Anime/Bleach - 1"
+
+    def list_anime_characters(self, anime_id: int):
+        self._record("list_anime_characters", anime_id)
+        return [
+            {
+                "id": 101,
+                "name": "Ichigo Kurosaki",
+                "role": "main",
+                "picture": "https://example.com/c.jpg",
+                "synopsis": "Substitute Soul Reaper.",
+            }
+        ]
 
     def get_active_downloads(self):
         return [
@@ -154,39 +218,15 @@ class FakeSDK:
 
     def search_torrents(self, terms, profile="interactive", limit=200):
         self._record("search_torrents", terms, profile=profile, limit=limit)
-        return [
-            {
-                "name": "[SubsPlease] Bleach S01 - 01 [1080p].mkv",
-                "link": "magnet:?xt=urn:btih:abc",
-                "size": 1572864000,  # 1.5 GB
-                "seeds": 42,
-                "leech": 3,
-                "hash": "abc",
-            }
-        ]
+        rows = list(self._torrent_rows_for_terms(terms))
+        rows.sort(key=lambda row: int(row.get("seeds") or 0), reverse=True)
+        return rows[: max(1, limit)]
 
     def stream_torrents(self, terms, profile="interactive", limit=200):
-        """Yield results one-by-one so the streaming endpoint can exercise
-        the SSE row/end framing without a real subprocess pool."""
+        """Yield like production: seed-sorted within ``limit``."""
         self._record("stream_torrents", terms, profile=profile, limit=limit)
-        rows = [
-            {
-                "name": "[SubsPlease] Bleach S01 - 01 [1080p].mkv",
-                "link": "magnet:?xt=urn:btih:abc",
-                "size": 1572864000,
-                "seeds": 42,
-                "leech": 3,
-                "hash": "abc",
-            },
-            {
-                "name": "[Erai-raws] Bleach S01 - 02 [720p].mkv",
-                "link": "magnet:?xt=urn:btih:def",
-                "size": 524288000,
-                "seeds": 7,
-                "leech": 1,
-                "hash": "def",
-            },
-        ]
+        rows = list(self._torrent_rows_for_terms(terms))
+        rows.sort(key=lambda row: int(row.get("seeds") or 0), reverse=True)
         for row in rows[: max(1, limit)]:
             yield row
 
@@ -222,12 +262,40 @@ class FakeSDK:
             return True
         return False
 
+    def get_last_torrent_search_query(self, anime_id: int):
+        self._record("get_last_torrent_search_query", anime_id)
+        return self._last_torrent_queries.get(anime_id)
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str):
+        self._record("set_last_torrent_search_query", anime_id, query)
+        self._last_torrent_queries[anime_id] = query
+
+    def refresh_anime_metadata(self, anime_id: int):
+        self._record("refresh_anime_metadata", anime_id)
+        return self.get_anime(anime_id)
+
     def start_download(self, anime_id: int, url=None, hash_value=None, user_id=None):
         self._record("start_download", anime_id, url, hash_value, user_id)
         return True
 
     def cancel_download(self, anime_id: int):
         self._record("cancel_download", anime_id)
+        return True
+
+    def redownload(self, anime_id: int):
+        self._record("redownload", anime_id)
+        return 1
+
+    def delete_seen_episodes(self, anime_id: int, user_id: int):
+        self._record("delete_seen_episodes", anime_id, user_id)
+        return 1
+
+    def delete_all_files(self, anime_id: int, user_id: int):
+        self._record("delete_all_files", anime_id, user_id)
+        return 1
+
+    def delete_anime(self, anime_id: int):
+        self._record("delete_anime", anime_id)
         return True
 
     def get_anime_torrents(self, anime_id: int):
@@ -257,8 +325,36 @@ class FakeSDK:
                 "size_bytes": 1572864000,
                 "season": 1,
                 "episode": 1,
+                "duration_seconds": 100.0,
+                "position_seconds": 85.0,
+                "watch_status": "IN_PROGRESS",
             }
         ]
+
+    def set_episode_progress(
+        self,
+        anime_id: int,
+        user_id: int,
+        file_id: str,
+        status: str,
+        position_seconds=None,
+    ):
+        self._record(
+            "set_episode_progress",
+            anime_id,
+            user_id,
+            file_id,
+            status,
+            position_seconds,
+        )
+
+    def delete_episode_file(self, anime_id: int, file_id: str, user_id: int):
+        self._record("delete_episode_file", anime_id, file_id, user_id)
+        return True
+
+    def redownload_episode(self, anime_id: int, file_id: str, user_id: int):
+        self._record("redownload_episode", anime_id, file_id, user_id)
+        return True
 
     def create_playback_session(self, anime_id: int, file_id: str, **kwargs):
         self._record("create_playback_session", anime_id, file_id, kwargs)
@@ -377,16 +473,40 @@ def test_anime_detail_renders_actions_and_terms(client):
     assert resp.status_code == 200
     body = resp.text
     assert "A boy who can see ghosts" in body
+    assert "Alternative titles: Burichi" in body
+    assert "Start date" in body and "2004-09-09" in body
+    assert "End date" in body and "2014-05-02" in body
+    assert "Genres" in body
+    assert "Action" in body
+    assert "Status" in body
     assert "Torrent search options" in body
     assert "Search options" in body
     # Tag select + like form share the actions wrapper used as HTMX target
     assert 'id="anime-actions"' in body
     assert 'name="tag"' in body
     assert "/ui/anime/1/like" in body
-    # Search-term manager is no longer shown directly on this page.
-    assert 'id="search-terms"' not in body
+    assert "/ui/anime/1/characters" in body
+    assert 'id="search-terms"' in body
+    assert "Danger zone" in body
+    assert "Delete seen episodes" in body
+    assert "Remove from DB" in body
     # Relations table rendered
     assert "Bleach: TYBW" in body
+
+
+def test_anime_characters_page_renders(client):
+    resp = client.get("/ui/anime/1/characters")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Ichigo Kurosaki" in body
+    assert "Characters" in body
+    assert ("list_anime_characters", (1,), {}) in client.fake.calls
+
+
+def test_anime_characters_page_404(client):
+    resp = client.get("/ui/anime/404/characters")
+    assert resp.status_code == 404
+    assert "Not Found" in resp.text
 
 
 def test_anime_detail_404_renders_error_page(client):
@@ -531,8 +651,21 @@ def test_start_download_action(client):
         data={"url": "magnet:?xt=urn:btih:abc"},
     )
     assert resp.status_code == 303
-    assert resp.headers["location"].endswith("/ui/downloads")
+    assert resp.headers["location"].endswith("/ui/anime/1")
     assert ("start_download", (1, "magnet:?xt=urn:btih:abc", None, 1), {}) in client.fake.calls
+
+
+def test_start_download_action_respects_referer(client):
+    resp = client.post(
+        "/ui/anime/1/download",
+        data={"url": "magnet:?xt=urn:btih:abc"},
+        headers={"Referer": "http://testserver/ui/torrents?anime_id=1&term=foo"},
+    )
+    assert resp.status_code == 303
+    loc = resp.headers["location"]
+    assert "/ui/torrents" in loc
+    assert "anime_id=1" in loc
+    assert "term=foo" in loc
 
 
 def test_cancel_download_action(client):
@@ -548,6 +681,29 @@ def test_torrents_search_renders_results(client):
     assert "[SubsPlease] Bleach S01" in body
     assert "1.5 GB" in body  # humanized size
     assert "42" in body  # seeds badge
+    lo = body.lower()
+    assert lo.find("[subsplease] bleach s01") < lo.find("[erai-raws]")
+
+
+def test_torrents_search_youkoso_jitsuryoku_includes_subsplease_high_seeds_first(client):
+    """Regression: long-title anime search surfaces SubsPlease, ordered by seeds."""
+    term = "Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e"
+    resp = client.get("/ui/torrents", params={"term": term})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "subsplease" in body.lower()
+    assert "[SubsPlease] Youkoso Jitsuryoku" in body
+    lo = body.lower()
+    assert lo.find("[othergroup]") < lo.find("[subsplease] youkoso")
+
+    stream = client.get(
+        "/ui/anime/1/torrents/stream",
+        params={"term": term},
+    )
+    assert stream.status_code == 200
+    slo = stream.text.lower()
+    assert "subsplease" in slo
+    assert slo.find("[othergroup]") < slo.find("[subsplease] youkoso")
 
 
 def test_torrents_search_empty_state(client):
@@ -774,9 +930,15 @@ def test_static_assets_served(client):
     css = client.get("/ui/static/css/app.css")
     assert css.status_code == 200
     assert "Anime" in css.text  # header comment present
+    assert ".watch-view__video-wrap:fullscreen" in css.text
+    assert "overflow: visible;" in css.text
     js = client.get("/ui/static/js/app.js")
     assert js.status_code == 200
     assert "AnimeManager web UI helpers" in js.text
+    assert "resolveFullscreenTarget" in js.text
+    subtitles_js = client.get("/ui/static/js/am_playback_subtitles.js")
+    assert subtitles_js.status_code == 200
+    assert "refreshOctopusLayout" in subtitles_js.text
 
 
 # ---------------------------------------------------------------------------
@@ -1027,15 +1189,86 @@ def test_seen_action_returns_partial_for_htmx(client):
     assert 'id="anime-actions"' in resp.text
 
 
-def test_cancel_download_redirects_to_downloads_page(client):
+def test_refresh_metadata_action_redirects(client):
+    resp = client.post("/ui/anime/1/refresh")
+    assert resp.status_code == 303
+    assert resp.headers["location"].endswith("/ui/anime/1")
+    assert ("refresh_anime_metadata", (1,), {}) in client.fake.calls
+
+
+def test_redownload_action_redirects(client):
+    resp = client.post("/ui/anime/1/redownload")
+    assert resp.status_code == 303
+    assert ("redownload", (1,), {}) in client.fake.calls
+
+
+def test_delete_seen_episodes_action_redirects(client):
+    resp = client.post("/ui/anime/1/delete-seen")
+    assert resp.status_code == 303
+    assert ("delete_seen_episodes", (1, 1), {}) in client.fake.calls
+
+
+def test_delete_all_files_action_redirects(client):
+    resp = client.post("/ui/anime/1/delete-files")
+    assert resp.status_code == 303
+    assert ("delete_all_files", (1, 1), {}) in client.fake.calls
+
+
+def test_remove_anime_action_redirects_to_library(client):
+    resp = client.post("/ui/anime/1/remove")
+    assert resp.status_code == 303
+    assert resp.headers["location"].endswith("/ui/library")
+    assert ("delete_anime", (1,), {}) in client.fake.calls
+
+
+def test_episode_progress_redirects_when_plain_form_post(client):
+    """Vanilla form POST (no HTMX) uses PRG redirect to the anime page."""
+    resp = client.post(
+        "/ui/anime/1/episode-progress",
+        data={
+            "file_id": "f1",
+            "status": "IN_PROGRESS",
+            "position_seconds": "12.5",
+        },
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].endswith("/ui/anime/1")
+
+
+def test_episode_progress_no_content_for_player_background_fetch(client):
+    """In-player ``fetch`` must not 303 to a full-page GET (breaks streaming)."""
+    resp = client.post(
+        "/ui/anime/1/episode-progress",
+        data={
+            "file_id": "f1",
+            "status": "IN_PROGRESS",
+            "position_seconds": "30",
+        },
+        headers={"X-AM-Player-Background": "true"},
+    )
+    assert resp.status_code == 204
+    assert not resp.content
+
+
+def test_episode_progress_returns_partial_for_htmx(client):
+    resp = client.post(
+        "/ui/anime/1/episode-progress",
+        data={"file_id": "f1", "status": "SEEN", "position_seconds": "0"},
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert 'id="anime-player"' in resp.text
+
+
+def test_cancel_download_redirects_to_anime_without_referer(client):
     resp = client.post("/ui/anime/1/cancel")
     assert resp.status_code == 303
-    assert resp.headers["location"].endswith("/ui/downloads")
+    assert resp.headers["location"].endswith("/ui/anime/1")
 
 
 def test_start_download_validates_missing_url(client):
     """Without url or hash_value the SDK should raise; route swallows
-    the error and still redirects (UX: PRG always lands on /downloads)."""
+    the error and still redirects (PRG lands on anime page when no Referer)."""
     from domain.errors import ValidationError
 
     def boom(*_args, **_kwargs):
@@ -1044,7 +1277,7 @@ def test_start_download_validates_missing_url(client):
     client.fake.start_download = boom  # type: ignore[assignment]
     resp = client.post("/ui/anime/1/download")
     assert resp.status_code == 303
-    assert resp.headers["location"].endswith("/ui/downloads")
+    assert resp.headers["location"].endswith("/ui/anime/1")
 
 
 # ---------------------------------------------------------------------------
@@ -1117,6 +1350,15 @@ def test_anime_torrent_search_partial_uses_saved_terms_by_default(client):
     assert not any(c[0] in {"search_torrents", "stream_torrents"} for c in client.fake.calls)
 
 
+def test_anime_torrent_search_partial_prefers_last_search_over_saved_terms(client):
+    client.fake._last_torrent_queries[1] = "HorribleSubs 720p"
+    resp = client.get("/ui/anime/1/torrents")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "HorribleSubs 720p" in body
+    assert "last search" in body.lower()
+
+
 def test_anime_torrent_search_partial_honors_override_term(client):
     resp = client.get(
         "/ui/anime/1/torrents",
@@ -1127,6 +1369,25 @@ def test_anime_torrent_search_partial_honors_override_term(client):
     assert "horriblesubs 720p" in body
     # The stream URL carries the override term verbatim.
     assert "term=horriblesubs%20720p" in body or "term=horriblesubs+720p" in body
+
+
+def test_anime_torrent_stream_fans_out_title_synonyms_when_no_saved_terms(
+    client, monkeypatch
+):
+    monkeypatch.setattr(client.fake, "get_search_terms", lambda anime_id: [])
+    monkeypatch.setattr(
+        client.fake,
+        "get_anime",
+        lambda anime_id: {
+            "id": anime_id,
+            "title": "Main Title",
+            "title_synonyms": ["MAIN TITLE", "Alt One"],
+        },
+    )
+    resp = client.get("/ui/anime/42/torrents/stream")
+    assert resp.status_code == 200
+    last = [c for c in client.fake.calls if c[0] == "stream_torrents"][-1]
+    assert last[1][0] == ["Main Title", "Alt One"]
 
 
 def test_anime_torrent_stream_returns_sse_rows(client):
@@ -1141,11 +1402,14 @@ def test_anime_torrent_stream_returns_sse_rows(client):
     assert body.count("event: row") == 2
     assert "[SubsPlease] Bleach S01 - 01 [1080p].mkv" in body
     assert "[Erai-raws] Bleach S01 - 02" in body
+    blo = body.lower()
+    assert blo.find("subsplease") < blo.find("erai-raws")
     # The stream completes with a final end event carrying the row count
     assert "event: end" in body
     # And the SDK was asked to stream (not the materialized variant)
     last_call = [c for c in client.fake.calls if c[0] == "stream_torrents"][-1]
     assert last_call[1][0] == ["bleach 1080p"]
+    assert ("set_last_torrent_search_query", (1, "bleach 1080p"), {}) in client.fake.calls
 
 
 def test_anime_torrent_stream_emits_error_event_when_no_term(client, monkeypatch):
@@ -1163,6 +1427,7 @@ def test_anime_torrent_stream_emits_error_event_when_no_term(client, monkeypatch
 
 
 def test_anime_detail_page_wires_inline_torrent_search(client):
+    client.fake._last_torrent_queries[1] = "previously used query"
     resp = client.get("/ui/anime/1")
     assert resp.status_code == 200
     body = resp.text
@@ -1173,43 +1438,120 @@ def test_anime_detail_page_wires_inline_torrent_search(client):
     assert 'hx-target="#anime-torrent-results"' in body
     # The HTMX form auto-loads results on page open
     assert 'hx-trigger="load"' in body
+    assert 'value="previously used query"' in body
 
 
 # ---------------------------------------------------------------------------
-# Downloaded episodes section
+# Episodes & downloads section (merged local player + torrent list)
 # ---------------------------------------------------------------------------
 
 
-def test_anime_detail_downloaded_episodes_lists_saved_torrents(client):
+def test_anime_detail_episodes_and_downloads_lists_saved_torrents(client):
     resp = client.get("/ui/anime/1")
     assert resp.status_code == 200
     body = resp.text
-    assert "Downloaded episodes" in body
-    # Saved torrent name from FakeSDK.get_anime_torrents
-    assert "[SubsPlease] Bleach S01 - 02 [1080p].mkv" in body
-    # Active downloads with the same anime_id are merged in
-    assert "[SubsPlease] Bleach - 01.mkv" in body
-    # FakeSDK.get_anime_torrents reports a complete download (size == downloaded)
-    assert "COMPLETE" in body
-    # Active download from FakeSDK.get_active_downloads is in DOWNLOADING state
-    assert "DOWNLOADING" in body
+    assert "episodes-panel" in body
+    panel = client.get("/ui/anime/1/episodes-panel")
+    assert panel.status_code == 200
+    frag = panel.text
+    assert "Episodes &amp; downloads" in frag
+    assert "[SubsPlease] Bleach S01 - 02 [1080p].mkv" in frag
+    assert "[SubsPlease] Bleach - 01.mkv" in frag
+    assert "COMPLETE" in frag
+    assert "DOWNLOADING" in frag
 
 
-def test_anime_detail_downloaded_episodes_empty_when_none(client, monkeypatch):
+def test_anime_detail_episodes_and_downloads_empty_when_none(client, monkeypatch):
     monkeypatch.setattr(client.fake, "get_anime_torrents", lambda anime_id: [])
     monkeypatch.setattr(client.fake, "get_active_downloads", lambda: [])
+    monkeypatch.setattr(
+        client.fake,
+        "list_episode_files",
+        lambda anime_id, user_id=None: [],
+    )
     resp = client.get("/ui/anime/1")
     assert resp.status_code == 200
-    assert "Nothing downloaded yet" in resp.text
+    panel = client.get("/ui/anime/1/episodes-panel")
+    assert panel.status_code == 200
+    assert "Nothing here yet" in panel.text
 
 
 def test_anime_detail_renders_episode_player_links(client):
     resp = client.get("/ui/anime/1")
     assert resp.status_code == 200
+    assert "episodes-panel" in resp.text
+    panel = client.get("/ui/anime/1/episodes-panel")
+    assert panel.status_code == 200
+    frag = panel.text
+    assert "Episodes &amp; downloads" in frag
+    assert "/ui/anime/1/watch?file_id=ep-001" in frag
+    assert "data-episode-menu" in frag
+    assert "progress--watch" in frag
+    assert "progress--watch-high" in frag
+
+
+def test_anime_detail_omits_removed_action_controls(client):
+    resp = client.get("/ui/anime/1")
     body = resp.text
-    assert "Episode player" in body
-    assert "Open player" in body or "watch?file_id=ep-001" in body
-    assert "/ui/anime/1/watch?file_id=ep-001" in body
+    assert "Refresh metadata" not in body
+    assert "Open folder" not in body
+    assert "Save seen" not in body
+    assert 'name="file_name"' not in body
+
+
+def test_anime_detail_auto_refresh_metadata_throttled(client):
+    http_web._METADATA_REFRESH_TS.clear()
+    client.fake.calls.clear()
+    client.get("/ui/anime/1")
+    first = sum(1 for c in client.fake.calls if c[0] == "refresh_anime_metadata")
+    assert first == 1
+    client.get("/ui/anime/1")
+    second = sum(1 for c in client.fake.calls if c[0] == "refresh_anime_metadata")
+    assert second == first
+
+
+def test_episodes_panel_omits_aggregate_progress_and_has_row_menu(client):
+    panel = client.get("/ui/anime/1/episodes-panel")
+    frag = panel.text
+    assert "Overall download progress" not in frag
+    assert "data-episode-menu" in frag
+    assert "Mark seen" in frag
+    assert "Mark unseen" in frag
+    assert "/ui/anime/1/episode-redownload" in frag
+
+
+def test_episode_mark_seen_htmx_updates_panel(client):
+    resp = client.post(
+        "/ui/anime/1/episode-mark-seen",
+        data={"file_id": "ep-001"},
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert ("set_episode_progress", (1, 1, "ep-001", "SEEN", None), {}) in client.fake.calls
+
+
+def test_episode_mark_unseen_htmx_updates_panel(client):
+    resp = client.post(
+        "/ui/anime/1/episode-mark-unseen",
+        data={"file_id": "ep-001"},
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert (
+        "set_episode_progress",
+        (1, 1, "ep-001", "UNSEEN", 0.0),
+        {},
+    ) in client.fake.calls
+
+
+def test_episode_redownload_htmx_updates_panel(client):
+    resp = client.post(
+        "/ui/anime/1/episode-redownload",
+        data={"file_id": "ep-001"},
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert ("redownload_episode", (1, "ep-001", 1), {}) in client.fake.calls
 
 
 def test_playback_session_create_returns_manifest_payload(client):
@@ -1231,6 +1573,10 @@ def test_watch_page_renders_player_view(client):
     # user interaction with the media-chrome controls.
     assert "data-player-auto-fullscreen=\"0\"" in body
     assert "data-player-auto-fullscreen=\"1\"" not in body
+    # Fullscreen host keeps video and ASS overlay in the same subtree.
+    assert 'id="watch-wrap-1"' in body
+    assert 'fullscreenelement="watch-wrap-1"' in body
+    assert "data-player-ass-overlay" in body
 
 
 def test_stream_manifest_requires_token(client):
@@ -1259,4 +1605,4 @@ def test_stream_heartbeat_and_stop_endpoints(client):
     assert hb.status_code == 200
     stop = client.post("/ui/stream/sess-1/stop")
     assert stop.status_code == 200
-    
+    assert stop.json()["ok"] is True

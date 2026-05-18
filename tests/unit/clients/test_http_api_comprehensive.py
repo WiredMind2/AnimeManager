@@ -140,6 +140,16 @@ class RecordingSDK:
             "remove_search_term", (anime_id, term), {}, default=lambda: True
         )
 
+    def get_last_torrent_search_query(self, anime_id: int):
+        return self._invoke(
+            "get_last_torrent_search_query", (anime_id,), {}, default=lambda: None
+        )
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str):
+        return self._invoke(
+            "set_last_torrent_search_query", (anime_id, query), {}, default=lambda: None
+        )
+
     def update_settings(self, updates):
         return self._invoke(
             "update_settings", (updates,), {}, default=lambda: updates

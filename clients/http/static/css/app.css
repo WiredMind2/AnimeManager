@@ -866,22 +866,115 @@ textarea {
 
 .detail__synonyms {
   font-size: 14px;
+  line-height: 1.45;
   color: var(--text-muted);
+  max-width: 65ch;
 }
 
-.detail__stats {
+.detail__stats,
+.detail__badges {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
+}
+
+.detail__stats {
   margin-top: var(--sp-3);
 }
 
+.detail__badges {
+  margin-top: var(--sp-2);
+}
+
 .detail__synopsis {
-  margin-top: var(--sp-6);
+  margin-top: var(--sp-5);
   font-size: 16px;
   line-height: 1.65;
   color: var(--text);
   max-width: 70ch;
+}
+
+.detail__synopsis--empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.detail__info {
+  margin-top: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  max-width: 72ch;
+}
+
+.detail__info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-3);
+}
+
+.detail__info-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: var(--sp-4);
+}
+
+.detail__info-card--genres {
+  margin-top: var(--sp-1);
+}
+
+.detail__info-label {
+  margin: 0 0 var(--sp-3);
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.detail__info-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.detail__kv {
+  display: grid;
+  grid-template-columns: minmax(96px, 38%) minmax(0, 1fr);
+  gap: var(--sp-3) var(--sp-4);
+  margin: 0;
+}
+
+.detail__kv dt {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.detail__kv dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.detail__kv-hint {
+  display: block;
+  margin-top: var(--sp-1);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.detail__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
 }
 
 .detail__actions {
@@ -889,6 +982,48 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
+}
+
+.episode-row-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.episode-row-menu__panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 168px;
+  padding: var(--sp-1);
+  border-radius: var(--r-2);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-2);
+}
+
+.episode-row-menu__item {
+  display: block;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.episode-row-menu__item:hover,
+.episode-row-menu__item:focus-visible {
+  background: var(--surface-3);
+  outline: none;
+}
+
+.episode-row-menu__item--danger {
+  color: var(--danger);
 }
 
 .detail__section {
@@ -975,6 +1110,17 @@ textarea {
 
 .watch-view__video-wrap {
   min-height: 68vh;
+  position: relative;
+}
+
+.watch-view__page-nav {
+  position: sticky;
+  top: calc(var(--topbar-h) + var(--safe-top));
+  z-index: 25;
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-2) 0 var(--sp-3);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
 .watch-view__controller {
@@ -989,6 +1135,8 @@ textarea {
   width: 100%;
   min-height: 68vh;
   max-height: 80vh;
+  object-fit: contain;
+  object-position: center center;
 }
 
 .watch-view__controller:fullscreen,
@@ -996,17 +1144,51 @@ textarea {
   width: 100vw;
   height: 100vh;
   min-height: 100vh;
+  --media-width: 100vw;
+  --media-height: 100vh;
+  --media-object-fit: contain;
+}
+
+.watch-view__video-wrap:fullscreen,
+.watch-view__video-wrap:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  background: #000;
+  overflow: visible;
+}
+
+.watch-view__video-wrap:fullscreen .watch-view__controller,
+.watch-view__video-wrap:-webkit-full-screen .watch-view__controller {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+
+.watch-view__video-wrap:fullscreen .watch-view__ass-overlay,
+.watch-view__video-wrap:-webkit-full-screen .watch-view__ass-overlay {
+  inset: 0;
+  z-index: 12;
+}
+
+.watch-view__video-wrap:fullscreen .player-panel__status,
+.watch-view__video-wrap:-webkit-full-screen .player-panel__status {
+  display: none;
 }
 
 .watch-view__controller:fullscreen .watch-view__video,
 .watch-view__controller:-webkit-full-screen .watch-view__video,
+.watch-view__video-wrap:fullscreen .watch-view__video,
+.watch-view__video-wrap:-webkit-full-screen .watch-view__video,
 .watch-view__video:fullscreen,
 .watch-view__video:-webkit-full-screen {
-  width: 100%;
-  height: 100%;
-  min-height: 100%;
-  max-height: none;
-  object-fit: contain;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  max-height: none !important;
+  /* Preserve source display aspect ratio on non-standard displays. */
+  object-fit: contain !important;
+  object-position: center center !important;
   background: #000;
 }
 
@@ -1017,8 +1199,11 @@ textarea {
  */
 .watch-view__controller .shaka-text-container {
   position: absolute;
-  inset: 0;
-  z-index: 2;
+  left: var(--am-video-box-left, 0px);
+  top: var(--am-video-box-top, 0px);
+  width: var(--am-video-box-width, 100%);
+  height: var(--am-video-box-height, 100%);
+  z-index: 8;
   pointer-events: none;
   padding: 0 2.5% calc(4% + env(safe-area-inset-bottom, 0px));
   box-sizing: border-box;
@@ -1030,10 +1215,21 @@ textarea {
   max-width: 96%;
 }
 
-.watch-view__controller .libassjs-canvas-parent {
+.watch-view__ass-overlay {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.watch-view__controller .libassjs-canvas-parent,
+.watch-view__ass-overlay .libassjs-canvas-parent {
+  position: absolute;
+  left: var(--am-video-box-left, 0px);
+  top: var(--am-video-box-top, 0px);
+  width: var(--am-video-box-width, 100%);
+  height: var(--am-video-box-height, 100%);
+  z-index: 11;
   pointer-events: none;
   display: flex;
   align-items: stretch;
@@ -1610,6 +1806,39 @@ tr:hover .torrent-name::after,
   );
   border-radius: var(--r-full);
   transition: width 240ms ease;
+}
+
+.progress--watch {
+  min-width: 140px;
+}
+
+.progress--watch .progress__bar {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    rgba(86, 216, 239, 0.75) 100%
+  );
+}
+
+.progress--watch-high .progress__bar {
+  background: linear-gradient(
+    90deg,
+    var(--success) 0%,
+    #7ec020 100%
+  );
+}
+
+.episode-watch-meta {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.episode-watch-meta--muted {
+  color: var(--text-faint);
 }
 
 .download-card {
@@ -2635,6 +2864,14 @@ tr:hover .torrent-name::after,
     font-size: 14.5px;
   }
 
+  .detail__info-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail__kv {
+    grid-template-columns: minmax(88px, 42%) minmax(0, 1fr);
+  }
+
   /* Cards: tighter grid on phones. */
   .grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -2775,17 +3012,24 @@ tr:hover .torrent-name::after,
 /* Anime detail page tables should keep all columns visible in the
  * viewport while still giving the key text columns ("Episode" and
  * "Release") extra room whenever the container is wide enough. */
-.table-wrap > .table--anime-episodes,
+.table-wrap > .table--anime-episodes {
+  /* Progress select + action buttons need stable width; let table scroll
+   * horizontally on narrower viewports instead of overlapping columns. */
+  min-width: 860px;
+  table-layout: auto;
+}
+
 .table-wrap > .table--anime-downloads {
   min-width: 0;
   table-layout: fixed;
 }
 
-.table--anime-episodes .col--episode-file { width: 34%; }
-.table--anime-episodes .col--season       { width: 10%; }
-.table--anime-episodes .col--episode      { width: 28%; }
-.table--anime-episodes .col--size         { width: 14%; }
-.table--anime-episodes .col--actions      { width: 14%; }
+.table--anime-episodes .col--episode-file { width: auto; }
+.table--anime-episodes .col--season       { width: 72px; }
+.table--anime-episodes .col--episode      { width: 72px; }
+.table--anime-episodes .col--size         { width: 112px; }
+.table--anime-episodes .col--progress     { width: 196px; }
+.table--anime-episodes .col--actions      { width: 176px; }
 
 .table--anime-downloads .col--release     { width: 56%; }
 .table--anime-downloads .col--size        { width: 12%; }

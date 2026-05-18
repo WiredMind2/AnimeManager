@@ -82,6 +82,17 @@ class TestValidateUrlEdges:
         ok, reason = validate_url("https://")
         assert ok is False
 
+    def test_urlparse_exception_returns_unparseable(self, monkeypatch):
+        import shared.security.utils as sec_utils
+
+        def boom(_url):
+            raise ValueError("forced parse failure")
+
+        monkeypatch.setattr(sec_utils, "urlparse", boom)
+        ok, reason = validate_url("https://example.com")
+        assert ok is False
+        assert reason == "unparseable"
+
     def test_scheme_default_is_https_only(self):
         assert DEFAULT_ALLOWED_SCHEMES == ("https",)
 

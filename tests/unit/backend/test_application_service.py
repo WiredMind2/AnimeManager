@@ -30,6 +30,13 @@ class FakeRepository:
         _ = anime_id
         return bool(term)
 
+    def get_last_torrent_search_query(self, anime_id: int):
+        _ = anime_id
+        return None
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str):
+        _ = (anime_id, query)
+
     def get_settings(self):
         return {"anime": {"hideRated": True}}
 
@@ -40,6 +47,17 @@ class FakeRepository:
         _ = (anime_id, relation_type)
         return [{"id": 1, "rel_id": 2, "name": "SEQUEL"}]
 
+    def list_anime_characters(self, anime_id: int):
+        _ = anime_id
+        return [{"id": 1, "name": "Renji", "role": "supporting", "picture": None, "synopsis": None}]
+
+    def delete_anime(self, anime_id: int):
+        _ = anime_id
+        return True
+
+    def get_anime_folder(self, anime_id: int):
+        return f"/anime/{anime_id}"
+
 
 class FakeProvider:
     def search(self, query: str, limit: int = 50):
@@ -47,6 +65,9 @@ class FakeProvider:
         if query == "naruto":
             return [AnimeEntity(id=2, title="Naruto", status="FINISHED")]
         return []
+
+    def refresh_anime(self, anime_id: int):
+        return AnimeEntity(id=anime_id, title="Refreshed", status="AIRING")
 
 
 class FakeDownload:
@@ -67,6 +88,10 @@ class FakeDownload:
     def search_torrents(self, terms, profile="interactive", limit=200):
         _ = (profile, limit)
         return [{"name": "result", "terms": terms}]
+
+    def redownload(self, anime_id: int):
+        _ = anime_id
+        return 1
 
 
 class FakeActions:
@@ -162,3 +187,8 @@ def test_extended_contract_use_cases():
     assert service.get_settings()["anime"]["hideRated"] is True
     assert service.update_settings({"anime": {"hideRated": False}})["anime"]["hideRated"] is False
     assert service.get_relations(1)[0]["name"] == "SEQUEL"
+    assert service.list_anime_characters(1)[0]["name"] == "Renji"
+    assert service.redownload(1) == 1
+    assert service.delete_anime(1) is True
+    assert service.get_anime_folder(1) == "/anime/1"
+    assert service.refresh_anime_metadata(1).title == "Refreshed"

@@ -13,6 +13,12 @@
 {% endblock %}
 
 {% block content %}
+  <nav class="watch-view__page-nav" aria-label="Anime page" style="margin-bottom: var(--sp-5)">
+    <a class="btn btn--ghost"
+       href="{{ url_for('web_anime_characters', anime_id=anime.id) }}">
+      Characters
+    </a>
+  </nav>
   <section class="detail">
     <div class="detail__poster">
       {% if anime.picture %}
@@ -22,32 +28,91 @@
 
     <div>
       <div class="detail__head">
-        <span class="detail__eyebrow">{% if anime.status %}{{ anime.status|capitalize }}{% else %}Anime{% endif %} · ID {{ anime.id }}</span>
+        <span class="detail__eyebrow">
+          {% if computed_status_text %}{{ computed_status_text }}{% elif anime.status %}{{ anime.status|capitalize }}{% else %}Anime{% endif %}
+          · ID {{ anime.id }}
+        </span>
         <h1 class="detail__title">{{ anime.title }}</h1>
-        {% if anime.title_synonyms %}
-          <p class="detail__synonyms">{{ anime.title_synonyms | join(' · ') }}</p>
+        {% if alt_titles %}
+          <p class="detail__synonyms" title="Alternative titles">
+            {{ alt_titles | join(' · ') }}
+          </p>
         {% endif %}
 
         <div class="detail__stats">
           {% if anime.episodes %}<span class="badge">{{ anime.episodes }} episodes</span>{% endif %}
           {% if anime.duration %}<span class="badge">{{ anime.duration }} min · ep</span>{% endif %}
           {% if anime.rating %}<span class="badge">{{ anime.rating }}</span>{% endif %}
-          {% for g in (anime.genres or [])[:6] %}
-            <span class="badge">{{ g }}</span>
-          {% endfor %}
-          {% if user_state and user_state.get('tag') %}
+          {% if user_state and user_state.get('tag') and user_state.get('tag') != 'NONE' %}
             <span class="badge badge--accent">Tag · {{ user_state.tag }}</span>
           {% endif %}
           {% if user_state and user_state.get('liked') %}
             <span class="badge badge--good">Liked</span>
           {% endif %}
         </div>
+
+        {% if computed_status_text %}
+          <div class="detail__badges" aria-label="Airing status">
+            <span class="badge"{% if computed_status_color %} style="border-color: {{ computed_status_color }}; color: {{ computed_status_color }};"{% endif %}>
+              {{ computed_status_text }}
+            </span>
+          </div>
+        {% endif %}
       </div>
 
       {% if anime.synopsis %}
         <p class="detail__synopsis">{{ anime.synopsis }}</p>
       {% else %}
-        <p class="detail__synopsis" style="color: var(--text-faint)">No synopsis available.</p>
+        <p class="detail__synopsis detail__synopsis--empty">No synopsis available.</p>
+      {% endif %}
+
+      {% if detail_airing_fields or detail_metadata_fields or detail_genre_tags %}
+        <section class="detail__info" aria-label="Anime information">
+          <div class="detail__info-grid">
+            {% if detail_airing_fields %}
+              <article class="detail__info-card">
+                <h3 class="detail__info-label">Release &amp; Airing</h3>
+                <dl class="detail__kv">
+                  {% for field in detail_airing_fields %}
+                    <dt>{{ field.label }}</dt>
+                    <dd>
+                      {{ field.value }}
+                      {% if field.hint %}
+                        <span class="detail__kv-hint">{{ field.hint }}</span>
+                      {% endif %}
+                    </dd>
+                  {% endfor %}
+                </dl>
+              </article>
+            {% endif %}
+            {% if detail_metadata_fields %}
+              <article class="detail__info-card">
+                <h3 class="detail__info-label">More info</h3>
+                <dl class="detail__kv">
+                  {% for field in detail_metadata_fields %}
+                    <dt>{{ field.label }}</dt>
+                    <dd>
+                      {{ field.value }}
+                      {% if field.hint %}
+                        <span class="detail__kv-hint">{{ field.hint }}</span>
+                      {% endif %}
+                    </dd>
+                  {% endfor %}
+                </dl>
+              </article>
+            {% endif %}
+          </div>
+          {% if detail_genre_tags %}
+            <article class="detail__info-card detail__info-card--genres">
+              <h3 class="detail__info-label">Genres</h3>
+              <div class="detail__chips">
+                {% for tag in detail_genre_tags %}
+                  <span class="badge">{{ tag }}</span>
+                {% endfor %}
+              </div>
+            </article>
+          {% endif %}
+        </section>
       {% endif %}
 
       {% include "partials/anime_actions.html" %}
@@ -78,6 +143,20 @@
       </span>
     </form>
 
+    <form class="form-row"
+          method="post"
+          action="{{ url_for('web_action_start_download', anime_id=anime.id) }}"
+          style="margin-bottom: var(--sp-5)">
+      <input class="input"
+             type="text"
+             name="url"
+             placeholder="Paste magnet or .torrent URL"
+             autocomplete="off" />
+      <button class="btn" type="submit">Download from URL</button>
+    </form>
+
+    {% include "partials/search_terms.html" %}
+
     <div id="torrent-term-modal"
          class="modal"
          role="dialog"
@@ -100,9 +179,10 @@
                    id="anime-torrent-term"
                    form="anime-torrent-form"
                    name="term"
-                   placeholder="Optional: comma-separated term override (defaults to saved terms / title)"
+                   value="{{ last_torrent_search_query|default('', true)|e }}"
+                   placeholder="Optional: comma-separated override — blank uses last search, saved terms, or title"
                    autocomplete="off" />
-            <p class="meta">Leave blank to use saved terms (or the anime title when none are saved).</p>
+            <p class="meta">Leave blank to reuse your last search, then saved terms, then the anime title.</p>
           </div>
         </div>
       </div>
@@ -118,71 +198,20 @@
     </div>
   </section>
 
-  {% include "partials/anime_episode_player.html" %}
-
-  <section class="detail__section">
-    <div class="detail__section-title">
-      <h3>Downloaded episodes</h3>
-      <span class="meta">
-        {% if anime_torrents %}{{ anime_torrents|length }} torrent{{ '' if anime_torrents|length == 1 else 's' }}{% else %}Nothing downloaded yet{% endif %}
-      </span>
-    </div>
-
-    {% if anime_torrents %}
-      <div class="table-wrap">
-      <table class="table table--anime-downloads">
-        <colgroup>
-          <col class="col--release" />
-          <col class="col--size" />
-          <col class="col--progress" />
-          <col class="col--state" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th class="truncate">Release</th>
-            <th class="num">Size</th>
-            <th class="num">Progress</th>
-            <th>State</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in anime_torrents %}
-            {% set pct = ((row.progress or 0) * 100)|round(1) if row.progress is not none else None %}
-            <tr>
-              <td class="truncate" title="{{ row.name }}">
-                {{ row.name or row.hash or '—' }}
-                {% if row.path %}<div style="font-size:11px; color: var(--text-faint)">{{ row.path }}</div>{% endif %}
-              </td>
-              <td class="num">{{ row.size_human or '—' }}</td>
-              <td class="num" style="min-width: 120px">
-                {% if pct is not none %}
-                  <div class="progress" aria-label="Download progress">
-                    <div class="progress__bar" style="width: {{ pct }}%"></div>
-                  </div>
-                  <span style="font-size: 11px; color: var(--text-muted)">{{ pct }}%</span>
-                {% else %}—{% endif %}
-              </td>
-              <td>
-                {% set state = (row.state or 'SAVED')|upper %}
-                {% if state == 'COMPLETE' %}
-                  <span class="badge badge--good">{{ state }}</span>
-                {% elif state == 'DOWNLOADING' %}
-                  <span class="badge badge--accent">{{ state }}</span>
-                {% else %}
-                  <span class="badge">{{ state }}</span>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+  <div id="anime-episodes-panel-mount"
+       hx-get="{{ url_for('web_anime_episodes_panel', anime_id=anime.id) }}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <section class="detail__section" aria-busy="true">
+      <div class="detail__section-title">
+        <h3>Episodes &amp; downloads</h3>
+        <span class="meta">Loading…</span>
       </div>
-    {% else %}
-      <p style="color: var(--text-faint); font-size: 13px">
-        Nothing downloaded yet — pick a release from the torrent search above to start.
+      <p style="color: var(--text-faint); font-size: 13px" class="htmx-indicator">
+        Scanning local media and torrent state…
       </p>
-    {% endif %}
-  </section>
+    </section>
+  </div>
 
   {% if relations %}
     <section class="detail__section">
@@ -203,7 +232,12 @@
           {% for rel in relations %}
             <tr>
               <td>{{ rel.title or rel.name or '—' }}</td>
-              <td><span class="badge">{{ rel.type or 'related' }}</span></td>
+              <td>
+                <span class="badge">{{ rel.type or 'related' }}</span>
+                {% if rel.rel_tag and rel.rel_tag != 'NONE' %}
+                  <span class="badge badge--accent">Tag · {{ rel.rel_tag }}</span>
+                {% endif %}
+              </td>
               <td class="num">
                 {% if rel.id %}
                   <a class="btn btn--ghost" href="{{ url_for('web_anime_detail', anime_id=rel.id) }}">Open</a>

@@ -5,6 +5,15 @@ This page covers the operational knobs that influence the API->DB
 pipeline at runtime: feature flags, secret provisioning, database
 bootstrap, and rollback procedures.
 
+Stability gate
+--------------
+
+Before merging refactor work, run the mandatory stability gate::
+
+   python scripts/stability_gate.py
+
+See :doc:`stability-slos` for SLO targets and critical user journeys.
+
 Feature flags
 -------------
 

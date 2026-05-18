@@ -147,6 +147,17 @@ def test_remove_search_term_forwards(facade, service):
     assert facade.remove_search_term(1, "t") is True
 
 
+def test_get_last_torrent_search_query_forwards(facade, service):
+    service.get_last_torrent_search_query.return_value = "a, b"
+    assert facade.get_last_torrent_search_query(3) == "a, b"
+    service.get_last_torrent_search_query.assert_called_once_with(3)
+
+
+def test_set_last_torrent_search_query_forwards(facade, service):
+    facade.set_last_torrent_search_query(2, "x, y")
+    service.set_last_torrent_search_query.assert_called_once_with(2, "x, y")
+
+
 def test_get_settings_returns_dict(facade, service):
     service.get_settings.return_value = {"x": 1}
     assert facade.get_settings() == {"x": 1}
@@ -168,7 +179,135 @@ def test_get_relations_custom_type(facade, service):
     service.get_relations.assert_called_once_with(1, "manga")
 
 
+def test_list_anime_characters_forwards(facade, service):
+    service.list_anime_characters.return_value = [{"id": 1, "name": "A"}]
+    assert facade.list_anime_characters(5) == [{"id": 1, "name": "A"}]
+    service.list_anime_characters.assert_called_once_with(5)
+
+
 def test_service_errors_propagate(facade, service):
     service.get_anime_details.side_effect = RuntimeError("boom")
     with pytest.raises(RuntimeError):
         facade.get_anime_details(1)
+
+
+def test_stream_search_anime_uses_streamer_when_present(facade, service):
+    def _stream(req):
+        yield f"item-{req.query}"
+
+    service.stream_search_anime = _stream
+    assert list(facade.stream_search_anime("abc", limit=3)) == ["item-abc"]
+    service.search_anime.assert_not_called()
+
+
+def test_stream_search_anime_falls_back_to_search(facade, service):
+    del service.stream_search_anime
+    service.search_anime.return_value = ["x", "y"]
+    assert list(facade.stream_search_anime("q", limit=5)) == ["x", "y"]
+    service.search_anime.assert_called_once_with(SearchRequest(query="q", limit=5))
+
+
+def test_startup_jobs_property_and_run(facade, service):
+    jobs = MagicMock()
+    report = MagicMock()
+    jobs.run.return_value = report
+    facade_with_jobs = EmbeddedClientFacade(service, startup_jobs=jobs)
+    assert facade_with_jobs.startup_jobs is jobs
+    assert facade_with_jobs.run_startup_jobs() is report
+    jobs.run.assert_called_once()
+
+
+def test_startup_jobs_absent_returns_none(facade):
+    assert facade.startup_jobs is None
+    assert facade.run_startup_jobs() is None
+    assert facade.kickoff_startup_jobs() is None
+
+
+def test_kickoff_startup_jobs_returns_thread(facade, service):
+    jobs = MagicMock()
+    thread = MagicMock()
+    jobs.run_in_background.return_value = thread
+    out = EmbeddedClientFacade(service, startup_jobs=jobs).kickoff_startup_jobs()
+    assert out is thread
+    jobs.run_in_background.assert_called_once()
+
+
+def test_refresh_delete_folder_and_redownload(facade, service):
+    facade.refresh_anime_metadata(9)
+    service.refresh_anime_metadata.assert_called_once_with(9)
+    service.delete_anime.return_value = True
+    assert facade.delete_anime(9) is True
+    service.get_anime_folder.return_value = "/anime/9"
+    assert facade.get_anime_folder(9) == "/anime/9"
+    service.redownload.return_value = 2
+    assert facade.redownload(9) == 2
+
+
+def test_torrent_overview_and_stream(facade, service):
+    service.get_torrents_overview.return_value = {"active": []}
+    assert facade.get_torrents_overview() == {"active": []}
+    service.stream_torrents.return_value = iter([{"name": "t"}])
+    assert list(facade.stream_torrents(["a"], profile="p", limit=10)) == [{"name": "t"}]
+    service.stream_torrents.assert_called_once_with(["a"], profile="p", limit=10)
+
+
+def test_get_anime_torrents_and_episode_files(facade, service):
+    service.get_anime_torrents.return_value = [{"hash": "h"}]
+    assert facade.get_anime_torrents(4) == [{"hash": "h"}]
+    service.list_episode_files.return_value = [{"file_id": "ep-1"}]
+    assert facade.list_episode_files(4, user_id=7) == [{"file_id": "ep-1"}]
+    service.list_episode_files.assert_called_once_with(4, user_id=7)
+
+
+def test_episode_progress_and_deletes(facade, service):
+    facade.set_episode_progress(1, 2, "ep-1", "seen", position_seconds=12.5)
+    service.set_episode_progress.assert_called_once_with(
+        1, 2, "ep-1", "seen", position_seconds=12.5
+    )
+    service.delete_episode_file.return_value = True
+    assert facade.delete_episode_file(1, "ep-1", 2) is True
+    service.redownload_episode.return_value = True
+    assert facade.redownload_episode(1, "ep-1", 2) is True
+    service.redownload_episode.assert_called_once_with(1, "ep-1", 2)
+    service.delete_all_files.return_value = 3
+    assert facade.delete_all_files(1, 2) == 3
+    service.delete_seen_episodes.return_value = 1
+    assert facade.delete_seen_episodes(1, 2) == 1
+
+
+def test_playback_session_methods(facade, service):
+    session = {"session_id": "s1"}
+    service.create_playback_session.return_value = session
+    out = facade.create_playback_session(
+        1,
+        "ep-1",
+        client_host="127.0.0.1",
+        ttl_seconds=60,
+        audio_track=0,
+        subtitle_track=1,
+        start_time_seconds=5.0,
+    )
+    assert out is session
+    service.create_playback_session.assert_called_once_with(
+        anime_id=1,
+        file_id="ep-1",
+        client_host="127.0.0.1",
+        ttl_seconds=60,
+        audio_track=0,
+        subtitle_track=1,
+        start_time_seconds=5.0,
+    )
+    service.heartbeat_playback_session.return_value = {"ok": True}
+    assert facade.heartbeat_playback_session("s1") == {"ok": True}
+    facade.stop_playback_session("s1")
+    service.stop_playback_session.assert_called_once_with("s1")
+    service.resolve_playback_media_path.return_value = "/tmp/seg.ts"
+    assert (
+        facade.resolve_playback_media_path(
+            session_id="s1", token="tok", segment_name="seg.ts"
+        )
+        == "/tmp/seg.ts"
+    )
+    service.resolve_playback_media_path.assert_called_once_with(
+        session_id="s1", token="tok", segment_name="seg.ts"
+    )

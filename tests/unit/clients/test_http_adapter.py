@@ -60,6 +60,13 @@ class FakeSDK:
         _ = (anime_id, term)
         return True
 
+    def get_last_torrent_search_query(self, anime_id: int):
+        _ = anime_id
+        return None
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str):
+        _ = (anime_id, query)
+
     def get_settings(self):
         return {"anime": {"hideRated": True}}
 

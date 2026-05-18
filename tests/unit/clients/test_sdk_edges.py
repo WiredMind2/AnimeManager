@@ -32,6 +32,16 @@ class FakeFacade:
     def get_anime_details(self, anime_id):
         return AnimeEntity(id=anime_id, title="Detail")
 
+    def refresh_anime_metadata(self, anime_id):
+        return AnimeEntity(id=anime_id, title="Refreshed")
+
+    def delete_anime(self, anime_id):
+        self.calls.append(("delete_anime", anime_id))
+        return True
+
+    def get_anime_folder(self, anime_id):
+        return f"/anime/{anime_id}"
+
     def start_download(self, anime_id, url=None, hash_value=None, user_id=None):
         return True
 
@@ -40,6 +50,10 @@ class FakeFacade:
 
     def cancel_download(self, anime_id):
         return True
+
+    def redownload(self, anime_id):
+        self.calls.append(("redownload", anime_id))
+        return 1
 
     def get_active_downloads(self):
         return [{"anime_id": 1}]
@@ -68,6 +82,12 @@ class FakeFacade:
     def remove_search_term(self, anime_id, term):
         return True
 
+    def get_last_torrent_search_query(self, anime_id):
+        return None
+
+    def set_last_torrent_search_query(self, anime_id, query):
+        pass
+
     def get_settings(self):
         return {"anime": {"hideRated": True}}
 
@@ -76,6 +96,18 @@ class FakeFacade:
 
     def get_relations(self, anime_id, relation_type="anime"):
         return [{"id": 1, "rel_id": 2}]
+
+    def list_anime_characters(self, anime_id):
+        self.calls.append(("list_anime_characters", anime_id))
+        return [{"id": 9, "name": "Mugiwara"}]
+
+    def delete_all_files(self, anime_id, user_id):
+        self.calls.append(("delete_all_files", anime_id, user_id))
+        return 2
+
+    def delete_seen_episodes(self, anime_id, user_id):
+        self.calls.append(("delete_seen_episodes", anime_id, user_id))
+        return 1
 
 
 @pytest.fixture
@@ -122,8 +154,21 @@ class TestSDKEdges:
         out = sdk.get_anime(42)
         assert out["id"] == 42
 
+    def test_refresh_anime_metadata_returns_dict(self, sdk):
+        out = sdk.refresh_anime_metadata(42)
+        assert out["title"] == "Refreshed"
+
+    def test_delete_anime_returns_bool(self, sdk):
+        assert sdk.delete_anime(42) is True
+
+    def test_get_anime_folder(self, sdk):
+        assert sdk.get_anime_folder(2) == "/anime/2"
+
     def test_start_download_pass_through(self, sdk):
         assert sdk.start_download(1, url="magnet:?xt=urn:btih:abc") is True
+
+    def test_redownload_pass_through(self, sdk):
+        assert sdk.redownload(1) == 1
 
     def test_get_download_progress_returns_dict(self, sdk):
         assert sdk.get_download_progress(1) == {"anime_id": 1, "progress": 30}
@@ -150,6 +195,12 @@ class TestSDKEdges:
         sdk.mark_seen(1, "ep.mkv", 7)
         assert ("mark_seen", 1, "ep.mkv", 7) in sdk._facade.calls
 
+    def test_delete_all_files(self, sdk):
+        assert sdk.delete_all_files(1, 7) == 2
+
+    def test_delete_seen_episodes(self, sdk):
+        assert sdk.delete_seen_episodes(1, 7) == 1
+
     def test_update_settings_returns_dict(self, sdk):
         out = sdk.update_settings({"a": 1})
         assert out == {"a": 1}
@@ -157,6 +208,11 @@ class TestSDKEdges:
     def test_get_relations_default_anime_type(self, sdk):
         out = sdk.get_relations(1)
         assert out == [{"id": 1, "rel_id": 2}]
+
+    def test_list_anime_characters(self, sdk):
+        out = sdk.list_anime_characters(2)
+        assert out == [{"id": 9, "name": "Mugiwara"}]
+        assert ("list_anime_characters", 2) in sdk._facade.calls
 
     def test_get_search_terms_returns_list(self, sdk):
         assert sdk.get_search_terms(1) == ["x"]
