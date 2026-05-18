@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from shared.base_component import BaseComponent
 from shared.security import validate_url
-from adapters.legacy.legacy_classes import Magnet, Torrent
+from application.bridges.legacy_entities import Magnet, Torrent
 
 
 class DownloadManager(BaseComponent):
@@ -62,6 +62,9 @@ class DownloadManager(BaseComponent):
             name="DownloadProcessor",
         )
         self._processor.start()
+        self._restore_persisted_thread_started = False
+        self._restore_session_lock = threading.Lock()
+        self._persisted_restore_completed = False
 
     def close(self) -> None:
         """Cancel in-flight downloads and release worker resources."""
@@ -94,6 +97,147 @@ class DownloadManager(BaseComponent):
     def set_database_manager(self, database_manager) -> None:
         """Attach the database manager used to persist torrent metadata."""
         self._database_manager = database_manager
+
+    def schedule_restore_persisted_torrents_after_startup(self) -> None:
+        """Best-effort early restore on a background thread.
+
+        The authoritative pass also runs from :meth:`get_torrents_overview`
+        the first time the UI (or any client) asks for torrent state, so we
+        never miss the window where LibTorrent's session finishes connecting
+        after process start.
+        """
+        if self._restore_persisted_thread_started:
+            return
+        self._restore_persisted_thread_started = True
+        threading.Thread(
+            target=self._restore_persisted_torrents_worker,
+            daemon=True,
+            name="LibTorrentPersistedRestore",
+        ).start()
+
+    def _restore_persisted_torrents_worker(self) -> None:
+        try:
+            self._maybe_restore_persisted_torrents()
+        except Exception as exc:  # noqa: BLE001
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Persisted torrent restore worker failed: {exc}",
+            )
+
+    @staticmethod
+    def _torrent_manager_uses_ephemeral_session(tm: Any) -> bool:
+        """True for embedded LibTorrent (empty session every process start)."""
+        return tm is not None and getattr(tm, "name", None) == "LibTorrent"
+
+    def _maybe_restore_persisted_torrents(self) -> None:
+        """Re-add persisted LibTorrent jobs once the client session is ready.
+
+        Runs from the background worker and from :meth:`get_torrents_overview`
+        so a cold start never depends on thread ordering alone. If LibTorrent
+        is still connecting, we leave ``_persisted_restore_completed`` false
+        and try again on the next overview poll.
+        """
+        if self._persisted_restore_completed:
+            return
+        tm = self._torrent_manager
+        if tm is None:
+            return
+        if not self._torrent_manager_uses_ephemeral_session(tm):
+            with self._restore_session_lock:
+                self._persisted_restore_completed = True
+            return
+        with self._restore_session_lock:
+            if self._persisted_restore_completed:
+                return
+            outcome = self._restore_persisted_torrents_once()
+            if outcome is None:
+                return
+            self._persisted_restore_completed = True
+
+    def _restore_persisted_torrents_once(self) -> Optional[int]:
+        """Wait for LibTorrent, then re-queue any DB torrents missing from the client.
+
+        Returns:
+            ``None`` if the torrent client never became ready in time (or a
+            subsequent ``list()`` failed) so the caller can retry later.
+            Otherwise the number of torrents successfully submitted (may be ``0``).
+        """
+        tm = self._torrent_manager
+        if tm is None or not self._torrent_manager_uses_ephemeral_session(tm):
+            return 0
+        db_manager = self._database_manager
+        if db_manager is None:
+            return 0
+
+        deadline = time.time() + 45.0
+        while time.time() < deadline:
+            try:
+                tm.list()
+            except Exception:
+                time.sleep(0.4)
+                continue
+            break
+        else:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                "Persisted torrent restore skipped: torrent client not ready in time",
+            )
+            return None
+
+        try:
+            pairs = db_manager.list_anime_torrent_pairs()
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Persisted torrent restore: could not read index: {exc}",
+            )
+            return 0
+        if not pairs:
+            return 0
+
+        try:
+            live = tm.list() or []
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Persisted torrent restore: list() failed: {exc}",
+            )
+            return None
+
+        current: set[str] = set()
+        for entry in live:
+            h = self._extract_torrent_field(entry, "hash")
+            if h:
+                current.add(str(h).strip().lower())
+
+        restored = 0
+        for anime_id, hash_value in pairs:
+            hl = str(hash_value).strip().lower()
+            if not hl or hl in current:
+                continue
+            task = DownloadTask(anime_id, hash_value=hash_value)
+            torrent = self._prepare_torrent(task)
+            if not torrent or not hasattr(torrent, "to_magnet"):
+                continue
+            try:
+                folder = self._resolve_anime_media_folder_for_restore(anime_id)
+                if not folder:
+                    continue
+                if self._start_download(anime_id, torrent, folder_path=folder):
+                    restored += 1
+                    current.add(hl)
+            except Exception as exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Restore torrent hash={hl!r} anime_id={anime_id}: {exc}",
+                )
+
+        if restored:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Restored {restored} persisted torrent(s) for seeding after startup",
+            )
+        return restored
 
     def set_watching_tag_callback(
         self, callback: Optional[Callable[[int, int], None]]
@@ -136,7 +280,32 @@ class DownloadManager(BaseComponent):
             Number of torrents queued for redownload
         """
         self.log("DOWNLOAD_MANAGER", f"Redownload requested for anime {anime_id}")
-        return 0
+        db_manager = self._database_manager
+        if db_manager is None:
+            return 0
+        try:
+            pairs = list(db_manager.list_anime_torrent_pairs() or [])
+        except Exception as exc:
+            self.log("DOWNLOAD_MANAGER", f"Redownload lookup failed: {exc}")
+            return 0
+        queued = 0
+        seen_hashes: set[str] = set()
+        for aid, hash_value in pairs:
+            try:
+                if int(aid) != int(anime_id):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            hash_clean = str(hash_value or "").strip()
+            if not hash_clean:
+                continue
+            hash_key = hash_clean.lower()
+            if hash_key in seen_hashes:
+                continue
+            seen_hashes.add(hash_key)
+            if self.download_file(anime_id, hash_value=hash_clean) is not None:
+                queued += 1
+        return queued
 
     def cancel_download(self, anime_id: int) -> bool:
         """
@@ -281,6 +450,7 @@ class DownloadManager(BaseComponent):
         Torrents that have no matching anime row are still returned so
         the user can see them and decide whether to clean them up.
         """
+        self._maybe_restore_persisted_torrents()
         empty: Dict[str, List[Dict[str, Any]]] = {
             "active": [],
             "seeding": [],
@@ -708,7 +878,20 @@ class DownloadManager(BaseComponent):
                 if db_manager is not None:
                     data = db_manager.get_torrent_data(task.hash_value)
                     if data:
-                        return Torrent(hash=task.hash_value, name=data[0], trackers=data[1])
+                        # ``data[1]`` is whatever shape the persistence
+                        # layer chose; we always store JSON since the
+                        # ``DatabaseManager.save_torrent`` rewrite, but
+                        # older rows may still be plain text. Decode
+                        # back to a list so :meth:`Torrent.to_magnet`
+                        # emits a proper ``&tr=<url>`` per tracker
+                        # instead of urlencoding the JSON string itself
+                        # one character at a time.
+                        trackers = self._decode_persisted_trackers(data[1])
+                        return Torrent(
+                            hash=task.hash_value,
+                            name=data[0],
+                            trackers=trackers,
+                        )
 
         except Exception as e:
             self.log("DOWNLOAD_MANAGER", f"Error preparing torrent: {e}")
@@ -725,6 +908,37 @@ class DownloadManager(BaseComponent):
         except Exception as exc:
             self.log("DOWNLOAD_MANAGER", f"Error saving torrent: {exc}")
 
+    @staticmethod
+    def _decode_persisted_trackers(value: Any) -> list[str]:
+        """Coerce the stored ``trackers`` column back into a list of URLs.
+
+        ``DatabaseManager.save_torrent`` writes a JSON array, but the
+        adapter contract is intentionally permissive (older rows may
+        carry plain text, list-likes, or ``None``). Returning a list
+        unconditionally keeps :meth:`Torrent.to_magnet` from iterating
+        a stray string char by char.
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [str(v) for v in value if v]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                try:
+                    import json as _json
+
+                    decoded = _json.loads(stripped)
+                except Exception:
+                    return [stripped]
+                if isinstance(decoded, list):
+                    return [str(v) for v in decoded if v]
+                return [str(decoded)] if decoded else []
+            return [stripped]
+        return [str(value)]
+
     def _set_user_tag(self, anime_id: int, user_id: int) -> None:
         """Promote library tag to ``WATCHING`` when a download is tied to a user."""
         self.log("DOWNLOAD_MANAGER", f"Watching-tag hook for anime {anime_id}, user {user_id}")
@@ -738,13 +952,20 @@ class DownloadManager(BaseComponent):
                 "DOWNLOAD_MANAGER",
                 f"Watching-tag callback failed for anime {anime_id}: {exc}",
             )
-    def _start_download(self, anime_id: int, torrent: Torrent) -> bool:
+    def _start_download(
+        self,
+        anime_id: int,
+        torrent: Torrent,
+        *,
+        folder_path: Optional[str] = None,
+    ) -> bool:
         """
         Start the actual download.
 
         Args:
             anime_id: Anime ID
             torrent: Torrent object
+            folder_path: Optional save path; defaults to :meth:`_get_anime_folder`.
 
         Returns:
             True if download started successfully
@@ -753,14 +974,16 @@ class DownloadManager(BaseComponent):
             if not self._torrent_manager or not hasattr(torrent, "to_magnet"):
                 return False
 
-            folder_path = self._get_anime_folder(anime_id)
-            if not folder_path:
+            resolved = folder_path or self._get_anime_folder(anime_id)
+            if not resolved:
                 return False
 
-            torrents = self._torrent_manager.add([torrent.to_magnet()], path=folder_path)
+            torrents = self._torrent_manager.add(
+                [torrent.to_magnet()], path=resolved
+            )
 
             if torrents:
-                self._move_torrents_to_folder(torrents, folder_path)
+                self._move_torrents_to_folder(torrents, resolved)
 
             return bool(torrents)
 
@@ -874,6 +1097,64 @@ class DownloadManager(BaseComponent):
         if title in (None, ""):
             return None
         return str(title)
+
+    @staticmethod
+    def _folder_direct_file_weight(path: str) -> int:
+        """Total size in bytes of regular files directly under ``path``."""
+        total = 0
+        try:
+            with os.scandir(path) as entries:
+                for ent in entries:
+                    if ent.is_file(follow_symlinks=False):
+                        try:
+                            total += ent.stat().st_size
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+        return total
+
+    def _resolve_anime_media_folder_for_restore(self, anime_id: int) -> Optional[str]:
+        """Pick the on-disk folder that already holds this anime's media.
+
+        After a metadata refresh the sanitized title (and thus folder name)
+        can change while completed torrents still live under the old
+        ``… - <id>`` directory. We prefer any existing ``Animes`` subfolder
+        whose name ends with `` - <id>`` (or equals ``anime_<id>``) and has
+        files, then fall back to :meth:`_get_anime_folder`.
+        """
+        fm = self._file_manager
+        data_path = ""
+        if fm is not None:
+            settings = getattr(fm, "settings", None)
+            if isinstance(settings, dict):
+                data_path = str(settings.get("dataPath") or "").strip()
+
+        if not data_path:
+            return self._get_anime_folder(anime_id)
+
+        animes_root = os.path.join(data_path, "Animes")
+        suffix = f" - {anime_id}"
+        legacy = f"anime_{anime_id}"
+        candidates: list[str] = []
+        try:
+            if os.path.isdir(animes_root):
+                for name in os.listdir(animes_root):
+                    if not (name.endswith(suffix) or name == legacy):
+                        continue
+                    full = os.path.join(animes_root, name)
+                    if os.path.isdir(full):
+                        candidates.append(full)
+        except OSError:
+            candidates = []
+
+        if candidates:
+            candidates.sort(
+                key=lambda p: self._folder_direct_file_weight(p), reverse=True
+            )
+            return candidates[0]
+
+        return self._get_anime_folder(anime_id)
 
     def _move_torrents_to_folder(self, torrents, folder_path: str) -> None:
         """

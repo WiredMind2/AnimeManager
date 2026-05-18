@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import threading
 import time
@@ -37,6 +38,19 @@ import json
 class LibTorrent(BaseTorrentManager):
     name = "LibTorrent"
 
+    # Period (seconds) between bulk ``save_resume_data()`` requests.
+    # Keeps the on-disk ``.fastresume`` files in sync with the live
+    # torrent state so an interrupted download can pick up from the
+    # last checkpoint instead of force-rechecking every file from
+    # scratch on the next launch.
+    _RESUME_SAVE_INTERVAL_S: float = 30.0
+
+    # Filename pattern recognised by the resume loader. Matches the
+    # 40-char hex info-hashes that LibTorrent emits via
+    # ``str(handle.info_hash())`` plus the legacy 32-char base32 form,
+    # so manually-dropped files still get picked up.
+    _RESUME_FILENAME_RE = re.compile(r"^[0-9A-Fa-f]{32,40}\.fastresume$")
+
     def __init__(self, *args, **kwargs):
         if not LIBTORRENT_AVAILABLE:
             raise TorrentException(
@@ -46,6 +60,11 @@ class LibTorrent(BaseTorrentManager):
         self.handles = {}  # Maps hash to torrent_handle
         self._running = False
         self._thread = None
+        # On-disk location for ``.fastresume`` checkpoints. Set during
+        # :meth:`initialize` once we know the user's data root.
+        self._resume_data_dir: Optional[str] = None
+        # Drives the periodic resume-data save inside the alert loop.
+        self._last_resume_save: float = 0.0
         # Provide a sensible default download_path before calling BaseTorrentManager.__init__
         # BaseTorrentManager.__init__ may call login_dialog() when update=True, and
         # login_dialog expects `self.download_path` to exist.
@@ -106,6 +125,23 @@ class LibTorrent(BaseTorrentManager):
         if not self.download_path:
             return self.login_dialog()
 
+        # Co-locate the resume cache with the user's library so it is
+        # portable with their data path and survives across runs. We
+        # prefer the dataPath (the file manager's root) over the
+        # download_path so the directory is shared with the persisted
+        # ``.libtorrent`` cache used by other clients; if neither is
+        # set, fall back to the temp download path so the on-disk
+        # contract still holds for fresh installs.
+        resume_root = data_path or self.download_path
+        if resume_root:
+            try:
+                self._resume_data_dir = os.path.join(
+                    resume_root, ".libtorrent_resume"
+                )
+                os.makedirs(self._resume_data_dir, exist_ok=True)
+            except OSError:
+                self._resume_data_dir = None
+
         self.connect()
 
     def connect(self, thread=True):
@@ -138,6 +174,19 @@ class LibTorrent(BaseTorrentManager):
             self._thread = threading.Thread(target=self._session_thread, daemon=True)
             self._thread.start()
 
+            # Re-attach torrents from on-disk ``.fastresume`` files
+            # synchronously *in this connect thread* (which is itself
+            # backgrounded by :meth:`connect`). Loading before public
+            # API consumers see ``self._running=True``-gated calls
+            # like ``list()`` succeeding for the first time keeps the
+            # application-level DB restore in
+            # :class:`DownloadManager` from racing the loader and
+            # double-adding torrents that already exist on disk. The
+            # session alert loop runs concurrently to process the
+            # ``torrent_added_alert`` for each restored handle.
+            if self._resume_data_dir:
+                self._load_resume_data_dir()
+
         except Exception as e:
             print(f"Couldn't connect to LibTorrent: {str(e)}")  # TODO - use logger
             raise TorrentException(f"Failed to initialize LibTorrent session: {str(e)}")
@@ -156,13 +205,220 @@ class LibTorrent(BaseTorrentManager):
                         info_hash = str(alert.info_hash)
                         if info_hash in self.handles:
                             del self.handles[info_hash]
+                        self._delete_resume_file(info_hash)
                     elif isinstance(alert, lt.torrent_error_alert):
                         print(f"Torrent error: {alert.message}")  # TODO - use logger
+                    elif isinstance(
+                        alert, getattr(lt, "save_resume_data_alert", tuple())
+                    ):
+                        self._persist_resume_alert(alert)
+                    elif isinstance(
+                        alert,
+                        getattr(lt, "save_resume_data_failed_alert", tuple()),
+                    ):
+                        # Common when a checkpoint races with shutdown
+                        # or before metadata arrives; recoverable on
+                        # the next periodic save tick.
+                        pass
+                    elif isinstance(
+                        alert, getattr(lt, "metadata_received_alert", tuple())
+                    ):
+                        # First-time we know enough about the torrent
+                        # to capture a fastresume blob; trigger one
+                        # immediately so a freshly added magnet survives
+                        # an early shutdown.
+                        self._save_resume_data_for(alert.handle)
 
+                self._maybe_request_periodic_resume_save()
                 time.sleep(0.1)  # Small delay to prevent busy waiting
             except Exception as e:
                 print(f"Error in session thread: {str(e)}")  # TODO - use logger
                 break
+
+    def _maybe_request_periodic_resume_save(self) -> None:
+        """Fan out a ``save_resume_data`` request to every live handle.
+
+        Runs once per :attr:`_RESUME_SAVE_INTERVAL_S` seconds so the
+        on-disk checkpoints stay close to the live torrent state. The
+        actual write happens later, when the resulting
+        ``save_resume_data_alert`` flows through the alert loop.
+        """
+        if not self._resume_data_dir or not self.session:
+            return
+        now = time.time()
+        if now - self._last_resume_save < self._RESUME_SAVE_INTERVAL_S:
+            return
+        self._last_resume_save = now
+        for handle in list(self.handles.values()):
+            self._save_resume_data_for(handle)
+
+    @staticmethod
+    def _save_resume_data_for(handle: Any) -> None:
+        """Request resume data for ``handle`` if it is ready.
+
+        ``save_resume_data()`` on a handle without metadata raises in
+        older libtorrent builds; check ``has_metadata`` (and
+        ``is_valid``) so the alert loop doesn't take collateral damage
+        from a single just-added magnet.
+        """
+        try:
+            if not handle.is_valid():
+                return
+            if not handle.has_metadata():
+                return
+            handle.save_resume_data()
+        except Exception:
+            return
+
+    def _resume_data_blob(self, alert: Any) -> Optional[bytes]:
+        """Serialize an alert into a bencoded fastresume payload.
+
+        Newer libtorrent (>=1.2) exposes ``alert.params`` plus
+        ``lt.write_resume_data_buf``; older versions hand back
+        ``alert.resume_data`` (an ``entry`` dict) that has to be
+        ``lt.bencode``'d. We try both transparently so the same code
+        works against whichever build the user has installed.
+        """
+        if lt is None:
+            return None
+        write_buf = getattr(lt, "write_resume_data_buf", None)
+        params = getattr(alert, "params", None)
+        if callable(write_buf) and params is not None:
+            try:
+                buf = write_buf(params)
+            except Exception:
+                buf = None
+            if buf is not None:
+                return bytes(buf)
+        # Legacy fallback: entry + bencode.
+        entry = getattr(alert, "resume_data", None)
+        bencode = getattr(lt, "bencode", None)
+        if entry is not None and callable(bencode):
+            try:
+                return bytes(bencode(entry))
+            except Exception:
+                return None
+        return None
+
+    def _persist_resume_alert(self, alert: Any) -> None:
+        """Write the alert payload to ``<hash>.fastresume`` atomically."""
+        if not self._resume_data_dir:
+            return
+        try:
+            info_hash = str(alert.handle.info_hash())
+        except Exception:
+            return
+        if not info_hash:
+            return
+        blob = self._resume_data_blob(alert)
+        if blob is None:
+            return
+        path = os.path.join(self._resume_data_dir, f"{info_hash}.fastresume")
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "wb") as f:
+                f.write(blob)
+            os.replace(tmp, path)
+        except OSError:
+            # Don't let an I/O hiccup crash the alert loop; the next
+            # periodic checkpoint will retry.
+            try:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
+
+    def _delete_resume_file(self, info_hash: str) -> None:
+        """Remove the fastresume entry for a torrent that was removed."""
+        if not self._resume_data_dir or not info_hash:
+            return
+        candidate = os.path.join(
+            self._resume_data_dir, f"{info_hash}.fastresume"
+        )
+        try:
+            if os.path.isfile(candidate):
+                os.unlink(candidate)
+        except OSError:
+            pass
+
+    def _load_resume_data_dir(self) -> None:
+        """Re-add every torrent we have a fastresume checkpoint for.
+
+        Runs once at startup. Each file is decoded via
+        :func:`lt.read_resume_data` (or ``add_torrent_params``'s
+        ``resume_data`` slot on older builds) so the session takes the
+        partial pieces / paused state into account; libtorrent then
+        skips the full force-recheck that a magnet-only restore would
+        trigger, which is what makes long-running downloads feel
+        "remembered" across restarts.
+        """
+        if lt is None or not self._resume_data_dir:
+            return
+        if not os.path.isdir(self._resume_data_dir):
+            return
+        if self.session is None:
+            return
+
+        try:
+            names = os.listdir(self._resume_data_dir)
+        except OSError:
+            return
+        for name in names:
+            if not self._RESUME_FILENAME_RE.match(name):
+                continue
+            path = os.path.join(self._resume_data_dir, name)
+            try:
+                with open(path, "rb") as f:
+                    blob = f.read()
+            except OSError:
+                continue
+            if not blob:
+                continue
+            try:
+                self._add_from_resume_blob(blob)
+            except Exception as e:
+                # Mirror the logging shape used elsewhere in this file.
+                print(  # TODO - use logger
+                    f"Failed to restore torrent from {name}: {str(e)}"
+                )
+
+    def _add_from_resume_blob(self, blob: bytes) -> None:
+        """Add a torrent to the session using a fastresume payload."""
+        if self.session is None:
+            return
+        params = None
+        # Preferred (>=1.2): build ``add_torrent_params`` from the blob.
+        reader = getattr(lt, "read_resume_data", None)
+        if callable(reader):
+            try:
+                params = reader(blob)
+            except Exception:
+                params = None
+        if params is not None:
+            # Make sure the save path stays where the existing files
+            # already live; an empty save_path on the reconstituted
+            # params would point the torrent at the wrong directory.
+            if not getattr(params, "save_path", None):
+                try:
+                    params.save_path = self.download_path
+                except Exception:
+                    pass
+            handle = self.session.add_torrent(params)
+        else:
+            # Legacy fallback: ``add_torrent`` accepts a dict with a
+            # ``resume_data`` slot. We don't know the original save
+            # path here, so default to the configured download_path.
+            add_params = {
+                "save_path": self.download_path,
+                "resume_data": blob,
+            }
+            handle = self.session.add_torrent(add_params)
+        try:
+            info_hash = str(handle.info_hash())
+        except Exception:
+            return
+        if info_hash:
+            self.handles[info_hash] = handle
 
     def login_dialog(self, failed=False):
         fields = {
@@ -305,6 +561,12 @@ class LibTorrent(BaseTorrentManager):
                         "save_path": save_path,
                     }
                 )
+
+                # For .torrent files we already have metadata, so a
+                # baseline fastresume checkpoint can be captured right
+                # now. Magnets without metadata get their first
+                # checkpoint via the ``metadata_received_alert`` path.
+                self._save_resume_data_for(handle)
             except TorrentException:
                 raise
             except Exception as e:
@@ -470,27 +732,88 @@ class LibTorrent(BaseTorrentManager):
         return state_map.get(status.state, "unknown")
 
     def close(self):
-        """Clean shutdown of the LibTorrent session"""
+        """Clean shutdown of the LibTorrent session.
+
+        Captures the final resume-data snapshot synchronously before
+        tearing the alert thread down. Without that synchronous step
+        the resume-data alerts emitted by ``handle.save_resume_data()``
+        would still be in the alert queue when we set ``_running=False``
+        and never reach :meth:`_persist_resume_alert`, leaving the
+        last few seconds of progress unpersisted -- which is the exact
+        "the app forgot my torrents" symptom users hit on a clean
+        close right after starting / completing a download.
+        """
+        session = self.session
+        if session is not None:
+            try:
+                session.pause()
+            except Exception:
+                pass
+            self._drain_resume_data_on_close(session)
+
+        # Now it is safe to stop the alert loop and tear the session
+        # down; any outstanding alerts have already been handled above.
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
 
-        if self.session:
+        if session is not None:
             try:
-                self.session.pause()
-                # Save resume data for all torrents
-                for handle in self.handles.values():
-                    if handle.is_valid():
-                        handle.save_resume_data()
-
-                # Wait a bit for resume data to be saved
-                time.sleep(1)
-
+                # Older libtorrent builds expose ``pause()`` but no
+                # explicit shutdown method; dropping our reference is
+                # enough for the session destructor to clean up.
+                self.session = None
             except Exception as e:
                 print(f"Error during session cleanup: {str(e)}")  # TODO - use logger
-            finally:
-                self.session = None
-                self.handles.clear()
+        self.handles.clear()
+
+    def _drain_resume_data_on_close(self, session: Any) -> None:
+        """Request and persist resume data for every live handle.
+
+        Walks the session synchronously: enqueue ``save_resume_data``
+        for each handle that has metadata, then keep popping alerts
+        from the session in this thread (without interleaving the
+        background alert loop, which we're about to stop) until every
+        outstanding request has either resolved or the grace period
+        expires. Avoids the historical race where the destructor fired
+        before the resume-data alerts were drained.
+        """
+        if not self._resume_data_dir:
+            return
+        pending = 0
+        for handle in list(self.handles.values()):
+            try:
+                if not handle.is_valid():
+                    continue
+                if not handle.has_metadata():
+                    continue
+                handle.save_resume_data()
+                pending += 1
+            except Exception:
+                continue
+        if pending == 0:
+            return
+
+        deadline = time.time() + 5.0
+        while pending > 0 and time.time() < deadline:
+            try:
+                alerts = session.pop_alerts()
+            except Exception:
+                break
+            if not alerts:
+                time.sleep(0.1)
+                continue
+            for alert in alerts:
+                if isinstance(
+                    alert, getattr(lt, "save_resume_data_alert", tuple())
+                ):
+                    self._persist_resume_alert(alert)
+                    pending -= 1
+                elif isinstance(
+                    alert,
+                    getattr(lt, "save_resume_data_failed_alert", tuple()),
+                ):
+                    pending -= 1
 
     def __del__(self):
         """Destructor to ensure clean shutdown"""

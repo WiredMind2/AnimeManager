@@ -6,6 +6,8 @@ network, never start real torrent clients, and never touch disk.
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import threading
 import time
@@ -242,6 +244,10 @@ class _FakeDB:
         self.saved = []
         self.torrent_data: Dict[str, Any] = {}
         self.raise_save = False
+        self.pairs: List[tuple[int, str]] = []
+
+    def list_anime_torrent_pairs(self):
+        return list(self.pairs)
 
     def save_torrent(self, anime_id, torrent):
         if self.raise_save:
@@ -583,6 +589,55 @@ class TestPrepareTorrentDetails:
             result = mgr._prepare_torrent(task)
             assert result is not None
             assert getattr(result, "hash") == "dead"
+            # Trackers must survive as a list so ``to_magnet`` emits a
+            # proper ``&tr=<url>`` per entry rather than treating a
+            # JSON string as an iterable of characters.
+            assert list(getattr(result, "trackers") or []) == ["udp://t1"]
+        finally:
+            mgr.close()
+
+    def test_prepare_torrent_via_hash_decodes_json_trackers(
+        self, DownloadManager, DownloadTask
+    ):
+        """Persisted ``trackers`` rows are JSON strings -- decoding
+        them on restore is what keeps a re-added magnet pointing at
+        the original tracker tier instead of urlencoding the literal
+        JSON one character at a time."""
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.get_torrent_data.return_value = (
+            "Naruto",
+            '["udp://t1", "udp://t2"]',
+        )
+        mgr.set_database_manager(db)
+        try:
+            task = DownloadTask(1, hash_value="dead")
+            result = mgr._prepare_torrent(task)
+            assert result is not None
+            assert list(getattr(result, "trackers") or []) == [
+                "udp://t1",
+                "udp://t2",
+            ]
+        finally:
+            mgr.close()
+
+    def test_decode_persisted_trackers_handles_shapes(self, DownloadManager):
+        """The helper must coerce every plausible persisted shape into
+        a list of URLs without raising."""
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        try:
+            f = mgr._decode_persisted_trackers
+            assert f(None) == []
+            assert f([]) == []
+            assert f("") == []
+            assert f("   ") == []
+            assert f("udp://only") == ["udp://only"]
+            assert f("not json [oops") == ["not json [oops"]
+            assert f('["a","b"]') == ["a", "b"]
+            assert f(["a", "b"]) == ["a", "b"]
+            assert f(("a", "b")) == ["a", "b"]
         finally:
             mgr.close()
 
@@ -718,6 +773,20 @@ class TestLifecycle:
         mgr.log = _silent_logger
         try:
             assert mgr.redownload(123) == 0
+        finally:
+            mgr.close()
+
+    def test_redownload_requeues_persisted_hashes(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        db.pairs = [(10, "a" * 40), (10, "a" * 40), (11, "b" * 40)]
+        mgr.set_database_manager(db)
+        try:
+            with patch.object(mgr, "download_file", return_value=queue.Queue()) as dl:
+                queued = mgr.redownload(10)
+            assert queued == 1
+            dl.assert_called_once_with(10, hash_value="a" * 40)
         finally:
             mgr.close()
 
@@ -1059,5 +1128,106 @@ class TestTorrentsOverview:
             assert len(actives) == 1
             assert actives[0]["anime_id"] == 1
             assert actives[0]["name"] == "queued.mkv"
+        finally:
+            mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# Persisted torrent restore (LibTorrent cold start)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistedTorrentRestore:
+    def test_restore_once_skips_non_libtorrent(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.name = "qBittorrent"
+        tm.list.return_value = []
+        mgr.set_torrent_manager(tm)
+        db = _FakeDB()
+        db.pairs = [(1, "a" * 40)]
+        mgr.set_database_manager(db)
+        try:
+            assert mgr._restore_persisted_torrents_once() == 0
+            tm.add.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_restore_once_readds_persisted_not_in_session(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.name = "LibTorrent"
+        tm.list.return_value = []
+        mgr.set_torrent_manager(tm)
+        h = "a" * 40
+        db = _FakeDB()
+        db.pairs = [(9, h)]
+        db.torrent_data[h] = (
+            "Episode",
+            json.dumps(["udp://tracker.example:80/announce"]),
+        )
+        mgr.set_database_manager(db)
+        tm.add.return_value = [{"hash": h, "name": "Episode"}]
+        try:
+            with patch.object(mgr, "_get_anime_folder", return_value="/tmp/a9"):
+                n = mgr._restore_persisted_torrents_once()
+            assert n == 1
+            tm.add.assert_called_once()
+            magnet = tm.add.call_args[0][0][0]
+            assert h in magnet
+            assert "magnet:?" in magnet
+        finally:
+            mgr.close()
+
+    def test_restore_once_skips_pairs_already_live(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        h = "b" * 40
+        tm = MagicMock()
+        tm.name = "LibTorrent"
+        tm.list.return_value = [{"hash": h, "name": "x", "state": "seeding"}]
+        mgr.set_torrent_manager(tm)
+        db = _FakeDB()
+        db.pairs = [(1, h)]
+        db.torrent_data[h] = ("N", "[]")
+        mgr.set_database_manager(db)
+        try:
+            assert mgr._restore_persisted_torrents_once() == 0
+            tm.add.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_schedule_restore_is_idempotent(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        try:
+            mgr.schedule_restore_persisted_torrents_after_startup()
+            mgr.schedule_restore_persisted_torrents_after_startup()
+            assert mgr._restore_persisted_thread_started is True
+        finally:
+            mgr.close()
+
+    def test_resolve_restore_folder_prefers_heavier_suffix_match(
+        self, DownloadManager, tmp_path
+    ):
+        """When two ``* - <id>`` folders exist, pick the one with more file bytes."""
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        data = tmp_path / "data"
+        animes = data / "Animes"
+        light = animes / "Old Title - 42"
+        heavy = animes / "New Title - 42"
+        light.mkdir(parents=True)
+        heavy.mkdir(parents=True)
+        (light / "a.txt").write_text("x", encoding="utf-8")
+        (heavy / "b.bin").write_bytes(b"x" * 5000)
+        fm = MagicMock()
+        fm.settings = {"dataPath": str(data)}
+        mgr.set_file_manager(fm)
+        try:
+            picked = mgr._resolve_anime_media_folder_for_restore(42)
+            assert os.path.normcase(picked) == os.path.normcase(str(heavy))
         finally:
             mgr.close()
