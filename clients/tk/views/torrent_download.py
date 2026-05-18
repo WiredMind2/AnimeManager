@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any
 
+from domain.entities import title_variants_for_torrent_search
+
 from clients.tk.presenters import AnimeBrowserPresenter
 from clients.tk.theme import apply_dark_theme
 
@@ -25,7 +27,10 @@ class TorrentDownloadDialog(tk.Toplevel):
         self._anime = anime
         self._rows: list[dict[str, Any]] = []
 
-        self._term = tk.StringVar(value=anime.get("title") or "")
+        variants = title_variants_for_torrent_search(anime)
+        self._term = tk.StringVar(
+            value=", ".join(variants) if variants else (anime.get("title") or "")
+        )
         self._profile = tk.StringVar(value="interactive")
         self._status = tk.StringVar(value="Ready")
         self._build()

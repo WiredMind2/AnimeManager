@@ -62,6 +62,14 @@ class TestStartStopIdempotence:
         flat = sorted(item for batch in received for item in batch)
         assert flat == [0, 1, 2, 3, 4]
 
+    def test_stop_without_drain_skips_join(self):
+        received = []
+        pq = _build(received, batch_size=1000, max_latency_ms=10_000)
+        pq.start()
+        pq.put(1, block=True)
+        pq.stop(drain=False, timeout=0.01)
+        pq.stop()  # idempotent after worker handle cleared
+
 
 class TestFlushNow:
     def test_flush_now_on_empty_does_nothing(self):
