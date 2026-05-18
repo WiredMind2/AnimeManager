@@ -339,7 +339,8 @@ class KitsuIoWrapper(APIUtils):
                     else:
                         pass  # TODO - handle unknown sites?
 
-                self.save_mapped(int(a.id), mapped)
+                canonical_id = self.save_mapped(int(a.id), mapped)
+                data["id"] = canonical_id
         except Exception:
             pass
 

@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, List, Optional
 
-from adapters.legacy.legacy_classes import Anime
+from application.bridges.legacy_entities import Anime
 from application.services.api_coordinator import APICoordinator
 from application.services.database_manager import DatabaseManager
 from shared.contracts import IngestionResult, IngestionStatus
+from shared.config.getters import Getters
 from shared.telemetry import get_telemetry
 
 
@@ -347,17 +349,81 @@ class StartupJobsService:
                     f"Schedule persistence failed: {type(exc).__name__}: {exc}"
                 ) from exc
 
+        backfill_detail = self._maybe_run_merge_backfill()
         if result.status == IngestionStatus.FAILED:
             return (
                 f"providers={result.total_providers} failed="
-                f"{result.failed_providers} records=0"
+                f"{result.failed_providers} records=0 {backfill_detail}"
             )
 
         return (
             f"providers={result.total_providers} failed="
             f"{result.failed_providers} records={len(records)} "
-            f"persisted={persisted_extra}"
+            f"persisted={persisted_extra} {backfill_detail}"
         )
+
+    def _maybe_run_merge_backfill(self) -> str:
+        flag = self._read_feature_flag("anime_merge_backfill_enabled", default=False)
+        if not flag:
+            return "merge_backfill=disabled"
+
+        marker_path = self._merge_backfill_marker_path()
+        if marker_path and os.path.exists(marker_path):
+            return "merge_backfill=already_done"
+
+        backfill_fn = getattr(self._database_manager, "backfill_external_id_duplicates", None)
+        if not callable(backfill_fn):
+            return "merge_backfill=unsupported"
+
+        stats = backfill_fn()
+        merged = int((stats or {}).get("merged", 0))
+        groups = int((stats or {}).get("groups", 0))
+        passes = int((stats or {}).get("passes", 0))
+
+        if marker_path:
+            try:
+                os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+                with open(marker_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        f"merged={merged}\n"
+                        f"groups={groups}\n"
+                        f"passes={passes}\n"
+                    )
+            except Exception as exc:
+                self._log(f"merge backfill marker write failed: {exc}")
+        return f"merge_backfill=merged:{merged},groups:{groups},passes:{passes}"
+
+    def _read_feature_flag(self, name: str, default: bool = False) -> bool:
+        runtime = self._runtime
+        getter = getattr(runtime, "getFeatureFlag", None)
+        if callable(getter):
+            try:
+                return bool(getter(name, default))
+            except Exception:
+                return bool(default)
+        settings = getattr(runtime, "settings", None)
+        if isinstance(settings, dict):
+            return Getters.getFeatureFlag(runtime, name, default)
+        return bool(default)
+
+    def _merge_backfill_marker_path(self) -> Optional[str]:
+        runtime = self._runtime
+        fm = getattr(runtime, "fm", None)
+        fm_settings = getattr(fm, "settings", None)
+        if isinstance(fm_settings, dict):
+            data_path = fm_settings.get("dataPath")
+            if isinstance(data_path, str) and data_path.strip():
+                return os.path.join(data_path, ".anime_merge_backfill.done")
+        settings = getattr(runtime, "settings", None)
+        if isinstance(settings, dict):
+            fm_settings = (
+                settings.get("file_managers", {})
+                .get(settings.get("file_managers", {}).get("last_fm_used", ""), {})
+            )
+            data_path = fm_settings.get("dataPath") if isinstance(fm_settings, dict) else None
+            if isinstance(data_path, str) and data_path.strip():
+                return os.path.join(data_path, ".anime_merge_backfill.done")
+        return None
 
     def _job_update_status(self) -> str:
         """Transition stale ``UPCOMING`` rows whose air date has passed.

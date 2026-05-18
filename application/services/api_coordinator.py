@@ -28,8 +28,13 @@ from typing import Any, Dict, Iterable, List, Optional
 from shared.base_component import BaseComponent
 from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus, ProviderName
 from application.services.ingestion_pipeline import IngestionPipeline, ProviderSpec
+from application.services.ingestion_context import (
+    deferred_provider_writes,
+    flush_deferred_provider_writes,
+)
+from application.services.provider_health import ProviderHealthTracker
+from application.bridges.legacy_entities import Anime, AnimeList
 from shared.telemetry import get_telemetry
-from adapters.legacy.legacy_classes import Anime, AnimeList
 
 
 class APICoordinator(BaseComponent):
@@ -44,6 +49,7 @@ class APICoordinator(BaseComponent):
             "db_gateway_writes_only": True,
         }
         self._rate_limiter = RateLimiter()
+        self._provider_health = ProviderHealthTracker()
         self._telemetry = get_telemetry()
         self._max_workers = max_workers
         self._provider_timeout = provider_timeout_s
@@ -123,16 +129,19 @@ class APICoordinator(BaseComponent):
         return None
 
     def _perform_api_search(self, terms: str, limit: int) -> Optional[AnimeList]:
-        """Run the configured search path."""
-        if (
-            self._feature_flags.get("new_ingestion_pipeline", True)
-            and hasattr(self._api, "get_providers")
-            and self._pipeline is not None
-        ):
-            return self._search_via_pipeline(terms, limit)
-        # Legacy rollback path: hand back whatever the AnimeAPI facade
-        # returns; the caller is responsible for persistence.
-        return self._api.searchAnime(terms, limit=limit)
+        """Run the configured search path (canonical pipeline by default)."""
+        if not self._feature_flags.get("new_ingestion_pipeline", True):
+            self.log(
+                "API_COORDINATOR",
+                "WARNING: legacy search path active (new_ingestion_pipeline=false). "
+                "Use only for emergency rollback.",
+            )
+            self._telemetry.increment("coordinator.legacy_search_path")
+            return self._api.searchAnime(terms, limit=limit)
+        if not hasattr(self._api, "get_providers") or self._pipeline is None:
+            self.log("API_COORDINATOR", "Pipeline unavailable; cannot search")
+            return None
+        return self._search_via_pipeline(terms, limit)
 
     def stream_search_anime(
         self,
@@ -156,21 +165,25 @@ class APICoordinator(BaseComponent):
         if not self._rate_limiter.allow_request():
             self.log("API_COORDINATOR", "Rate limit exceeded, skipping search")
             return
-        if (
-            not self._feature_flags.get("new_ingestion_pipeline", True)
-            or not hasattr(self._api, "get_providers")
-            or self._pipeline is None
-        ):
-            # Legacy path is not streamable -- fall back to the
-            # single-batch search so callers can still consume the
-            # generator uniformly.
+        if not self._feature_flags.get("new_ingestion_pipeline", True):
+            self.log(
+                "API_COORDINATOR",
+                "WARNING: legacy streaming path (new_ingestion_pipeline=false)",
+            )
+            self._telemetry.increment("coordinator.legacy_search_path")
             result = self._api.searchAnime(terms, limit=limit)
             if result:
                 for item in result:
                     yield item
             return
+        if not hasattr(self._api, "get_providers") or self._pipeline is None:
+            return
 
-        providers = [p for p in self._api.get_providers() if p is not None]
+        providers = [
+            p
+            for p in self._api.get_providers()
+            if p is not None and self._provider_health.is_available(_provider_label(p))
+        ]
         if not providers:
             return
         specs = [self._spec_for(provider) for provider in providers]
@@ -182,16 +195,18 @@ class APICoordinator(BaseComponent):
         self.log("API_COORDINATOR", f"Streaming '{terms}' across {len(specs)} providers")
         emitted = 0
         try:
-            for provider_name, records in self._pipeline.stream(
-                specs, terms, limit=limit, sink=sink
-            ):
-                for record in records:
-                    yield self._record_to_anime(record)
-                    emitted += 1
-                self.log(
-                    "API_COORDINATOR",
-                    f"Streamed +{len(records)} from {provider_name} (total {emitted})",
-                )
+            with deferred_provider_writes(providers):
+                for provider_name, records in self._pipeline.stream(
+                    specs, terms, limit=limit, sink=sink
+                ):
+                    for record in records:
+                        yield self._record_to_anime(record)
+                        emitted += 1
+                    self.log(
+                        "API_COORDINATOR",
+                        f"Streamed +{len(records)} from {provider_name} (total {emitted})",
+                    )
+            flush_deferred_provider_writes(providers)
         except Exception as exc:  # noqa: BLE001 - never let streaming break the WS
             self.log("API_COORDINATOR", f"Stream failed mid-flight: {exc}")
             self._telemetry.increment("coordinator.search_errors")
@@ -217,12 +232,13 @@ class APICoordinator(BaseComponent):
         if not hasattr(self._api, "get_providers"):
             return None
 
-        providers = [p for p in self._api.get_providers() if p is not None]
-        specs = [
-            self._schedule_spec_for(provider)
-            for provider in providers
-            if hasattr(provider, "schedule")
+        providers = [
+            p
+            for p in self._api.get_providers()
+            if p is not None and self._provider_health.is_available(_provider_label(p))
         ]
+        schedulable = [p for p in providers if hasattr(p, "schedule")]
+        specs = [self._schedule_spec_for(provider) for provider in schedulable]
         if not specs:
             return None
 
@@ -231,12 +247,14 @@ class APICoordinator(BaseComponent):
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
-        result: IngestionResult = self._pipeline.run(
-            specs,
-            "",
-            limit=limit,
-            sink=sink,
-        )
+        with deferred_provider_writes(schedulable):
+            result: IngestionResult = self._pipeline.run(
+                specs,
+                "",
+                limit=limit,
+                sink=sink,
+            )
+        flush_deferred_provider_writes(schedulable)
         self._telemetry.set_gauge(
             "coordinator.last_schedule_records", float(len(result.records))
         )
@@ -270,29 +288,49 @@ class APICoordinator(BaseComponent):
                 # Some legacy wrappers accept positional-only ``limit``.
                 return provider.schedule(lim)
 
+        source = _provider_enum(provider_name)
+
+        def adapter(raw: Any) -> Optional[AnimeRecord]:
+            return self._legacy_adapter(raw, source=source)
+
         return ProviderSpec(
             name=provider_name,
             search=schedule_search,
-            adapter=self._legacy_adapter,
+            adapter=adapter,
         )
 
     def _search_via_pipeline(self, terms: str, limit: int) -> Optional[AnimeList]:
         """Run providers through the canonical ingestion pipeline."""
-        providers = list(self._api.get_providers())
+        providers = [p for p in self._api.get_providers() if p is not None]
         if not providers:
             return None
-        specs = [self._spec_for(provider) for provider in providers if provider is not None]
+        active = [
+            p
+            for p in providers
+            if self._provider_health.is_available(_provider_label(p))
+        ]
+        quarantined = self._provider_health.quarantined_names()
+        if quarantined:
+            self.log(
+                "API_COORDINATOR",
+                f"Skipping quarantined providers: {', '.join(quarantined)}",
+            )
+        if not active:
+            return None
+        specs = [self._spec_for(provider) for provider in active]
         sink = (
             self._build_sink()
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
-        result: IngestionResult = self._pipeline.run(
-            specs,
-            terms,
-            limit=limit,
-            sink=sink,
-        )
+        with deferred_provider_writes(active):
+            result: IngestionResult = self._pipeline.run(
+                specs,
+                terms,
+                limit=limit,
+                sink=sink,
+            )
+        flush_deferred_provider_writes(active)
         self._telemetry.set_gauge("coordinator.last_search_records", float(len(result.records)))
         self._telemetry.set_gauge("coordinator.last_search_failed", float(result.failed_providers))
         self.log(
@@ -307,17 +345,33 @@ class APICoordinator(BaseComponent):
 
     def _spec_for(self, provider: Any) -> ProviderSpec:
         """Build a `ProviderSpec` around a legacy provider wrapper."""
-        provider_name = getattr(provider, "__name__", None) or type(provider).__name__
+        pname = _provider_label(provider)
+        source = _provider_enum(pname)
 
         def search(terms: str, limit: int) -> Iterable[Any]:
             if not hasattr(provider, "searchAnime"):
                 return ()
-            return provider.searchAnime(terms, limit=limit)
+            if not self._provider_health.is_available(pname):
+                return ()
+            try:
+                for item in provider.searchAnime(terms, limit=limit):
+                    yield item
+            except Exception:
+                self._provider_health.record_failure(pname)
+                self._telemetry.increment(f"coordinator.provider.{pname}_errors")
+                raise
+            else:
+                self._provider_health.record_success(pname)
 
-        return ProviderSpec(name=provider_name, search=search, adapter=self._legacy_adapter)
+        def adapter(raw: Any) -> Optional[AnimeRecord]:
+            return self._legacy_adapter(raw, source=source)
+
+        return ProviderSpec(name=pname, search=search, adapter=adapter)
 
     @staticmethod
-    def _legacy_adapter(raw: Any) -> Optional[AnimeRecord]:
+    def _legacy_adapter(
+        raw: Any, *, source: ProviderName = ProviderName.UNKNOWN
+    ) -> Optional[AnimeRecord]:
         """Project a legacy `Anime`-like object into the canonical record."""
         if raw is None:
             return None
@@ -329,9 +383,15 @@ class APICoordinator(BaseComponent):
         except (TypeError, ValueError):
             return None
         title = getattr(raw, "title", None) or ""
+        synonyms = getattr(raw, "title_synonyms", None) or ()
+        if isinstance(synonyms, (list, tuple)):
+            syn_tuple = tuple(str(s) for s in synonyms if s)
+        else:
+            syn_tuple = ()
         return AnimeRecord(
             id=rid,
             title=str(title),
+            title_synonyms=syn_tuple,
             synopsis=getattr(raw, "synopsis", None),
             episodes=_safe_int(getattr(raw, "episodes", None)),
             duration=_safe_int(getattr(raw, "duration", None)),
@@ -342,7 +402,7 @@ class APICoordinator(BaseComponent):
             picture=_safe_str(getattr(raw, "picture", None)),
             trailer=_safe_str(getattr(raw, "trailer", None)),
             broadcast=_safe_str(getattr(raw, "broadcast", None)),
-            source_provider=ProviderName.UNKNOWN,
+            source_provider=source,
         )
 
     @staticmethod
@@ -352,6 +412,7 @@ class APICoordinator(BaseComponent):
         for key in (
             "id",
             "title",
+            "title_synonyms",
             "synopsis",
             "episodes",
             "duration",
@@ -402,6 +463,23 @@ def _safe_str(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _provider_label(provider: Any) -> str:
+    return getattr(provider, "__name__", None) or type(provider).__name__
+
+
+def _provider_enum(label: str) -> ProviderName:
+    lowered = str(label or "").lower()
+    if "jikan" in lowered:
+        return ProviderName.JIKAN
+    if "anilist" in lowered:
+        return ProviderName.ANILIST
+    if "kitsu" in lowered:
+        return ProviderName.KITSU
+    if "mal" in lowered or "myanimelist" in lowered:
+        return ProviderName.MAL
+    return ProviderName.UNKNOWN
 
 
 class RateLimiter:

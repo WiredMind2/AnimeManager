@@ -413,6 +413,95 @@ class TestSaveTorrent:
         mgr.set_database(db)
         assert mgr.get_torrent_data("h") is None
 
+    def test_save_torrent_commits_each_insert_inline(self, DatabaseManager):
+        """Regression: on MariaDB with USE_CONNECTION_POOL=True each
+        ``db.sql(..., save=False)`` runs on a transient pool connection
+        that recycles before the trailing ``db.save()`` commits, so the
+        torrent rows were silently rolled back and the LibTorrent cold-
+        start restore had nothing to re-add. Every insert must now ask
+        for an inline commit (``save=True``).
+        """
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+
+        class _RecordingDB(_FakeDB):
+            def __init__(self):
+                super().__init__()
+                self.insert_save_flags: list[bool] = []
+
+            def sql(self, query: str, params: Tuple = (), save: bool = True):
+                self.sql_calls.append((query, params))
+                if query.lstrip().upper().startswith("INSERT"):
+                    self.insert_save_flags.append(bool(save))
+                return self.sql_responses.get(query, [])
+
+        db = _RecordingDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)": [(0,)],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)": [(0,)],
+        }
+        mgr.set_database(db)
+        torrent = SimpleNamespace(hash="ABC", name="ep", trackers=["udp://t"])
+        mgr.save_torrent(42, torrent)
+        # Two INSERTs (index + metadata), both committed inline.
+        assert len(db.insert_save_flags) == 2
+        assert all(flag is True for flag in db.insert_save_flags)
+
+    def test_save_torrent_accepts_json_tracker_string(self, DatabaseManager):
+        """Older callers (and the cold-start restore path) may hand us
+        a pre-serialized JSON array. We should keep it intact instead
+        of wrapping it in a second JSON layer that round-trips back as
+        a list-with-one-JSON-string.
+        """
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)": [(0,)],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)": [(0,)],
+        }
+        mgr.set_database(db)
+        torrent = SimpleNamespace(
+            hash="X",
+            name="N",
+            trackers='["udp://a","udp://b"]',
+        )
+        mgr.save_torrent(1, torrent)
+        inserts = [c for c in db.sql_calls if "INSERT INTO torrents(" in c[0]]
+        assert inserts
+        _, params = inserts[0]
+        assert json.loads(params[2]) == ["udp://a", "udp://b"]
+
+    def test_save_torrent_accepts_single_url_string(self, DatabaseManager):
+        """A bare URL becomes a one-element JSON array."""
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)": [(0,)],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)": [(0,)],
+        }
+        mgr.set_database(db)
+        torrent = SimpleNamespace(hash="X", name="N", trackers="udp://sole")
+        mgr.save_torrent(1, torrent)
+        inserts = [c for c in db.sql_calls if "INSERT INTO torrents(" in c[0]]
+        assert inserts
+        _, params = inserts[0]
+        assert json.loads(params[2]) == ["udp://sole"]
+
+    def test_save_torrent_drops_hashless_payload(self, DatabaseManager):
+        """A Torrent without a hash cannot map to ``torrentsIndex``; we
+        skip it rather than persisting a useless row that breaks the
+        unique-hash invariant on the next add.
+        """
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        mgr.set_database(db)
+        torrent = SimpleNamespace(hash=None, name="N", trackers=[])
+        mgr.save_torrent(1, torrent)
+        assert db.sql_calls == []
+
 
 # ---------------------------------------------------------------------------
 # Anime CRUD edges
@@ -516,3 +605,21 @@ class TestQueueStats:
         mgr.set_database(db)
         assert mgr.enqueue_anime(SimpleNamespace(id=5)) is True
         assert any(getattr(a, "id", None) == 5 for a in db.saved)
+
+
+class TestMergeHelpers:
+    def test_merge_anime_by_external_mapping_returns_result(self, DatabaseManager):
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        mgr.set_database(db)
+        result = mgr.merge_anime_by_external_mapping(10, [("mal_id", 1)])
+        assert result.canonical_id == 10
+
+    def test_backfill_external_id_duplicates_handles_missing_tables(self, DatabaseManager):
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        mgr.set_database(db)
+        stats = mgr.backfill_external_id_duplicates()
+        assert stats["merged"] == 0

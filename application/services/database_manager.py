@@ -12,8 +12,9 @@ from shared.base_component import BaseComponent
 from adapters.persistence.queue import PersistenceQueue
 from adapters.persistence.query_builder import ALLOWED_CRITERIA, build_anime_list_query
 from shared.telemetry import get_telemetry
-from adapters.legacy.legacy_classes import Anime, AnimeList
+from application.bridges.legacy_entities import Anime, AnimeList
 from adapters.persistence import databases
+from application.services.anime_merge_service import AnimeMergeService, MergeResult
 
 
 class DatabaseManager(BaseComponent):
@@ -245,20 +246,36 @@ class DatabaseManager(BaseComponent):
         return query.to_args()
 
     def save_torrent(self, anime_id: int, torrent) -> None:
-        """
-        Save torrent data to database.
+        """Persist a torrent's metadata and its anime mapping.
 
-        Args:
-            anime_id: Anime ID
-            torrent: Torrent object
+        Each ``INSERT`` is committed inline (``save=True``) because the
+        MariaDB backend uses a per-call connection pool: ``db.sql(...,
+        save=False)`` runs on a pool connection that is recycled before
+        the trailing ``db.save()`` on the long-lived main connection
+        ever fires, so the writes are effectively rolled back. Without
+        this commit semantics the ``torrents`` / ``torrentsIndex``
+        tables stay empty across restarts and the LibTorrent cold-start
+        restore (which reads from those tables) has nothing to re-add,
+        which is what users see as "the app forgot my torrents".
         """
+        if torrent is None or not getattr(torrent, "hash", None):
+            return
         try:
             with self.get_connection() as db:
-                trackers = torrent.trackers
-                if isinstance(trackers, (list, tuple, set)):
-                    trackers = json.dumps(list(trackers))
-                elif trackers is None:
+                raw_trackers = getattr(torrent, "trackers", None)
+                if isinstance(raw_trackers, (list, tuple, set)):
+                    trackers = json.dumps(list(raw_trackers))
+                elif isinstance(raw_trackers, str):
+                    # Already JSON? keep as-is; otherwise wrap the single
+                    # tracker URL so we always store a JSON array.
+                    stripped = raw_trackers.strip()
+                    if stripped.startswith("["):
+                        trackers = stripped
+                    else:
+                        trackers = json.dumps([stripped]) if stripped else json.dumps([])
+                else:
                     trackers = json.dumps([])
+
                 exists = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)",
                     (anime_id, torrent.hash),
@@ -267,7 +284,7 @@ class DatabaseManager(BaseComponent):
                     db.sql(
                         "INSERT INTO torrentsIndex(id, value) VALUES(?, ?)",
                         (anime_id, torrent.hash),
-                        save=False,
+                        save=True,
                     )
 
                 exists = db.sql(
@@ -277,10 +294,9 @@ class DatabaseManager(BaseComponent):
                 if not exists or not exists[0][0]:
                     db.sql(
                         "INSERT INTO torrents(hash, name, trackers) VALUES(?, ?, ?)",
-                        (torrent.hash, torrent.name, trackers),
-                        save=False,
+                        (torrent.hash, getattr(torrent, "name", None), trackers),
+                        save=True,
                     )
-                db.save()
         except Exception as e:
             self.log("DB_ERROR", f"Failed to save torrent: {e}")
             raise
@@ -305,6 +321,36 @@ class DatabaseManager(BaseComponent):
         except Exception as e:
             self.log("DB_ERROR", f"Failed to get torrent data: {e}")
             return None
+
+    def list_anime_torrent_pairs(self) -> List[Tuple[int, str]]:
+        """Return distinct ``(anime_id, info_hash)`` rows from the torrent index.
+
+        Used after a cold start to re-attach embedded LibTorrent to torrents
+        that were already saved for the library (so seeding can resume once
+        data files are still on disk under the anime folder).
+        """
+        try:
+            with self.get_connection() as db:
+                rows = db.sql(
+                    "SELECT DISTINCT i.id, t.hash FROM torrentsIndex AS i "
+                    "INNER JOIN torrents AS t "
+                    "ON LOWER(i.value) = LOWER(t.hash)"
+                )
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to list anime torrent pairs: {exc}")
+            return []
+        out: List[Tuple[int, str]] = []
+        for row in rows or []:
+            if not row or len(row) < 2:
+                continue
+            try:
+                aid = int(row[0])
+                h = str(row[1]).strip()
+            except (TypeError, ValueError):
+                continue
+            if h:
+                out.append((aid, h))
+        return out
 
     def get_anime_ids_by_hashes(
         self, hashes: List[str]
@@ -520,3 +566,41 @@ class DatabaseManager(BaseComponent):
                 except Exception as exc:
                     self.log("DB_ERROR", f"Failed saving metadata for {anime_id}: {exc}")
         return saved
+
+    def merge_anime_ids(self, canonical_id: int, duplicate_id: int) -> bool:
+        """Merge ``duplicate_id`` into ``canonical_id`` preserving user data."""
+        try:
+            with self.get_connection() as db:
+                merger = AnimeMergeService(db, log=self.log)
+                return merger.merge_two_ids(int(canonical_id), int(duplicate_id))
+        except Exception as exc:
+            self.log(
+                "DB_ERROR",
+                f"Failed merging anime ids {duplicate_id}->{canonical_id}: {exc}",
+            )
+            return False
+
+    def merge_anime_by_external_mapping(
+        self, source_id: int, mapped: List[Tuple[str, Any]]
+    ) -> MergeResult:
+        """Merge duplicates discovered from explicit external-id mappings."""
+        try:
+            with self.get_connection() as db:
+                merger = AnimeMergeService(db, log=self.log)
+                return merger.merge_from_external_mappings(int(source_id), mapped)
+        except Exception as exc:
+            self.log(
+                "DB_ERROR",
+                f"Failed merge-by-mapping for anime {source_id}: {exc}",
+            )
+            return MergeResult(canonical_id=int(source_id), skipped_reason="error")
+
+    def backfill_external_id_duplicates(self, *, max_passes: int = 8) -> Dict[str, int]:
+        """Run a deterministic one-time merge pass across existing duplicates."""
+        try:
+            with self.get_connection() as db:
+                merger = AnimeMergeService(db, log=self.log)
+                return merger.backfill_existing_duplicates(max_passes=max_passes)
+        except Exception as exc:
+            self.log("DB_ERROR", f"Backfill merge failed: {exc}")
+            return {"passes": 0, "merged": 0, "groups": 0}

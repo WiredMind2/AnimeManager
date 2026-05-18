@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import threading
 import time
+import os
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +55,7 @@ class _FakeAPI:
 class _RecordingDBManager:
     def __init__(self):
         self.upserts = []
+        self.backfill_calls = 0
 
     def get_database(self):
         return None  # disables the update_status job in these tests
@@ -60,6 +63,10 @@ class _RecordingDBManager:
     def upsert_anime_batch(self, records):
         self.upserts.append(list(records))
         return len(records)
+
+    def backfill_external_id_duplicates(self, *, max_passes=8):
+        self.backfill_calls += 1
+        return {"passes": 1, "merged": 2, "groups": 1}
 
 
 def _anime_like(rid, title="t"):
@@ -162,6 +169,40 @@ def test_no_providers_yields_skipped_outcome():
     assert fetch.ok is True
     assert "skipped" in fetch.detail
     assert db.upserts == []
+
+
+def test_backfill_flag_runs_once_and_writes_marker():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = SimpleNamespace(
+            logger=None,
+            settings={
+                "feature_flags": {"anime_merge_backfill_enabled": True},
+                "file_managers": {"last_fm_used": "Local", "Local": {"dataPath": tmp}},
+            },
+        )
+        coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+        coord.set_api(api)
+        coord.set_database_manager(db)
+        coord.log = lambda *a, **k: None
+        service = StartupJobsService(
+            api_coordinator=coord,
+            database_manager=db,
+            runtime=runtime,
+            schedule_limit=10,
+        )
+        try:
+            report1 = service.run()
+            report2 = service.run()
+        finally:
+            service._api_coordinator.close()
+        fetch1 = next(o for o in report1.outcomes if o.name == "fetch_latest_anime")
+        fetch2 = next(o for o in report2.outcomes if o.name == "fetch_latest_anime")
+        assert "merge_backfill=merged:2" in fetch1.detail
+        assert "merge_backfill=already_done" in fetch2.detail
+        assert db.backfill_calls == 1
+        assert os.path.exists(os.path.join(tmp, ".anime_merge_backfill.done"))
 
 
 def test_one_failing_job_does_not_abort_pipeline():

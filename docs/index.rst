@@ -30,9 +30,12 @@ Quickstart::
    developer/testing
    developer/extension-points
    developer/api_db_pipeline
+   developer/stability-slos
    developer/operations
    developer/contributing_pipeline
    developer/onboarding
+   developer/nextjs_ui_inventory
+   developer/nextjs_api_contracts
 
 .. toctree::
    :maxdepth: 2

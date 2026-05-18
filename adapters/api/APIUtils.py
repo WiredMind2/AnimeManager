@@ -13,6 +13,7 @@ import requests
 
 try:
     from adapters.legacy.legacy_classes import Anime, Character, NoIdFound
+    from application.services.anime_merge_service import AnimeMergeService
     from shared.config.constants import Constants
     from shared.config.getters import Getters
     from shared.telemetry.logger import Logger
@@ -22,6 +23,9 @@ except ImportError:  # pragma: no cover - packaged install fallback
         Anime,
         Character,
         NoIdFound,
+    )
+    from AnimeManager.application.services.anime_merge_service import (  # type: ignore
+        AnimeMergeService,
     )
     from AnimeManager.shared.config.constants import Constants  # type: ignore
     from AnimeManager.shared.config.getters import Getters  # type: ignore
@@ -364,33 +368,12 @@ class APIUtils:
     def save_mapped(self, id, mapped):
         # mapped must be a list of tuples, each containing two elements: 'api_key' and 'api_id'
         if len(mapped) == 0:
-            return
+            return int(id)
 
-        return  # TODO - Implement this
         with self.database.get_lock():
-            for m in mapped:  # Iterate over each external anime
-                api_key, api_ip = m
-
-                # Get the id of the external anime
-                sql = f"SELECT id FROM indexList WHERE {api_key}=?"
-
-                associated = self.database.sql(sql, (api_ip,))
-                if len(associated) == 0:
-                    continue
-
-                ass_id = associated[0][0]
-                if ass_id != id:  # Merge both ids
-
-                    # Remove new id and merge with old one
-                    self.database.remove(id=id)
-
-                    # Merge
-                    self.database.sql(
-                        f"UPDATE indexList SET {api_key} = ? WHERE id=?",
-                        (api_ip, ass_id),
-                    )
-
-                    # TODO - Also update animeRelations!
+            merger = AnimeMergeService(self.database, log=self.log)
+            result = merger.merge_from_external_mappings(int(id), mapped)
+            return int(result.canonical_id)
 
     @cached_request
     def save_pictures(self, id, pictures):
@@ -429,23 +412,37 @@ class APIUtils:
 
     def save_animeography(self, character_id, animes):
         # animes must be a dict with keys being anime ids and values the role of the character
-        return  # TODO - Implement this
+        if not animes:
+            return
 
         with self.database.get_lock():
             for anime_id, role in animes.items():
-                sql = "SELECT EXISTS(SELECT 1 FROM characterRelations WHERE id = ? AND anime_id = ?);"
-                exists = bool(self.database.sql(sql, (character_id, anime_id))[0][0])
+                try:
+                    anime_id = int(anime_id)
+                except (TypeError, ValueError):
+                    continue
+                role_text = str(role or "").lower().strip()
+                sql = (
+                    "SELECT EXISTS(SELECT 1 FROM characterRelations "
+                    "WHERE id = ? AND anime_id = ?);"
+                )
+                rows = self.database.sql(sql, (character_id, anime_id))
+                exists = bool(
+                    rows and len(rows) > 0 and len(rows[0]) > 0 and rows[0][0]
+                )
 
                 if exists:
-                    # The relation already existed
-                    sql = "UPDATE characterRelations SET role = ? WHERE id = ? AND anime_id = ?;"
-                    self.database.sql(sql, (role, character_id, anime_id))
+                    sql = (
+                        "UPDATE characterRelations SET role = ? "
+                        "WHERE id = ? AND anime_id = ?;"
+                    )
+                    self.database.sql(sql, (role_text, character_id, anime_id))
                 else:
-                    # Create new relation
-                    sql = "INSERT INTO characterRelations(id, anime_id, role) VALUES(?, ?, ?);"
-                    self.database.sql(sql, (character_id, anime_id, role))
-
-            # self.database.save()
+                    sql = (
+                        "INSERT INTO characterRelations(id, anime_id, role) "
+                        "VALUES(?, ?, ?);"
+                    )
+                    self.database.sql(sql, (character_id, anime_id, role_text))
 
     # def save_mapped_characters(self, ) TODO
 

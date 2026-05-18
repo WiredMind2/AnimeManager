@@ -265,6 +265,8 @@ class db_instance(BaseDB):
             "title_synonyms",
             "indexList",
             "charactersIndex",
+            "genres",
+            "genresIndex",
         }
         # Allow JOIN clauses for complex queries
         if table not in allowed_tables and "LEFT JOIN" not in table:
@@ -652,6 +654,8 @@ class db_instance(BaseDB):
 
     def get_metadata(self, id, key):
         key = self._validate_table_name(key)
+        if key == "genres":
+            return self._fetch_genre_metadata_for_id(id)
         data = self.sql(f"SELECT value FROM {key} WHERE id=?;", (id,))
         if data is not None:
             return [e[0] for e in data]

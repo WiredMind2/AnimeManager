@@ -168,6 +168,9 @@ transport-appropriate signals (dialogs, HTTP statuses, etc.).
   that keeps all backend interaction behind :class:`clients.sdk.ClientSDK`.
 * :mod:`clients.http` – FastAPI app exposed by ``clients.http.app``.
 * :mod:`clients.sdk` – the shared command/query API.
+* ``next-web/`` – Next.js App Router frontend that consumes Python JSON
+  + SSE/WS contracts; cutover from Jinja routes is controlled via
+  ``ANIMEMANAGER_NEXT_UI_URL``.
 
 The SDK now exposes expanded desktop workflows in addition to the
 baseline list/search/download primitives:

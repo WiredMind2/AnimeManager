@@ -143,13 +143,13 @@ class TestSearchAnimeGuards:
         finally:
             c.close()
 
-    def test_legacy_branch_when_api_has_no_get_providers(self, APICoordinator):
+    def test_returns_none_when_api_has_no_get_providers(self, APICoordinator):
         api = SimpleNamespace(
             searchAnime=lambda terms, limit=50: [1, 2],
         )
         c = _coord(APICoordinator, api=api)
         try:
-            assert c.search_anime("naruto") is not None
+            assert c.search_anime("naruto") is None
         finally:
             c.close()
 

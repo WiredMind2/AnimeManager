@@ -54,6 +54,8 @@ class MySQL(BaseDB):
             "title_synonyms",
             "indexList",
             "charactersIndex",
+            "genres",
+            "genresIndex",
         }
         if table not in allowed_tables or not re.match(r"^[a-zA-Z_]+$", table):
             raise ValueError(f"Invalid table name: {table}")
@@ -515,6 +517,9 @@ class MySQL(BaseDB):
 
         if not isinstance(id, dict):
             id = {"id": id}
+
+        if key == "genres":
+            return self._fetch_genre_metadata_for_id(id.get("id"))
 
         arg = " AND ".join(map(lambda e: f"{e}=:{e}", id.keys()))
         data = self.sql(f"SELECT value FROM {key} WHERE {arg};", id)

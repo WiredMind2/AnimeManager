@@ -11,6 +11,12 @@ compatibility shims that import from here.
 
 from __future__ import annotations
 
-from application.services.anime_service import AnimeApplicationService
-
 __all__ = ["AnimeApplicationService"]
+
+
+def __getattr__(name: str):
+    if name == "AnimeApplicationService":
+        from application.services.anime_service import AnimeApplicationService
+
+        return AnimeApplicationService
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

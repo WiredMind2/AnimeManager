@@ -30,6 +30,7 @@
   "feature_flags": {
     "new_ingestion_pipeline": true,
     "db_gateway_writes_only": true,
+    "anime_merge_backfill_enabled": false,
     "strict_download_url_validation": true,
     "secure_db_bootstrap": true
   },

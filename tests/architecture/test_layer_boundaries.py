@@ -99,10 +99,8 @@ FORBIDDEN_FOR_APPLICATION = {
 # the ``application/`` -> ``adapters/`` import rule for the SPECIFIC
 # imports listed in ``LEGACY_BRIDGE_ALLOWED_IMPORTS``.
 LEGACY_BRIDGE_APPLICATION_FILES = {
-    "application/services/api_coordinator.py",
     "application/services/database_manager.py",
-    "application/services/download_manager.py",
-    "application/services/startup_jobs.py",
+    "application/bridges/legacy_entities.py",
 }
 
 LEGACY_BRIDGE_ALLOWED_IMPORT_PREFIXES = (

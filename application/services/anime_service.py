@@ -7,6 +7,11 @@ thin compatibility shim that re-exports from here.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import os
+from urllib.parse import parse_qs, urlparse
+
 from application.commands import (
     CreatePlaybackSessionCommand,
     HeartbeatPlaybackSessionCommand,
@@ -122,6 +127,33 @@ class AnimeApplicationService:
             raise NotFoundError(f"Anime with id={anime_id} not found")
         return anime
 
+    def refresh_anime_metadata(self, anime_id: int) -> AnimeEntity:
+        """Best-effort metadata refresh for one anime."""
+        refresher = getattr(self._metadata_provider, "refresh_anime", None)
+        if callable(refresher):
+            try:
+                refreshed = refresher(anime_id)
+            except Exception:
+                refreshed = None
+            if isinstance(refreshed, AnimeEntity):
+                return refreshed
+        return self.get_anime_details(anime_id)
+
+    def delete_anime(self, anime_id: int) -> bool:
+        remover = getattr(self._anime_repository, "delete_anime", None)
+        if not callable(remover):
+            raise ValidationError("Anime deletion is not supported by the repository.")
+        return bool(remover(anime_id))
+
+    def get_anime_folder(self, anime_id: int) -> str:
+        getter = getattr(self._anime_repository, "get_anime_folder", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter(anime_id) or "")
+        except Exception:
+            return ""
+
     def start_download(self, request: DownloadRequest) -> bool:
         if request.url is None and request.hash_value is None:
             raise ValidationError(
@@ -139,6 +171,15 @@ class AnimeApplicationService:
 
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_port.cancel_download(anime_id)
+
+    def redownload(self, anime_id: int) -> int:
+        redownload = getattr(self._download_port, "redownload", None)
+        if not callable(redownload):
+            return 0
+        try:
+            return int(redownload(anime_id) or 0)
+        except Exception:
+            return 0
 
     def get_active_downloads(self) -> list[dict]:
         return self._download_port.get_active_downloads()
@@ -181,9 +222,22 @@ class AnimeApplicationService:
         limit: int = 200,
     ) -> list[dict]:
         sanitized = self._sanitize_terms(terms)
-        return self._download_port.search_torrents(
+        rows = self._download_port.search_torrents(
             sanitized, profile=profile, limit=limit
         )
+        deduped: list[dict] = []
+        seen_hashes: set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                deduped.append(row)
+                continue
+            normalized_hash = self._normalized_torrent_hash(row)
+            if normalized_hash:
+                if normalized_hash in seen_hashes:
+                    continue
+                seen_hashes.add(normalized_hash)
+            deduped.append(row)
+        return deduped
 
     def stream_torrents(
         self,
@@ -191,7 +245,7 @@ class AnimeApplicationService:
         profile: str = "interactive",
         limit: int = 200,
     ):
-        """Yield torrent dicts progressively as engines emit them.
+        """Iterate torrent dicts progressively as engines emit them.
 
         Falls back to :meth:`search_torrents` (returning the materialized
         list as a single batch) when the active download port has not
@@ -199,13 +253,31 @@ class AnimeApplicationService:
         uniformly with a ``for row in ...`` loop.
         """
         sanitized = self._sanitize_terms(terms)
+        seen_hashes: set[str] = set()
         streamer = getattr(self._download_port, "stream_torrents", None)
         if callable(streamer):
-            yield from streamer(sanitized, profile=profile, limit=limit)
+            for row in streamer(sanitized, profile=profile, limit=limit):
+                if not isinstance(row, dict):
+                    yield row
+                    continue
+                normalized_hash = self._normalized_torrent_hash(row)
+                if normalized_hash:
+                    if normalized_hash in seen_hashes:
+                        continue
+                    seen_hashes.add(normalized_hash)
+                yield row
             return
         for row in self._download_port.search_torrents(
             sanitized, profile=profile, limit=limit
         ):
+            if not isinstance(row, dict):
+                yield row
+                continue
+            normalized_hash = self._normalized_torrent_hash(row)
+            if normalized_hash:
+                if normalized_hash in seen_hashes:
+                    continue
+                seen_hashes.add(normalized_hash)
             yield row
 
     def _sanitize_terms(self, terms: list[str]) -> list[str]:
@@ -215,6 +287,53 @@ class AnimeApplicationService:
         if not sanitized:
             raise ValidationError("At least one non-empty search term is required.")
         return sanitized
+
+    def _normalized_torrent_hash(self, row: dict) -> str | None:
+        # Prefer explicit hash fields; if absent, derive from the magnet link.
+        # Return a canonical lowercase hex infohash so base32/hex variants
+        # from different providers collapse to one identity.
+        for key in ("hash", "infohash"):
+            value = str(row.get(key) or "").strip()
+            normalized = self._canonical_btih(value)
+            if normalized:
+                return normalized
+
+        link = str(row.get("link") or "").strip()
+        if not link:
+            return None
+        try:
+            xt_values = parse_qs(urlparse(link).query).get("xt", [])
+        except ValueError:
+            return None
+        for xt in xt_values:
+            text = str(xt or "").strip()
+            if not text.lower().startswith("urn:btih:"):
+                continue
+            normalized = self._canonical_btih(text[9:])
+            if normalized:
+                return normalized
+        return None
+
+    @staticmethod
+    def _canonical_btih(raw_value: str) -> str | None:
+        token = str(raw_value or "").strip()
+        if not token:
+            return None
+        lowered = token.lower()
+        if len(lowered) == 40 and all(ch in "0123456789abcdef" for ch in lowered):
+            return lowered
+        if len(token) == 32:
+            try:
+                decoded = base64.b32decode(token.upper(), casefold=True)
+            except (binascii.Error, ValueError):
+                decoded = None
+            if decoded is not None and len(decoded) == 20:
+                return decoded.hex()
+        # Some providers expose truncated/non-standard hash strings.
+        # Keep a normalized fallback so equal values still dedupe.
+        if lowered and lowered.replace("-", "").isalnum():
+            return lowered
+        return None
 
     def set_tag(self, anime_id: int, tag: str, user_id: int) -> None:
         self._user_actions_port.set_tag(anime_id, tag, user_id)
@@ -243,6 +362,12 @@ class AnimeApplicationService:
             raise ValidationError("Search term cannot be empty.")
         return self._anime_repository.remove_search_term(anime_id, clean)
 
+    def get_last_torrent_search_query(self, anime_id: int) -> str | None:
+        return self._anime_repository.get_last_torrent_search_query(anime_id)
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str) -> None:
+        self._anime_repository.set_last_torrent_search_query(anime_id, query)
+
     def get_settings(self) -> dict:
         return self._anime_repository.get_settings()
 
@@ -253,6 +378,9 @@ class AnimeApplicationService:
 
     def get_relations(self, anime_id: int, relation_type: str = "anime") -> list[dict]:
         return self._anime_repository.get_relations(anime_id, relation_type)
+
+    def list_anime_characters(self, anime_id: int) -> list[dict]:
+        return list(self._anime_repository.list_anime_characters(anime_id) or [])
 
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         getter = getattr(self._anime_repository, "get_anime_torrents", None)
@@ -332,6 +460,7 @@ class AnimeApplicationService:
                     subtitle_tracks=list(row.subtitle_tracks or []),
                     watch_status=st,
                     position_seconds=pos,
+                    duration_seconds=row.duration_seconds,
                 )
             )
         self._sync_watching_tag_from_library(anime_id, user_id)
@@ -357,6 +486,155 @@ class AnimeApplicationService:
             self._user_actions_port.delete_episode_progress(anime_id, user_id, file_id)
             self._sync_watching_tag_from_library(anime_id, user_id)
         return ok
+
+    def redownload_episode(self, anime_id: int, file_id: str, user_id: int) -> bool:
+        """Delete one local episode file and restart its persisted torrent."""
+        target: EpisodeFileDTO | None = None
+        for row in self.list_episode_files(anime_id, user_id=user_id):
+            if row.file_id == str(file_id or "").strip():
+                target = row
+                break
+        if target is None:
+            return False
+        hash_value = self._resolve_torrent_hash_for_episode(
+            anime_id,
+            str(target.path or ""),
+            str(target.title or ""),
+        )
+        if not hash_value:
+            return False
+        if target.path:
+            self.delete_episode_file(anime_id, file_id, user_id)
+        return bool(
+            self.start_download(
+                DownloadRequest(
+                    anime_id=anime_id,
+                    hash_value=hash_value,
+                    user_id=user_id,
+                )
+            )
+        )
+
+    def _resolve_torrent_hash_for_episode(
+        self, anime_id: int, file_path: str, file_title: str
+    ) -> str | None:
+        """Match a local file to a torrent hash stored for this anime."""
+        file_norm = self._norm_path_key(file_path)
+        path_rows: list[tuple[str, str]] = []
+        name_rows: list[tuple[str, str]] = []
+
+        def ingest(row: dict) -> None:
+            if not isinstance(row, dict):
+                return
+            try:
+                if int(row.get("anime_id") or 0) != int(anime_id):
+                    return
+            except (TypeError, ValueError):
+                return
+            hash_value = str(row.get("hash") or row.get("hash_value") or "").strip()
+            if not hash_value:
+                return
+            name = str(row.get("name") or "")
+            torrent_path = str(row.get("path") or "").strip()
+            if torrent_path:
+                path_rows.append((hash_value, torrent_path))
+            name_rows.append((hash_value, name))
+
+        for row in self.get_active_downloads() or []:
+            ingest(row)
+        overview = self.get_torrents_overview() or {}
+        if isinstance(overview, dict):
+            for bucket in overview.values():
+                if not isinstance(bucket, list):
+                    continue
+                for row in bucket:
+                    ingest(row)
+
+        if file_norm:
+            for hash_value, torrent_path in path_rows:
+                if self._path_under_torrent(file_norm, torrent_path):
+                    return hash_value
+
+        for row in self.get_anime_torrents(anime_id):
+            if not isinstance(row, dict):
+                continue
+            hash_value = str(row.get("hash") or "").strip()
+            if hash_value:
+                name_rows.append((hash_value, str(row.get("name") or "")))
+
+        title_fold = file_title.casefold().strip()
+        stem_fold = os.path.splitext(file_title)[0].casefold().strip()
+        if stem_fold or title_fold:
+            for hash_value, name in name_rows:
+                name_fold = name.casefold()
+                if stem_fold and stem_fold in name_fold:
+                    return hash_value
+                if title_fold and title_fold in name_fold:
+                    return hash_value
+
+        unique_hashes = sorted({h for h, _ in name_rows if h})
+        if len(unique_hashes) == 1:
+            return unique_hashes[0]
+        return None
+
+    @staticmethod
+    def _norm_path_key(path: str) -> str:
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        try:
+            return os.path.normcase(os.path.realpath(os.path.normpath(text)))
+        except OSError:
+            return os.path.normcase(os.path.normpath(text))
+
+    @staticmethod
+    def _path_under_torrent(file_norm: str, torrent_path: str) -> bool:
+        if not file_norm or not torrent_path:
+            return False
+        torrent_norm = AnimeApplicationService._norm_path_key(torrent_path)
+        if not torrent_norm:
+            return False
+        if file_norm == torrent_norm:
+            return True
+        sep = os.sep
+        return file_norm.startswith(torrent_norm + sep)
+
+    def delete_all_files(self, anime_id: int, user_id: int) -> int:
+        media = self._require_media_streaming()
+        files = media.list_episode_files(ListEpisodeFilesQuery(anime_id=anime_id))
+        deleted = 0
+        for row in files:
+            if media.delete_episode_file(anime_id, row.file_id):
+                self._user_actions_port.delete_episode_progress(
+                    anime_id, user_id, row.file_id
+                )
+                deleted += 1
+        if deleted:
+            self._sync_watching_tag_from_library(anime_id, user_id)
+        return deleted
+
+    def delete_seen_episodes(self, anime_id: int, user_id: int) -> int:
+        anime = self.get_anime_details(anime_id)
+        last_seen = str(anime.last_seen or "").strip()
+        if not last_seen:
+            return 0
+        media = self._require_media_streaming()
+        files = media.list_episode_files(ListEpisodeFilesQuery(anime_id=anime_id))
+        file_ids_to_delete: list[str] = []
+        for row in files:
+            if row.path == last_seen:
+                break
+            file_ids_to_delete.append(row.file_id)
+        deleted = 0
+        for file_id in file_ids_to_delete:
+            if media.delete_episode_file(anime_id, file_id):
+                self._user_actions_port.delete_episode_progress(
+                    anime_id, user_id, file_id
+                )
+                deleted += 1
+        if deleted:
+            self._sync_watching_tag_from_library(anime_id, user_id)
+        return deleted
 
     def create_playback_session(
         self,

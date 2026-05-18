@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 try:
     from ..api import AnimeAPI
     from adapters.legacy.legacy_classes import Anime
-    from application.services.api_coordinator import APICoordinator
     from application.services.database_manager import DatabaseManager
     from application.services.download_manager import DownloadManager
     from shared.config.constants import Constants
@@ -18,7 +18,6 @@ try:
 except ImportError:  # pragma: no cover - packaged install fallback
     from AnimeManager.adapters.api import AnimeAPI  # type: ignore
     from AnimeManager.adapters.legacy.legacy_classes import Anime  # type: ignore
-    from AnimeManager.application.services.api_coordinator import APICoordinator  # type: ignore
     from AnimeManager.application.services.database_manager import DatabaseManager  # type: ignore
     from AnimeManager.application.services.download_manager import DownloadManager  # type: ignore
     from AnimeManager.shared.config.constants import Constants  # type: ignore
@@ -38,6 +37,7 @@ except ImportError:  # pragma: no cover - packaged install fallback
 
 from domain.entities import AnimeEntity, from_legacy_anime
 from domain.errors import InfrastructureError
+from adapters.legacy.metadata_provider_adapter import LegacyMetadataProviderAdapter
 
 
 class _LegacyRuntimeState:
@@ -168,6 +168,7 @@ class LegacyAnimeRepositoryAdapter:
         self._runtime = runtime
         self._db_manager = DatabaseManager()
         self._db_manager.set_database(runtime.database)
+        self._torrent_search_memory_ready = False
 
     def search(self, query: str, limit: int = 50) -> list[AnimeEntity]:
         results = self._db_manager.search_anime(query, limit=limit)
@@ -254,6 +255,62 @@ class LegacyAnimeRepositoryAdapter:
                 f"Failed to remove search term: {exc}"
             ) from exc
 
+    def _ensure_torrent_search_memory_table(self) -> None:
+        if self._torrent_search_memory_ready:
+            return
+        self._runtime.database.sql(
+            (
+                "CREATE TABLE IF NOT EXISTS anime_torrent_search_memory ("
+                "anime_id INTEGER NOT NULL PRIMARY KEY, "
+                "query TEXT NOT NULL DEFAULT ''"
+                ")"
+            ),
+            (),
+            save=True,
+        )
+        self._torrent_search_memory_ready = True
+
+    def get_last_torrent_search_query(self, anime_id: int) -> Optional[str]:
+        try:
+            self._ensure_torrent_search_memory_table()
+            rows = self._runtime.database.sql(
+                "SELECT query FROM anime_torrent_search_memory WHERE anime_id=?",
+                (anime_id,),
+            )
+        except Exception:
+            return None
+        if not rows or not rows[0] or rows[0][0] is None:
+            return None
+        out = str(rows[0][0]).strip()
+        return out if out else None
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str) -> None:
+        clean = (query or "").strip()[:2000]
+        if not clean:
+            return
+        try:
+            self._ensure_torrent_search_memory_table()
+            with self._runtime.database.get_lock():
+                db = self._runtime.database
+                exists = db.sql(
+                    "SELECT 1 FROM anime_torrent_search_memory WHERE anime_id=? LIMIT 1",
+                    (anime_id,),
+                )
+                if exists:
+                    db.sql(
+                        "UPDATE anime_torrent_search_memory SET query=? WHERE anime_id=?",
+                        (clean, anime_id),
+                        save=True,
+                    )
+                else:
+                    db.sql(
+                        "INSERT INTO anime_torrent_search_memory(anime_id, query) VALUES(?,?)",
+                        (anime_id, clean),
+                        save=True,
+                    )
+        except Exception:
+            return
+
     def get_settings(self) -> dict:
         settings = getattr(self._runtime, "settings", None)
         if isinstance(settings, dict):
@@ -273,6 +330,84 @@ class LegacyAnimeRepositoryAdapter:
         except Exception:
             return []
         return list(rows or [])
+
+    def list_anime_characters(self, anime_id: int) -> list[dict]:
+        """Join ``characterRelations`` with ``characters`` for this anime."""
+        try:
+            rel_rows = self._runtime.database.sql(
+                "SELECT id, role FROM characterRelations WHERE anime_id=?",
+                (int(anime_id),),
+                to_dict=True,
+            )
+        except Exception:
+            return []
+        if not rel_rows:
+            return []
+        ids: list[int] = []
+        for r in rel_rows:
+            cid = r.get("id")
+            if cid is None:
+                continue
+            try:
+                ids.append(int(cid))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return []
+        uniq = sorted(set(ids))
+        placeholders = ",".join("?" * len(uniq))
+        try:
+            char_rows = self._runtime.database.sql(
+                f"SELECT * FROM characters WHERE id IN ({placeholders})",
+                tuple(uniq),
+                to_dict=True,
+            )
+        except Exception:
+            char_rows = []
+        by_id: dict[int, dict] = {}
+        for row in char_rows or []:
+            if not isinstance(row, dict):
+                continue
+            cid = row.get("id")
+            if cid is None:
+                continue
+            try:
+                by_id[int(cid)] = dict(row)
+            except (TypeError, ValueError):
+                continue
+        out: list[dict] = []
+        for rel in rel_rows:
+            cid_raw = rel.get("id")
+            if cid_raw is None:
+                continue
+            try:
+                cid = int(cid_raw)
+            except (TypeError, ValueError):
+                continue
+            char = by_id.get(cid, {})
+            synopsis = char.get("desc") or char.get("description")
+            out.append(
+                {
+                    "id": cid,
+                    "name": char.get("name") or f"Character #{cid}",
+                    "picture": char.get("picture"),
+                    "role": rel.get("role"),
+                    "synopsis": synopsis,
+                }
+            )
+
+        def _sort_key(d: dict) -> tuple[int, str]:
+            role = str(d.get("role") or "").strip().lower()
+            if role in ("main", "protagonist"):
+                rank = 0
+            elif "support" in role:
+                rank = 2
+            else:
+                rank = 1
+            return (rank, (d.get("name") or "").strip().lower())
+
+        out.sort(key=_sort_key)
+        return out
 
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         """Return every torrent persisted for ``anime_id``.
@@ -315,54 +450,108 @@ class LegacyAnimeRepositoryAdapter:
             out.append(entry)
         return out
 
+    def delete_anime(self, anime_id: int) -> bool:
+        try:
+            self._runtime.database.remove(None, id=anime_id, table="anime")
+            return True
+        except Exception:
+            return False
 
-class LegacyMetadataProviderAdapter:
-    """Adapter around APICoordinator for provider-backed search."""
-
-    def __init__(
-        self,
-        runtime: LegacyRuntime,
-        repository: LegacyAnimeRepositoryAdapter,
-    ) -> None:
-        self._runtime = runtime
-        self._api_coordinator = APICoordinator()
-        self._api_coordinator.set_api(runtime.api)
-        self._api_coordinator.set_database_manager(repository._db_manager)
-
-    def search(self, query: str, limit: int = 50) -> list[AnimeEntity]:
-        results = self._api_coordinator.search_anime(query, limit=limit)
-        if not results:
-            return []
-        return [from_legacy_anime(item) for item in results]
-
-    def stream_search(self, query: str, limit: int = 50):
-        """Yield :class:`AnimeEntity` instances per provider batch.
-
-        Falls back to the materialized :meth:`search` when the
-        underlying coordinator predates the streaming contract.
-        """
-        streamer = getattr(self._api_coordinator, "stream_search_anime", None)
-        if callable(streamer):
-            for item in streamer(query, limit=limit):
-                yield from_legacy_anime(item)
-            return
-        for item in self.search(query, limit=limit):
-            yield item
+    def get_anime_folder(self, anime_id: int) -> str:
+        try:
+            return str(self._runtime.getFolder(id=anime_id) or "")
+        except Exception:
+            return ""
 
 
 class LegacyMediaLibraryAdapter:
     """Adapter exposing local episode files from the legacy runtime."""
 
-    def __init__(self, runtime: LegacyRuntime) -> None:
-        self._runtime = runtime
+    _VIDEO_SUFFIXES = frozenset({".mkv", ".mp4", ".avi"})
 
-    def list_episode_files(self, anime_id: int) -> list[dict[str, Any]]:
-        folder = self._runtime.getFolder(id=anime_id)
-        episodes = self._runtime.getEpisodes(folder) or []
-        out: list[dict[str, Any]] = []
-        for idx, item in enumerate(episodes):
-            if not isinstance(item, dict):
+    def __init__(
+        self,
+        runtime: LegacyRuntime,
+        *,
+        download_port: Any | None = None,
+    ) -> None:
+        self._runtime = runtime
+        self._download_port = download_port
+
+    def _canonical_path_key(self, path: str) -> str:
+        try:
+            return os.path.normcase(os.path.realpath(os.path.normpath(path)))
+        except OSError:
+            return os.path.normcase(os.path.normpath(path))
+
+    def _coerce_episode_dicts(self, raw: Any) -> list[dict[str, Any]]:
+        if isinstance(raw, list):
+            return [x for x in raw if isinstance(x, dict)]
+        return []
+
+    def _collect_torrent_save_paths(self, anime_id: int) -> list[str]:
+        """Paths reported by the download/torrent layer for this anime.
+
+        The library scanner only walks ``getFolder(anime_id)``, which can
+        miss real files when the on-disk layout or trailing ``- <id>``
+        folder name does not match the catalogued id. Torrent rows still
+        carry the client-reported save path, so we union those here.
+        """
+        port = self._download_port
+        if port is None:
+            return []
+        candidates: list[str] = []
+        try:
+            for row in port.get_active_downloads() or []:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    if int(row.get("anime_id") or 0) != int(anime_id):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                p = str(row.get("path") or "").strip()
+                if p:
+                    candidates.append(p)
+        except Exception:
+            pass
+        getter = getattr(port, "get_torrents_overview", None)
+        if callable(getter):
+            try:
+                overview = getter() or {}
+            except Exception:
+                overview = {}
+            for rows in overview.values():
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        if int(row.get("anime_id") or 0) != int(anime_id):
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                    p = str(row.get("path") or "").strip()
+                    if p:
+                        candidates.append(p)
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw in candidates:
+            norm = os.path.normpath(raw)
+            key = self._canonical_path_key(norm)
+            if key in seen:
                 continue
+            seen.add(key)
+            ordered.append(norm)
+        return ordered
+
+    def _rows_from_scan_dicts(
+        self, episodes: list[dict[str, Any]], start_idx: int
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for offset, item in enumerate(episodes):
+            idx = start_idx + offset
             path = str(item.get("path") or "").strip()
             if not path:
                 continue
@@ -386,15 +575,106 @@ class LegacyMediaLibraryAdapter:
             )
         return out
 
+    def _torrent_save_root_norms(self, anime_id: int) -> list[str]:
+        roots: list[str] = []
+        for p in self._collect_torrent_save_paths(anime_id):
+            base = p
+            if os.path.isfile(base):
+                base = os.path.dirname(base)
+            try:
+                roots.append(
+                    os.path.normcase(os.path.realpath(os.path.normpath(base)))
+                )
+            except OSError:
+                roots.append(os.path.normcase(os.path.normpath(base)))
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in roots:
+            if r and r not in seen:
+                seen.add(r)
+                out.append(r)
+        return out
+
+    def _path_allowed_for_delete(self, anime_id: int, path_norm: str) -> bool:
+        folder = self._runtime.getFolder(id=anime_id) or ""
+        fm = self._runtime.fm
+        if folder and fm is not None and fm.exists(folder):
+            try:
+                folder_norm = os.path.normcase(
+                    os.path.realpath(os.path.normpath(folder))
+                )
+            except OSError:
+                folder_norm = ""
+            else:
+                if path_norm != folder_norm and path_norm.startswith(
+                    folder_norm + os.sep
+                ):
+                    return True
+        for root in self._torrent_save_root_norms(anime_id):
+            if path_norm == root or path_norm.startswith(root + os.sep):
+                return True
+        return False
+
+    def list_episode_files(self, anime_id: int) -> list[dict[str, Any]]:
+        folder = self._runtime.getFolder(id=anime_id)
+        ep_raw = self._coerce_episode_dicts(
+            self._runtime.getEpisodes(folder) or []
+        )
+        out = self._rows_from_scan_dicts(ep_raw, 0)
+        seen = {
+            self._canonical_path_key(str(r.get("path") or ""))
+            for r in out
+            if r.get("path")
+        }
+
+        for raw_p in self._collect_torrent_save_paths(anime_id):
+            p = os.path.normpath(raw_p)
+            if not p:
+                continue
+            if os.path.isfile(p):
+                key = self._canonical_path_key(p)
+                if key in seen:
+                    continue
+                suf = Path(p).suffix.lower()
+                if suf not in self._VIDEO_SUFFIXES:
+                    continue
+                digest = hashlib.sha1(p.encode("utf-8")).hexdigest()[:16]
+                file_id = f"ep-{len(out):04d}-{digest}"
+                try:
+                    size_bytes = os.path.getsize(p)
+                except OSError:
+                    size_bytes = None
+                out.append(
+                    {
+                        "file_id": file_id,
+                        "path": p,
+                        "title": Path(p).stem,
+                        "size_bytes": size_bytes,
+                        "season": None,
+                        "episode": None,
+                    }
+                )
+                seen.add(key)
+            elif os.path.isdir(p):
+                nested = self._coerce_episode_dicts(
+                    self._runtime.getEpisodes(p) or []
+                )
+                for row in self._rows_from_scan_dicts(nested, len(out)):
+                    k2 = self._canonical_path_key(str(row.get("path") or ""))
+                    if k2 in seen:
+                        continue
+                    seen.add(k2)
+                    out.append(row)
+
+        return out
+
     def delete_episode_file(self, anime_id: int, file_id: str) -> bool:
         """Remove a single episode file when ``file_id`` matches the library scan."""
-        folder = self._runtime.getFolder(id=anime_id)
-        if not folder or not str(file_id).strip():
+        if not str(file_id).strip():
             return False
         fm = self._runtime.fm
-        if fm is None or not fm.exists(folder):
+        if fm is None:
             return False
-        folder_norm = os.path.normcase(os.path.realpath(os.path.normpath(folder)))
         for item in self.list_episode_files(anime_id):
             if str(item.get("file_id") or "") != str(file_id).strip():
                 continue
@@ -402,10 +682,12 @@ class LegacyMediaLibraryAdapter:
             if not path:
                 return False
             try:
-                path_norm = os.path.normcase(os.path.realpath(os.path.normpath(path)))
+                path_norm = os.path.normcase(
+                    os.path.realpath(os.path.normpath(path))
+                )
             except OSError:
                 return False
-            if path_norm == folder_norm or not path_norm.startswith(folder_norm + os.sep):
+            if not self._path_allowed_for_delete(anime_id, path_norm):
                 return False
             if not os.path.isfile(path):
                 return False
@@ -448,6 +730,7 @@ class LegacyDownloadAdapter:
             self._download_manager.set_database_manager(
                 repository._db_manager
             )
+            self._download_manager.schedule_restore_persisted_torrents_after_startup()
 
     def _promote_watching_on_download_start(self, anime_id: int, user_id: int) -> None:
         """When a download is queued with a user, treat the title as actively watched."""
@@ -502,6 +785,41 @@ class LegacyDownloadAdapter:
             }
         return getter()
 
+    def redownload(self, anime_id: int) -> int:
+        return int(self._download_manager.redownload(anime_id) or 0)
+
+    def delete_all_files(self, anime_id: int, user_id: int | None = None) -> int:
+        _ = user_id
+        removed = 0
+        media = LegacyMediaLibraryAdapter(self._runtime, download_port=self)
+        for row in media.list_episode_files(anime_id):
+            file_id = str(row.get("file_id") or "")
+            if file_id and media.delete_episode_file(anime_id, file_id):
+                removed += 1
+        return removed
+
+    def delete_seen_episodes(self, anime_id: int, user_id: int | None = None) -> int:
+        _ = user_id
+        media = LegacyMediaLibraryAdapter(self._runtime, download_port=self)
+        files = media.list_episode_files(anime_id)
+        last_seen = ""
+        try:
+            anime = self._runtime.database.get(anime_id, table="anime")
+            if anime:
+                last_seen = str(getattr(anime, "last_seen", None) or anime.get("last_seen") or "").strip()
+        except Exception:
+            last_seen = ""
+        if not last_seen:
+            return 0
+        removed = 0
+        for row in files:
+            if str(row.get("path") or "") == last_seen:
+                break
+            file_id = str(row.get("file_id") or "")
+            if file_id and media.delete_episode_file(anime_id, file_id):
+                removed += 1
+        return removed
+
     def search_torrents(
         self,
         terms: list[str],
@@ -519,15 +837,7 @@ class LegacyDownloadAdapter:
         profile: str = "interactive",
         limit: int = 200,
     ):
-        """Yield torrent dicts as soon as each engine returns a row.
-
-        Unlike :meth:`search_torrents`, the iterator does not collect the
-        full result set before returning, so the UI can render rows
-        progressively while slower engines are still working. Ordering
-        follows the natural arrival order of the underlying facade
-        (which is "as-arrived" for the interactive profile and
-        rank-stable for the strict profile).
-        """
+        """Yield torrent dicts as soon as each engine returns a row."""
         facade = SearchFacade.for_profile(profile)
         max_results = max(1, limit)
         emitted = 0
@@ -673,14 +983,19 @@ class LegacyUserActionsAdapter:
 
     def _ensure_episode_progress_table(self) -> None:
         db = self._runtime.database
+        # Use VARCHAR for key columns: MySQL/MariaDB reject TEXT/BLOB in a
+        # PRIMARY KEY without a prefix length (error 1170). The web UI always
+        # passes a user_id when listing episodes, so this DDL runs on every
+        # detail page and a failed CREATE left ``episode_files`` empty after
+        # the HTTP layer swallowed the infrastructure error.
         ddl = (
             "CREATE TABLE IF NOT EXISTS episode_progress ("
             "anime_id INTEGER NOT NULL, "
             "user_id INTEGER NOT NULL, "
-            "file_id TEXT NOT NULL, "
-            "status TEXT NOT NULL, "
-            "position_seconds REAL, "
-            "updated_at REAL NOT NULL, "
+            "file_id VARCHAR(255) NOT NULL, "
+            "status VARCHAR(32) NOT NULL, "
+            "position_seconds DOUBLE, "
+            "updated_at DOUBLE NOT NULL, "
             "PRIMARY KEY (anime_id, user_id, file_id))"
         )
         try:
