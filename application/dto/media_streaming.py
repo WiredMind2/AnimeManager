@@ -17,6 +17,7 @@ class EpisodeFileDTO:
     subtitle_tracks: list[dict[str, object]] = field(default_factory=list)
     watch_status: str = "UNSEEN"
     position_seconds: float | None = None
+    duration_seconds: float | None = None
 
 
 @dataclass(slots=True)

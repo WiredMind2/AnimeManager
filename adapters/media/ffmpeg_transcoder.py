@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,17 +68,29 @@ class FFmpegTranscoderAdapter:
         *,
         ffmpeg_bin: str = "ffmpeg",
         ffprobe_bin: str = "ffprobe",
+        video_codec: str = "libx264",
+        require_hardware_acceleration: bool = False,
+        use_cuda_hwaccel: bool = False,
         max_active_sessions: int = 2,
         segment_seconds: int = 4,
         startup_timeout_seconds: int = 15,
     ) -> None:
         self._ffmpeg_bin = ffmpeg_bin
         self._ffprobe_bin = ffprobe_bin
+        self._video_codec = str(video_codec or "libx264").strip().lower()
+        self._require_hardware_acceleration = bool(require_hardware_acceleration)
+        self._use_cuda_hwaccel = bool(use_cuda_hwaccel)
         self._max_active_sessions = max(1, int(max_active_sessions))
         self._segment_seconds = max(2, int(segment_seconds))
         self._startup_timeout_seconds = max(3, int(startup_timeout_seconds))
         self._active: dict[str, _ActiveTranscode] = {}
         self._lock = threading.RLock()
+        self._nvenc_validated = False
+        self._probe_memo_lock = threading.Lock()
+        self._probe_memo: OrderedDict[
+            str, tuple[dict[str, list[dict[str, object]]], float]
+        ] = OrderedDict()
+        self._probe_memo_max = 64
 
     # ------------------------------------------------------------------
     # MediaTranscoderPort
@@ -118,6 +131,7 @@ class FFmpegTranscoderAdapter:
 
         with self._lock:
             self._reap_finished_locked()
+            self._validate_required_acceleration(ffmpeg_cmd)
             existing = self._active.get(session_id)
             if (
                 existing is not None
@@ -244,31 +258,19 @@ class FFmpegTranscoderAdapter:
         self._terminate(active.process)
         _LOG.info("transcode_stopped session=%s", session_id)
 
-    def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
-        ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
-        command = [
-            ffprobe_cmd,
-            "-v",
-            "error",
-            "-show_entries",
-            "stream=index,codec_type,codec_name:stream_tags=language,title",
-            "-of",
-            "json",
-            source_path,
-        ]
+    @staticmethod
+    def _as_probe_float(value: object) -> float:
         try:
-            result = subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            payload = json.loads(result.stdout or "{}")
-            streams = list(payload.get("streams") or [])
-        except Exception:
-            return {"audio": [], "subtitles": []}
+            f = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+        if f != f:  # NaN guard
+            return 0.0
+        return max(0.0, f)
 
+    @staticmethod
+    def _parse_probe_streams(payload: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+        streams = list(payload.get("streams") or [])
         audio: list[dict[str, object]] = []
         subtitles: list[dict[str, object]] = []
         audio_pos = 0
@@ -276,6 +278,10 @@ class FFmpegTranscoderAdapter:
         for stream in streams:
             kind = str(stream.get("codec_type") or "")
             tags = stream.get("tags") or {}
+            if not isinstance(tags, dict):
+                tags = {}
+            if not isinstance(tags, dict):
+                tags = {}
             lang = str(tags.get("language") or "und")
             title = str(tags.get("title") or "").strip()
             label = f"{lang.upper()}"
@@ -290,21 +296,35 @@ class FFmpegTranscoderAdapter:
                 sub_pos += 1
         return {"audio": audio, "subtitles": subtitles}
 
-    def probe_media_duration(self, source_path: str) -> float:
-        """Return the duration of ``source_path`` in seconds.
+    @classmethod
+    def _duration_from_probe_payload(cls, payload: dict[str, object]) -> float:
+        fmt_dur = cls._as_probe_float((payload.get("format") or {}).get("duration"))
+        if fmt_dur > 0:
+            return fmt_dur
+        stream_durations = [
+            cls._as_probe_float(stream.get("duration"))
+            for stream in (payload.get("streams") or [])
+        ]
+        return max(stream_durations, default=0.0)
 
-        We try the container-level ``format=duration`` first, then fall
-        back to the longest stream duration. Returns ``0.0`` when the
-        duration is not available — the caller is expected to drop back
-        to a live-style playlist when that happens.
-        """
+    def _probe_fingerprint(self, source_path: str) -> str | None:
+        try:
+            st = os.stat(source_path)
+            real = os.path.realpath(source_path)
+            return f"{real}\0{st.st_mtime_ns}\0{st.st_size}"
+        except OSError:
+            return None
+
+    def _probe_media_combined_uncached(
+        self, source_path: str
+    ) -> tuple[dict[str, list[dict[str, object]]], float]:
         ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
         command = [
             ffprobe_cmd,
             "-v",
             "error",
             "-show_entries",
-            "format=duration:stream=duration",
+            "format=duration:stream=index,codec_type,codec_name,duration:stream_tags=language,title",
             "-of",
             "json",
             source_path,
@@ -319,25 +339,43 @@ class FFmpegTranscoderAdapter:
             )
             payload = json.loads(result.stdout or "{}")
         except Exception:
-            return 0.0
+            return {"audio": [], "subtitles": []}, 0.0
+        if not isinstance(payload, dict):
+            return {"audio": [], "subtitles": []}, 0.0
+        tracks = self._parse_probe_streams(payload)
+        duration = self._duration_from_probe_payload(payload)
+        return tracks, duration
 
-        def _as_float(value: object) -> float:
-            try:
-                f = float(value)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                return 0.0
-            if f != f:  # NaN guard
-                return 0.0
-            return max(0.0, f)
+    def probe_media_metadata(
+        self, source_path: str
+    ) -> tuple[dict[str, list[dict[str, object]]], float]:
+        """Single ffprobe run: audio/subtitle tracks plus duration in seconds."""
+        fp = self._probe_fingerprint(source_path)
+        with self._probe_memo_lock:
+            if fp and fp in self._probe_memo:
+                self._probe_memo.move_to_end(fp)
+                return self._probe_memo[fp]
+        tracks, duration = self._probe_media_combined_uncached(source_path)
+        if fp:
+            with self._probe_memo_lock:
+                self._probe_memo[fp] = (tracks, duration)
+                self._probe_memo.move_to_end(fp)
+                while len(self._probe_memo) > self._probe_memo_max:
+                    self._probe_memo.popitem(last=False)
+        return tracks, duration
 
-        fmt_dur = _as_float((payload.get("format") or {}).get("duration"))
-        if fmt_dur > 0:
-            return fmt_dur
-        stream_durations = [
-            _as_float(stream.get("duration"))
-            for stream in (payload.get("streams") or [])
-        ]
-        return max(stream_durations, default=0.0)
+    def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
+        return self.probe_media_metadata(source_path)[0]
+
+    def probe_media_duration(self, source_path: str) -> float:
+        """Return the duration of ``source_path`` in seconds.
+
+        We try the container-level ``format=duration`` first, then fall
+        back to the longest stream duration. Returns ``0.0`` when the
+        duration is not available — the caller is expected to drop back
+        to a live-style playlist when that happens.
+        """
+        return self.probe_media_metadata(source_path)[1]
 
     # ------------------------------------------------------------------
     # Implementation details
@@ -369,16 +407,23 @@ class FFmpegTranscoderAdapter:
         seek_seconds = start_segment_index * segment_seconds
         command: list[str] = [ffmpeg_cmd, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
         if seek_seconds > 0:
-            # When the user has selected a burnt-in subtitle track we
-            # can't input-seek straight to the target — the
-            # ``subtitles`` filter would render nothing because libass
-            # needs to observe at least a brief window of frames with
-            # PTS leading up to the seek point before it starts
-            # emitting glyphs. Land the input demuxer slightly earlier
-            # and let the output-side seek discard the warmup frames so
-            # the playlist position stays exact.
+            # Input-side ``-ss`` is fast but keyframe-granular: ffmpeg
+            # often lands a little *before* ``seek_seconds``. With
+            # ``-copyts`` that drift propagates directly into the .ts
+            # timestamps, so a restarted encoder can write
+            # ``segment_NNNNN.ts`` whose payload actually belongs to an
+            # earlier timeline region than NNNNN. Pairing fast input
+            # seek with a precise output-side ``-ss`` re-trim keeps
+            # segment indices and media timestamps aligned after skips.
             command.extend(["-ss", f"{seek_seconds}", "-copyts"])
+        if self._using_nvenc() and self._use_cuda_hwaccel:
+            command.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         command.extend(["-i", source_path])
+        if seek_seconds > 0:
+            # Output-side seek is precise (decode-and-discard) and with
+            # ``-copyts`` uses the original timeline, so this must be
+            # the absolute target timestamp.
+            command.extend(["-ss", f"{seek_seconds}"])
         command.extend(["-map", "0:v:0"])
         if audio_track is None:
             command.extend(["-map", "0:a:0?"])
@@ -389,24 +434,7 @@ class FFmpegTranscoderAdapter:
         # decodable, which HLS requires for arbitrary seeking.
         command.extend(
             [
-                "-c:v",
-                "libx264",
-                # Keep H.264 output inside the broadest browser-decoder
-                # compatibility envelope. Some sources are 10-bit /
-                # 4:4:4 and libx264 mirrors that by default, which can
-                # make MediaSource append throw in Chromium.
-                "-pix_fmt",
-                "yuv420p",
-                "-profile:v",
-                "high",
-                "-level:v",
-                "4.1",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-force_key_frames",
-                f"expr:gte(t,n_forced*{segment_seconds})",
+                *self._video_flags(segment_seconds),
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -437,6 +465,122 @@ class FFmpegTranscoderAdapter:
             ]
         )
         return command
+
+    def _using_nvenc(self) -> bool:
+        return self._video_codec == "h264_nvenc"
+
+    def _video_flags(self, segment_seconds: int) -> list[str]:
+        keyframe_expr = f"expr:gte(t,n_forced*{segment_seconds})"
+        if self._using_nvenc():
+            # ``-b:v 0`` + CQ keeps quality-driven output similar to CRF
+            # while still using NVENC's hardware encoder.
+            return [
+                "-c:v",
+                "h264_nvenc",
+                "-pix_fmt",
+                "yuv420p",
+                "-profile:v",
+                "high",
+                "-level:v",
+                "4.1",
+                "-preset",
+                "p5",
+                "-tune",
+                "hq",
+                "-rc:v",
+                "vbr",
+                "-cq:v",
+                "23",
+                "-b:v",
+                "0",
+                "-force_key_frames",
+                keyframe_expr,
+            ]
+        # Keep H.264 output inside the broadest browser-decoder
+        # compatibility envelope. Some sources are 10-bit / 4:4:4 and
+        # libx264 mirrors that by default, which can make MediaSource
+        # append throw in Chromium.
+        return [
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-level:v",
+            "4.1",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-force_key_frames",
+            keyframe_expr,
+        ]
+
+    def _validate_required_acceleration(self, ffmpeg_cmd: str) -> None:
+        if not self._require_hardware_acceleration:
+            return
+        if not self._using_nvenc():
+            raise InfrastructureError(
+                "Hardware acceleration is required, but the configured video codec is not NVIDIA NVENC."
+            )
+        if self._nvenc_validated:
+            return
+        try:
+            encoders = subprocess.run(
+                [ffmpeg_cmd, "-hide_banner", "-loglevel", "error", "-encoders"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise InfrastructureError(
+                f"NVIDIA GPU acceleration is required but ffmpeg encoder discovery failed: {exc}"
+            ) from exc
+        if "h264_nvenc" not in (encoders.stdout or ""):
+            raise InfrastructureError(
+                "NVIDIA GPU acceleration is required but ffmpeg does not expose the h264_nvenc encoder."
+            )
+        probe_command = [
+            ffmpeg_cmd,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            # Some NVIDIA drivers reject very small frame sizes during
+            # encoder init even though they're valid in theory. Use a
+            # conservative HD probe frame to avoid false negatives.
+            "nullsrc=size=1280x720:rate=1",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "h264_nvenc",
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            subprocess.run(
+                probe_command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except Exception as exc:  # noqa: BLE001
+            detail = ""
+            if isinstance(exc, subprocess.CalledProcessError):
+                detail = (exc.stderr or exc.stdout or "").strip()
+            if not detail:
+                detail = str(exc)
+            raise InfrastructureError(
+                "NVIDIA GPU acceleration is required but a test NVENC encode failed. "
+                f"ffmpeg output: {detail}"
+            ) from exc
+        self._nvenc_validated = True
 
     def _wait_for_initial_manifest(
         self,

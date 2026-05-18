@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+import pytest
+
 from adapters.media.ffmpeg_transcoder import FFmpegTranscoderAdapter
+from domain.errors import InfrastructureError
 
 
 def _build(
@@ -66,14 +70,14 @@ def test_seek_with_or_without_subtitle_selection_uses_same_input_seek():
     with_sub_choice = _build(subtitle_track=2, start_segment_index=10, segment_seconds=4)
     assert _input_seek_value(plain) == "40"
     assert _input_seek_value(with_sub_choice) == "40"
-    assert _output_seek_value(plain) is None
-    assert _output_seek_value(with_sub_choice) is None
+    assert _output_seek_value(plain) == "40"
+    assert _output_seek_value(with_sub_choice) == "40"
 
 
 def test_seek_without_subtitles_uses_input_seek():
     command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
     assert _input_seek_value(command) == "40"
-    assert _output_seek_value(command) is None
+    assert _output_seek_value(command) == "40"
     assert "-copyts" in command
 
 
@@ -83,6 +87,79 @@ def test_command_forces_browser_compatible_h264_output():
     assert command[command.index("-pix_fmt") + 1] == "yuv420p"
     assert "-profile:v" in command
     assert command[command.index("-profile:v") + 1] == "high"
+
+
+def test_command_uses_nvenc_when_configured_for_nvidia():
+    adapter = FFmpegTranscoderAdapter(video_codec="h264_nvenc")
+    command = adapter._build_command(
+        ffmpeg_cmd="ffmpeg",
+        source_path="/tmp/sample.mkv",
+        playlist_output="/tmp/out/index.m3u8",
+        output_dir="/tmp/out",
+        audio_track=None,
+        subtitle_track=None,
+        start_segment_index=0,
+        segment_seconds=4,
+    )
+    assert "-c:v" in command
+    assert command[command.index("-c:v") + 1] == "h264_nvenc"
+    assert "-rc:v" in command
+    assert command[command.index("-rc:v") + 1] == "vbr"
+    assert "-cq:v" in command
+    assert command[command.index("-cq:v") + 1] == "23"
+
+
+def test_ensure_hls_session_fails_fast_when_nvenc_is_required_but_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+):
+    adapter = FFmpegTranscoderAdapter(
+        video_codec="h264_nvenc",
+        require_hardware_acceleration=True,
+    )
+
+    def fail_encoder_discovery(*_args, **_kwargs):
+        raise RuntimeError("ffmpeg not available")
+
+    monkeypatch.setattr("adapters.media.ffmpeg_transcoder.subprocess.run", fail_encoder_discovery)
+
+    with pytest.raises(InfrastructureError, match="NVIDIA GPU acceleration is required"):
+        adapter.ensure_hls_session(
+            session_id="s1",
+            source_path=str(tmp_path / "episode.mkv"),
+            output_dir=str(tmp_path / "out"),
+        )
+
+
+def test_nvenc_validation_uses_supported_probe_frame_size(monkeypatch):
+    adapter = FFmpegTranscoderAdapter(
+        video_codec="h264_nvenc",
+        require_hardware_acceleration=True,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, check, capture_output, text, timeout):
+        calls.append(list(command))
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout="Encoders:\n V....D h264_nvenc NVIDIA NVENC H.264 encoder\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("adapters.media.ffmpeg_transcoder.subprocess.run", fake_run)
+    adapter._validate_required_acceleration("ffmpeg")
+
+    assert len(calls) == 2
+    probe_cmd = calls[1]
+    assert "-f" in probe_cmd
+    assert probe_cmd[probe_cmd.index("-f") + 1] == "lavfi"
+    assert "-i" in probe_cmd
+    assert probe_cmd[probe_cmd.index("-i") + 1] == "nullsrc=size=1280x720:rate=1"
+    assert "-c:v" in probe_cmd
+    assert probe_cmd[probe_cmd.index("-c:v") + 1] == "h264_nvenc"
 
 
 def test_materialize_subtitle_tracks_extracts_vtt(monkeypatch, tmp_path: Path):

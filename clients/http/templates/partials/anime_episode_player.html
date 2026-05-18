@@ -1,85 +1,225 @@
 <section id="anime-player" class="detail__section">
   <div class="detail__section-title">
-    <h3>Episode player</h3>
+    <h3>Episodes &amp; downloads</h3>
     <span class="meta">
-      {% if episode_files %}{{ episode_files|length }} file{{ '' if episode_files|length == 1 else 's' }} ready{% else %}No local episode files found{% endif %}
+      {% set nfiles = episode_files|length %}
+      {% set ntor = (anime_torrents or [])|length %}
+      {{ nfiles }} playable file{% if nfiles != 1 %}s{% endif %}
+      ·
+      {{ ntor }} torrent{% if ntor != 1 %}s{% endif %}
     </span>
   </div>
-
-  {% if episode_files %}
-    <div class="table-wrap">
-      <table class="table table--anime-episodes">
-        <colgroup>
-          <col class="col--episode-file" />
-          <col class="col--season" />
-          <col class="col--episode" />
-          <col class="col--size" />
-          <col class="col--progress" />
-          <col class="col--actions" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th class="truncate">Episode file</th>
-            <th class="num">Season</th>
-            <th class="num">Episode</th>
-            <th class="num">Size</th>
-            <th>Progress</th>
-            <th class="num">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in episode_files %}
-            <tr>
-              <td class="truncate" title="{{ item.title }}">{{ item.title }}</td>
-              <td class="num">{{ item.season if item.season is not none else '—' }}</td>
-              <td class="num">{{ item.episode if item.episode is not none else '—' }}</td>
-              <td class="num">{{ (((item.size_bytes or 0) / 1024 / 1024)|round(1)|string ~ ' MB') if item.size_bytes else '—' }}</td>
-              <td>
-                <form
-                  method="post"
-                  action="{{ url_for('web_action_episode_progress', anime_id=anime.id) }}"
-                  hx-post="{{ url_for('web_action_episode_progress', anime_id=anime.id) }}"
-                  hx-target="#anime-player"
-                  hx-swap="outerHTML"
-                  hx-trigger="change from:select"
-                  style="display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap"
-                >
-                  <input type="hidden" name="file_id" value="{{ item.file_id }}" />
-                  <select class="input" name="status" style="min-width: 140px; height: 32px">
-                    {% set st = (item.watch_status or 'UNSEEN')|upper %}
-                    <option value="UNSEEN" {% if st == 'UNSEEN' %}selected{% endif %}>Not started</option>
-                    <option value="IN_PROGRESS" {% if st == 'IN_PROGRESS' %}selected{% endif %}>In progress</option>
-                    <option value="SEEN" {% if st == 'SEEN' %}selected{% endif %}>Seen</option>
-                  </select>
-                  <noscript><button class="btn btn--small" type="submit">Save</button></noscript>
-                </form>
-              </td>
-              <td class="num" style="white-space: nowrap">
-                <a class="btn btn--ghost btn--small"
-                   href="{{ url_for('web_anime_watch', anime_id=anime.id) }}?file_id={{ item.file_id }}">
-                  Play
-                </a>
-                <form
-                  method="post"
-                  action="{{ url_for('web_action_episode_delete', anime_id=anime.id) }}"
-                  hx-post="{{ url_for('web_action_episode_delete', anime_id=anime.id) }}"
-                  hx-target="#anime-player"
-                  hx-swap="outerHTML"
-                  hx-confirm="Delete this file from disk? This cannot be undone."
-                  style="display: inline"
-                >
-                  <input type="hidden" name="file_id" value="{{ item.file_id }}" />
-                  <button class="btn btn--small btn--danger" type="submit">Delete</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
+  {% if not episode_files and not anime_torrents %}
     <p style="color: var(--text-faint); font-size: 13px">
-      Download an episode first. The web player automatically transcodes files for browser playback.
+      Nothing here yet — add a torrent from the search above or place video files in this title&rsquo;s library folder. The web player can transcode local files for browser playback.
     </p>
+  {% else %}
+    <div style="margin-bottom: var(--sp-5)">
+      <p class="meta" style="margin-bottom: var(--sp-3); font-weight: 600">Local media</p>
+      {% if episode_files %}
+        <div class="table-wrap">
+          <table class="table table--anime-episodes">
+            <colgroup>
+              <col class="col--episode-file" />
+              <col class="col--season" />
+              <col class="col--episode" />
+              <col class="col--size" />
+              <col class="col--progress" />
+              <col class="col--actions" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="truncate">Episode file</th>
+                <th class="num">Season</th>
+                <th class="num">Episode</th>
+                <th class="num">Size</th>
+                <th>Watched</th>
+                <th class="num">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in episode_files %}
+                <tr>
+                  <td class="truncate" title="{{ item.title }}">{{ item.title }}</td>
+                  <td class="num">{{ item.season if item.season is not none else '—' }}</td>
+                  <td class="num">{{ item.episode if item.episode is not none else '—' }}</td>
+                  <td class="num">{{ (((item.size_bytes or 0) / 1024 / 1024)|round(1)|string ~ ' MB') if item.size_bytes else '—' }}</td>
+                  <td style="min-width: 148px">
+                    {% set dur = item.get('duration_seconds') %}
+                    {% set pos = item.get('position_seconds') %}
+                    {% if pos is none %}
+                      {% set pos = 0 %}
+                    {% endif %}
+                    {% set st = (item.get('watch_status') or 'UNSEEN')|upper %}
+                    {% if st == 'SEEN' %}
+                      {% set wpct = 100.0 %}
+                    {% elif dur is not none and dur > 0 %}
+                      {% set raw = (pos / dur * 100.0) %}
+                      {% set wpct = ([raw, 100.0]|min) %}
+                    {% else %}
+                      {% set wpct = 0.0 %}
+                    {% endif %}
+                    {% set pct_label = (wpct | round(0)) | int %}
+                    <div
+                      class="progress progress--watch{% if wpct > 80.0 %} progress--watch-high{% endif %}"
+                      role="progressbar"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow="{{ pct_label }}"
+                      aria-label="Watched {{ pct_label }} percent of this episode"
+                      title="{% if dur is not none and dur > 0 %}{{ (wpct | round(1)) }}% watched (~{{ (dur / 60) | round(1) }} min total){% elif st == 'SEEN' %}Watched (marked complete){% elif pos > 0 %}Played {{ pos | int }}s — duration unknown{% else %}Not started{% endif %}"
+                    >
+                      <div class="progress__bar" style="width: {{ wpct }}%"></div>
+                    </div>
+                    <div class="episode-watch-meta">
+                      {% if dur is not none and dur > 0 %}
+                        <span>{{ pct_label }}%</span>
+                      {% elif st == 'SEEN' %}
+                        <span>100%</span>
+                      {% elif pos > 0 %}
+                        <span>{{ pos | int }}s</span>
+                      {% else %}
+                        <span class="episode-watch-meta--muted">—</span>
+                      {% endif %}
+                    </div>
+                  </td>
+                  <td class="num" style="white-space: nowrap">
+                    <div class="episode-row-menu" data-episode-menu>
+                      <button type="button"
+                              class="btn btn--ghost btn--small episode-row-menu__toggle"
+                              data-episode-menu-toggle
+                              aria-haspopup="menu"
+                              aria-expanded="false">
+                        Actions
+                      </button>
+                      <div class="episode-row-menu__panel"
+                           data-episode-menu-panel
+                           role="menu"
+                           hidden>
+                        <a class="episode-row-menu__item"
+                           role="menuitem"
+                           href="{{ url_for('web_anime_watch', anime_id=anime.id) }}?file_id={{ item.file_id }}">
+                          Play
+                        </a>
+                        <form method="post"
+                              action="{{ url_for('web_action_episode_mark_seen', anime_id=anime.id) }}"
+                              hx-post="{{ url_for('web_action_episode_mark_seen', anime_id=anime.id) }}"
+                              hx-target="#anime-player"
+                              hx-swap="outerHTML"
+                              role="none">
+                          <input type="hidden" name="file_id" value="{{ item.file_id }}" />
+                          <button class="episode-row-menu__item" type="submit" role="menuitem">
+                            Mark seen
+                          </button>
+                        </form>
+                        <form method="post"
+                              action="{{ url_for('web_action_episode_mark_unseen', anime_id=anime.id) }}"
+                              hx-post="{{ url_for('web_action_episode_mark_unseen', anime_id=anime.id) }}"
+                              hx-target="#anime-player"
+                              hx-swap="outerHTML"
+                              role="none">
+                          <input type="hidden" name="file_id" value="{{ item.file_id }}" />
+                          <button class="episode-row-menu__item" type="submit" role="menuitem">
+                            Mark unseen
+                          </button>
+                        </form>
+                        <form method="post"
+                              action="{{ url_for('web_action_episode_redownload', anime_id=anime.id) }}"
+                              hx-post="{{ url_for('web_action_episode_redownload', anime_id=anime.id) }}"
+                              hx-target="#anime-player"
+                              hx-swap="outerHTML"
+                              hx-confirm="Delete this file and redownload from the saved torrent?"
+                              role="none">
+                          <input type="hidden" name="file_id" value="{{ item.file_id }}" />
+                          <button class="episode-row-menu__item" type="submit" role="menuitem">
+                            Redownload
+                          </button>
+                        </form>
+                        <form method="post"
+                              action="{{ url_for('web_action_episode_delete', anime_id=anime.id) }}"
+                              hx-post="{{ url_for('web_action_episode_delete', anime_id=anime.id) }}"
+                              hx-target="#anime-player"
+                              hx-swap="outerHTML"
+                              hx-confirm="Delete this file from disk? This cannot be undone."
+                              role="none">
+                          <input type="hidden" name="file_id" value="{{ item.file_id }}" />
+                          <button class="episode-row-menu__item episode-row-menu__item--danger"
+                                  type="submit"
+                                  role="menuitem">
+                            Delete file
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p style="color: var(--text-faint); font-size: 13px">
+          No video files were found under the library folder for this title. If you use a nested folder (for example <code>…/Animes/Show name - ID</code>), ensure the folder name ends with the numeric anime ID.
+        </p>
+      {% endif %}
+    </div>
+
+    <div>
+      <p class="meta" style="margin-bottom: var(--sp-3); font-weight: 600">Torrent client</p>
+      {% if anime_torrents %}
+        <div class="table-wrap">
+          <table class="table table--anime-downloads">
+            <colgroup>
+              <col class="col--release" />
+              <col class="col--size" />
+              <col class="col--progress" />
+              <col class="col--state" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="truncate">Release</th>
+                <th class="num">Size</th>
+                <th class="num">Progress</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in anime_torrents %}
+                {% set pct = ((row.progress or 0) * 100)|round(1) if row.progress is not none else None %}
+                <tr>
+                  <td class="truncate" title="{{ row.name }}">
+                    {{ row.name or row.hash or '—' }}
+                    {% if row.path %}<div style="font-size:11px; color: var(--text-faint)">{{ row.path }}</div>{% endif %}
+                  </td>
+                  <td class="num">{{ row.size_human or '—' }}</td>
+                  <td class="num" style="min-width: 120px">
+                    {% if pct is not none %}
+                      <div class="progress" aria-label="Download progress">
+                        <div class="progress__bar" style="width: {{ pct }}%"></div>
+                      </div>
+                      <span style="font-size: 11px; color: var(--text-muted)">{{ pct }}%</span>
+                    {% else %}—{% endif %}
+                  </td>
+                  <td>
+                    {% set state = (row.state or 'SAVED')|upper %}
+                    {% if state == 'COMPLETE' %}
+                      <span class="badge badge--good">{{ state }}</span>
+                    {% elif state == 'DOWNLOADING' %}
+                      <span class="badge badge--accent">{{ state }}</span>
+                    {% else %}
+                      <span class="badge">{{ state }}</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p style="color: var(--text-faint); font-size: 13px">
+          No torrents are linked to this title yet — start one from the search above.
+        </p>
+      {% endif %}
+    </div>
   {% endif %}
 </section>
