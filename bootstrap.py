@@ -7,13 +7,14 @@ handler below; they do not get their own ``__main__.py``.
 
 Modes
 -----
-``gui``
-    Launch the embedded Tk client adapter
-    (``clients.tk.run``). Default.
 ``api``
     Launch the FastAPI / Uvicorn HTTP client adapter
-    (``clients.http.app:app``). The HTTP runtime is a peer client of
-    the embedded backend per ADR 0001, not a privileged layer.
+    (``clients.http.app:app``), including the server-rendered web UI.
+    Default.
+``gui``
+    Launch the embedded Tk client adapter (``clients.tk.run``).
+    The HTTP runtime is a peer client of the embedded backend per
+    ADR 0001, not a privileged layer.
 """
 
 from __future__ import annotations
@@ -80,6 +81,18 @@ def _run_gui() -> int:
     return 0
 
 
+def _http_app_import_target() -> tuple[object, str]:
+    """Import the FastAPI app and return (app, uvicorn module path)."""
+    try:
+        from AnimeManager.clients.http.app import app  # type: ignore
+
+        return app, "AnimeManager.clients.http.app:app"
+    except ImportError:
+        from clients.http.app import app
+
+        return app, "clients.http.app:app"
+
+
 def _run_api(host: str = "0.0.0.0", port: int = 8081) -> int:
     """Launch the HTTP client adapter via uvicorn."""
     try:
@@ -93,14 +106,14 @@ def _run_api(host: str = "0.0.0.0", port: int = 8081) -> int:
         return 2
 
     try:
-        from clients.http.app import app  # noqa: F401  (import check only)
+        _app, app_target = _http_app_import_target()
     except ImportError as exc:
         _LOG.error("HTTP client adapter unavailable: %s", exc)
         return 2
 
     _kickoff_startup_jobs()
     uvicorn.run(
-        "clients.http.app:app",
+        app_target,
         host=host,
         port=port,
         timeout_graceful_shutdown=8,
@@ -121,7 +134,7 @@ def list_modes() -> Dict[str, Callable[..., int]]:
     return dict(_MODES)
 
 
-def main(mode: str = "gui", **kwargs) -> int:
+def main(mode: str = "api", **kwargs) -> int:
     """Dispatch to the requested runtime mode.
 
     Parameters

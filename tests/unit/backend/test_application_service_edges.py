@@ -23,6 +23,7 @@ class FakeRepository:
         self.items = []
         self.calls = []
         self.return_search_terms = ["term"]
+        self.last_torrent_query: dict[int, str] = {}
 
     def search(self, query, limit=50):
         self.calls.append(("search", query, limit))
@@ -51,6 +52,14 @@ class FakeRepository:
         self.calls.append(("remove_search_term", anime_id, term))
         return True
 
+    def get_last_torrent_search_query(self, anime_id):
+        self.calls.append(("get_last_torrent_search_query", anime_id))
+        return self.last_torrent_query.get(anime_id)
+
+    def set_last_torrent_search_query(self, anime_id, query):
+        self.calls.append(("set_last_torrent_search_query", anime_id, query))
+        self.last_torrent_query[anime_id] = query
+
     def get_settings(self):
         return {"anime": {"hideRated": True}}
 
@@ -58,6 +67,10 @@ class FakeRepository:
         return updates
 
     def get_relations(self, anime_id, relation_type="anime"):
+        return []
+
+    def list_anime_characters(self, anime_id):
+        self.calls.append(("list_anime_characters", anime_id))
         return []
 
 
@@ -72,6 +85,8 @@ class FakeProvider:
 class FakeDownload:
     def __init__(self):
         self.start_calls = []
+        self.search_rows = [{}]
+        self.stream_rows = []
 
     def start_download(self, anime_id, url=None, hash_value=None, user_id=None):
         self.start_calls.append((anime_id, url, hash_value, user_id))
@@ -87,7 +102,28 @@ class FakeDownload:
         return []
 
     def search_torrents(self, terms, profile="interactive", limit=200):
-        return [{"terms": list(terms), "profile": profile, "limit": limit}]
+        rows = []
+        for row in self.search_rows:
+            if isinstance(row, dict):
+                merged = dict(row)
+                merged.setdefault("terms", list(terms))
+                merged.setdefault("profile", profile)
+                merged.setdefault("limit", limit)
+                rows.append(merged)
+            else:
+                rows.append(row)
+        return rows
+
+    def stream_torrents(self, terms, profile="interactive", limit=200):
+        for row in self.stream_rows:
+            if isinstance(row, dict):
+                merged = dict(row)
+                merged.setdefault("terms", list(terms))
+                merged.setdefault("profile", profile)
+                merged.setdefault("limit", limit)
+                yield merged
+            else:
+                yield row
 
 
 class FakeActions:
@@ -255,6 +291,47 @@ class TestSearchTorrentsEdges:
         out = service.search_torrents([None, "valid"])
         assert "valid" in out[0]["terms"]
 
+    def test_dedupes_materialized_results_by_infohash(self, service):
+        _, _, dl, _ = service._fakes
+        dl.search_rows = [
+            {"name": "from provider A", "infohash": "abc123"},
+            {"name": "from provider B", "hash": "ABC123"},
+            {"name": "different", "infohash": "def456"},
+        ]
+        out = service.search_torrents(["naruto"])
+        assert [row["name"] for row in out] == ["from provider A", "different"]
+
+    def test_dedupes_materialized_results_with_base32_vs_hex(self, service):
+        _, _, dl, _ = service._fakes
+        dl.search_rows = [
+            {"name": "hex", "infohash": "0123456789abcdef0123456789abcdef01234567"},
+            {"name": "base32", "infohash": "AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH"},
+        ]
+        out = service.search_torrents(["naruto"])
+        assert [row["name"] for row in out] == ["hex"]
+
+    def test_dedupes_materialized_results_by_magnet_xt_hash(self, service):
+        _, _, dl, _ = service._fakes
+        dl.search_rows = [
+            {"name": "first", "link": "magnet:?xt=urn:btih:abc123"},
+            {"name": "dup", "link": "magnet:?xt=urn:btih:ABC123&dn=test"},
+            {"name": "other", "link": "magnet:?xt=urn:btih:def456"},
+        ]
+        out = service.search_torrents(["naruto"])
+        assert [row["name"] for row in out] == ["first", "other"]
+
+
+class TestStreamTorrentsEdges:
+    def test_stream_dedupes_by_hash_without_buffering(self, service):
+        _, _, dl, _ = service._fakes
+        dl.stream_rows = [
+            {"name": "first", "infohash": "abc"},
+            {"name": "dup", "hash": "ABC"},
+            {"name": "second", "infohash": "def"},
+        ]
+        out = list(service.stream_torrents(["bleach"]))
+        assert [row["name"] for row in out] == ["first", "second"]
+
 
 # ---------------------------------------------------------------------------
 # add / remove search term
@@ -378,3 +455,10 @@ class TestPortPassThrough:
     def test_get_search_terms_returns_list(self, service):
         out = service.get_search_terms(1)
         assert isinstance(out, list)
+
+    def test_last_torrent_search_query_round_trip(self, service):
+        repo, _, _, _ = service._fakes
+        assert service.get_last_torrent_search_query(1) is None
+        service.set_last_torrent_search_query(1, "a, b")
+        assert ("set_last_torrent_search_query", 1, "a, b") in repo.calls
+        assert service.get_last_torrent_search_query(1) == "a, b"

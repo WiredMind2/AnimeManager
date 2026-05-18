@@ -51,6 +51,14 @@ class TestCollectorEdges:
         snap = c.snapshot()
         assert snap["timers"] == {}
 
+    def test_snapshot_skips_timer_buckets_with_no_samples(self):
+        c = TelemetryCollector()
+        with c._lock:
+            # Touching the defaultdict allocates an empty deque with no samples.
+            _ = c._timers["never_recorded"]
+        snap = c.snapshot()
+        assert "never_recorded" not in snap["timers"]
+
     def test_set_gauge_overwrites(self):
         c = TelemetryCollector()
         c.set_gauge("g", 1)

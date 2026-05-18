@@ -17,14 +17,27 @@ from shared.utils.general import (
     dict_merge,
     merge_iter,
     new_iter,
+    parse_args,
     peek,
     persist_manager_settings,
+    project_modules,
 )
 
 
 # ---------------------------------------------------------------------------
 # peek
 # ---------------------------------------------------------------------------
+
+
+class TestParseArgs:
+    def test_filters_kwargs_to_widget_config_keys(self):
+        class _Widget:
+            @staticmethod
+            def config():
+                return {"width": 100, "height": 200}
+
+        out = parse_args(_Widget(), {"width": 10, "unknown": 99})
+        assert out == {"width": 10}
 
 
 class TestPeekEdges:
@@ -119,6 +132,19 @@ class TestTimerEdges:
 # ---------------------------------------------------------------------------
 # persist_manager_settings
 # ---------------------------------------------------------------------------
+
+
+class TestProjectModules:
+    def test_collects_imports_from_python_files(self, tmp_path):
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "mod.py").write_text(
+            "from os import path\nimport json\n",
+            encoding="utf-8",
+        )
+        result = project_modules(str(pkg))
+        assert "os" in result or "json" in result
+        assert any(str(pkg / "mod.py") in loc[0] for loc in result.values())
 
 
 class TestPersistManagerSettingsEdges:

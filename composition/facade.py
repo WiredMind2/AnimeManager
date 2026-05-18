@@ -100,6 +100,15 @@ class EmbeddedClientFacade:
     def get_anime_details(self, anime_id: int):
         return self._service.get_anime_details(anime_id)
 
+    def refresh_anime_metadata(self, anime_id: int):
+        return self._service.refresh_anime_metadata(anime_id)
+
+    def delete_anime(self, anime_id: int) -> bool:
+        return self._service.delete_anime(anime_id)
+
+    def get_anime_folder(self, anime_id: int) -> str:
+        return self._service.get_anime_folder(anime_id)
+
     def start_download(
         self,
         anime_id: int,
@@ -121,6 +130,9 @@ class EmbeddedClientFacade:
 
     def cancel_download(self, anime_id: int) -> bool:
         return self._service.cancel_download(anime_id)
+
+    def redownload(self, anime_id: int) -> int:
+        return self._service.redownload(anime_id)
 
     def get_active_downloads(self) -> list[dict]:
         return self._service.get_active_downloads()
@@ -167,6 +179,12 @@ class EmbeddedClientFacade:
     def remove_search_term(self, anime_id: int, term: str) -> bool:
         return self._service.remove_search_term(anime_id, term)
 
+    def get_last_torrent_search_query(self, anime_id: int) -> str | None:
+        return self._service.get_last_torrent_search_query(anime_id)
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str) -> None:
+        self._service.set_last_torrent_search_query(anime_id, query)
+
     def get_settings(self) -> dict:
         return self._service.get_settings()
 
@@ -175,6 +193,9 @@ class EmbeddedClientFacade:
 
     def get_relations(self, anime_id: int, relation_type: str = "anime") -> list[dict]:
         return self._service.get_relations(anime_id, relation_type)
+
+    def list_anime_characters(self, anime_id: int) -> list[dict]:
+        return self._service.list_anime_characters(anime_id)
 
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         return self._service.get_anime_torrents(anime_id)
@@ -200,6 +221,15 @@ class EmbeddedClientFacade:
 
     def delete_episode_file(self, anime_id: int, file_id: str, user_id: int) -> bool:
         return self._service.delete_episode_file(anime_id, file_id, user_id)
+
+    def redownload_episode(self, anime_id: int, file_id: str, user_id: int) -> bool:
+        return self._service.redownload_episode(anime_id, file_id, user_id)
+
+    def delete_all_files(self, anime_id: int, user_id: int) -> int:
+        return self._service.delete_all_files(anime_id, user_id)
+
+    def delete_seen_episodes(self, anime_id: int, user_id: int) -> int:
+        return self._service.delete_seen_episodes(anime_id, user_id)
 
     def create_playback_session(
         self,

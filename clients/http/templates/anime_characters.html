@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Characters — {{ anime.title }} — AnimeManager{% endblock %}
+
+{% block topbar_title %}Characters · {{ anime.title|truncate(40, true, '…') }}{% endblock %}
+
+{% block content %}
+  <nav class="watch-view__page-nav" aria-label="Characters page" style="margin-bottom: var(--sp-6)">
+    <a class="btn btn--ghost" href="{{ url_for('web_library') }}">← Library</a>
+    <a class="btn btn--ghost"
+       href="{{ url_for('web_anime_detail', anime_id=anime.id) }}">
+      ← Anime details
+    </a>
+  </nav>
+
+  <section class="detail__section">
+    <div class="detail__section-title">
+      <h3>Characters</h3>
+      <span class="meta">{{ characters|length }} in catalog</span>
+    </div>
+
+    {% if characters %}
+      <div class="grid">
+        {% for ch in characters %}
+          <div class="card" role="group" aria-label="{{ ch.name }}">
+            <div class="card__poster">
+              {% if ch.picture %}
+                <img
+                  src="{{ ch.picture }}"
+                  alt="{{ ch.name }}"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                />
+              {% else %}
+                <div class="card__poster-empty">
+                  {{ (ch.name or '?')|truncate(20, true, '…') }}
+                </div>
+              {% endif %}
+              {% if ch.role %}
+                <span class="card__status" title="{{ ch.role }}">{{ ch.role|capitalize }}</span>
+              {% endif %}
+            </div>
+            <span class="card__title">{{ ch.name }}</span>
+            {% if ch.synopsis %}
+              <p class="card__meta" style="white-space: normal; line-height: 1.35; max-height: 4.5em; overflow: hidden">
+                {{ ch.synopsis | striptags | truncate(180, true, '…') }}
+              </p>
+            {% else %}
+              <span class="card__meta"><span>No bio on file</span></span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p style="color: var(--text-faint); font-size: 14px; max-width: 52ch">
+        No characters are stored for this title yet. They appear after metadata sync
+        populates the catalog (for example when character relations are saved from a provider).
+      </p>
+    {% endif %}
+  </section>
+{% endblock %}

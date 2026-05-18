@@ -46,29 +46,15 @@
       <option value="">All seasons</option>
     </select>
   </label>
-  {# Episode range filter -- two compact <input type="number"> boxes.
-     A row matches when its [data-ep-start, data-ep-end] interval
-     overlaps the [min, max] selection. Either bound is optional.
-     Setting min=max behaves like an "episode equals" filter; batches
-     match any range because their bounds are [1, 99999]. #}
-  <div class="torrent-filters__field torrent-filters__field--range"
-       data-torrent-filter-range-group="episode"
-       role="group" aria-label="Filter by episode number">
+  {# Episode dropdown: options are derived from rows (see wireTorrentFilters).
+     Selecting N keeps any release whose [data-ep-start, data-ep-end]
+     contains N; rows with no bounds fall back to data-episode. #}
+  <label class="torrent-filters__field">
     <span class="torrent-filters__label">Episode</span>
-    <div class="torrent-filters__range">
-      <input type="number" min="0" inputmode="numeric"
-             class="torrent-filters__input"
-             data-torrent-filter-range="episode"
-             data-range-bound="min"
-             placeholder="Min" aria-label="Minimum episode" />
-      <span class="torrent-filters__range-sep" aria-hidden="true">–</span>
-      <input type="number" min="0" inputmode="numeric"
-             class="torrent-filters__input"
-             data-torrent-filter-range="episode"
-             data-range-bound="max"
-             placeholder="Max" aria-label="Maximum episode" />
-    </div>
-  </div>
+    <select data-torrent-filter="episode" class="torrent-filters__select" aria-label="Filter by episode number">
+      <option value="">All episodes</option>
+    </select>
+  </label>
   <label class="torrent-filters__field">
     <span class="torrent-filters__label">Type</span>
     <select data-torrent-filter="episode-kind" class="torrent-filters__select" aria-label="Filter by release type">

@@ -70,4 +70,31 @@
       </a>
     {% endif %}
   {% endif %}
+
+  <details style="width: 100%; margin-top: var(--sp-3);">
+    <summary class="meta" style="cursor: pointer;">Danger zone</summary>
+    <div style="display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2);">
+      <form method="post" action="{{ url_for('web_action_redownload', anime_id=anime.id) }}" style="display:inline">
+        <button class="btn" type="submit">Redownload</button>
+      </form>
+      <form method="post"
+            action="{{ url_for('web_action_delete_seen_episodes', anime_id=anime.id) }}"
+            onsubmit="return confirm('Delete seen episodes from disk?');"
+            style="display:inline">
+        <button class="btn btn--danger" type="submit">Delete seen episodes</button>
+      </form>
+      <form method="post"
+            action="{{ url_for('web_action_delete_all_files', anime_id=anime.id) }}"
+            onsubmit="return confirm('Delete all local files for this anime?');"
+            style="display:inline">
+        <button class="btn btn--danger" type="submit">Delete all files</button>
+      </form>
+      <form method="post"
+            action="{{ url_for('web_action_remove_anime', anime_id=anime.id) }}"
+            onsubmit="return confirm('Remove this anime from database?');"
+            style="display:inline">
+        <button class="btn btn--danger" type="submit">Remove from DB</button>
+      </form>
+    </div>
+  </details>
 </div>

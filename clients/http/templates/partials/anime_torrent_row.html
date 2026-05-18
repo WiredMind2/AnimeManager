@@ -166,10 +166,13 @@
       {% if anime_id %}
         <form method="post"
               action="{{ url_for('web_action_start_download', anime_id=anime_id) }}"
+              data-torrent-download-form
               style="display:inline">
           <input type="hidden" name="url" value="{{ row.link }}" />
           {% if row.hash %}<input type="hidden" name="hash_value" value="{{ row.hash }}" />{% endif %}
-          <button class="btn btn--primary btn--small" type="submit">Download</button>
+          <button class="btn btn--primary btn--small"
+                  type="submit"
+                  data-torrent-download-button>Download</button>
         </form>
       {% else %}
         <a class="btn btn--small" href="{{ row.link }}" target="_blank" rel="noreferrer">Open</a>

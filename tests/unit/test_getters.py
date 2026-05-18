@@ -169,6 +169,19 @@ class TestGettersInstanceMethods:
                 assert result == mock_instance
 
     @pytest.mark.timeout(30)
+    def test_getFeatureFlag_reads_bool_and_string_values(self):
+        mock_getters = MagicMock(spec=Getters)
+        mock_getters.settings = {
+            "feature_flags": {
+                "anime_merge_backfill_enabled": "true",
+                "other_flag": 0,
+            }
+        }
+        assert Getters.getFeatureFlag(mock_getters, "anime_merge_backfill_enabled") is True
+        assert Getters.getFeatureFlag(mock_getters, "other_flag") is False
+        assert Getters.getFeatureFlag(mock_getters, "missing", default=True) is True
+
+    @pytest.mark.timeout(30)
     def test_getTorrents_no_id(self):
         """Test getTorrents without id."""
         mock_getters = MagicMock(spec=Getters)
@@ -242,6 +255,41 @@ class TestGettersInstanceMethods:
 
         assert len(result) >= 2
         assert "Since" in result[0]
+
+    @pytest.mark.timeout(30)
+    def test_scan_subdirectory_finds_nested_anime_folder(self):
+        """Series folders nested under animePath (e.g. …/Animes/Title - id) resolve."""
+        mock_self = MagicMock()
+        fm = MagicMock()
+        mock_self.fm = fm
+
+        def norm(p: str) -> str:
+            return str(p).replace("\\", "/")
+
+        existing = {
+            "/root",
+            "/root/Animes",
+            "/root/Animes/Classroom of Elite - 1090",
+        }
+
+        fm.exists.side_effect = lambda p: norm(p) in existing
+
+        fm.isdir.side_effect = lambda p: norm(p) in existing
+
+        def listdir(path: str):
+            p = norm(path)
+            if p == "/root":
+                return ["Animes"]
+            if p == "/root/Animes":
+                return ["Classroom of Elite - 1090"]
+            return []
+
+        fm.list.side_effect = listdir
+
+        result = Getters._scan_subdirectory_for_existing_anime_folder(
+            mock_self, "/root", 1090
+        )
+        assert result == "/root/Animes/Classroom of Elite - 1090"
 
     @pytest.mark.timeout(30)
     def test_getDateText_unknown(self):

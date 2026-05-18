@@ -83,6 +83,13 @@ class FakeFacade:
         _ = (anime_id, term)
         return True
 
+    def get_last_torrent_search_query(self, anime_id: int):
+        _ = anime_id
+        return None
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str):
+        _ = (anime_id, query)
+
     def get_settings(self):
         return self.settings
 
@@ -93,6 +100,10 @@ class FakeFacade:
     def get_relations(self, anime_id: int, relation_type: str = "anime"):
         _ = (anime_id, relation_type)
         return [{"id": anime_id, "name": "SEQUEL", "rel_id": 2}]
+
+    def list_anime_characters(self, anime_id: int):
+        _ = anime_id
+        return [{"id": 7, "name": "Side", "role": "supporting"}]
 
 
 def test_sdk_extended_contract(monkeypatch):
@@ -109,3 +120,4 @@ def test_sdk_extended_contract(monkeypatch):
     assert sdk.get_settings()["anime"]["hideRated"] is True
     assert sdk.update_settings({"anime": {"hideRated": False}})["anime"]["hideRated"] is False
     assert sdk.get_relations(1)[0]["name"] == "SEQUEL"
+    assert sdk.list_anime_characters(3)[0]["name"] == "Side"

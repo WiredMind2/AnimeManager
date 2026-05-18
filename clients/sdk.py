@@ -65,6 +65,18 @@ class ClientSDK:
     def get_anime(self, anime_id: int) -> dict[str, Any]:
         return asdict(self._facade.get_anime_details(anime_id))
 
+    def refresh_anime_metadata(self, anime_id: int) -> dict[str, Any]:
+        return asdict(self._facade.refresh_anime_metadata(anime_id))
+
+    def delete_anime(self, anime_id: int) -> bool:
+        return bool(self._facade.delete_anime(anime_id))
+
+    def get_anime_folder(self, anime_id: int) -> str:
+        getter = getattr(self._facade, "get_anime_folder", None)
+        if not callable(getter):
+            return ""
+        return str(getter(anime_id) or "")
+
     def start_download(
         self,
         anime_id: int,
@@ -79,6 +91,12 @@ class ClientSDK:
 
     def cancel_download(self, anime_id: int) -> bool:
         return self._facade.cancel_download(anime_id)
+
+    def redownload(self, anime_id: int) -> int:
+        runner = getattr(self._facade, "redownload", None)
+        if not callable(runner):
+            return 0
+        return int(runner(anime_id) or 0)
 
     def get_active_downloads(self) -> list[dict[str, Any]]:
         return self._facade.get_active_downloads()
@@ -156,6 +174,12 @@ class ClientSDK:
     def remove_search_term(self, anime_id: int, term: str) -> bool:
         return self._facade.remove_search_term(anime_id, term)
 
+    def get_last_torrent_search_query(self, anime_id: int) -> str | None:
+        return self._facade.get_last_torrent_search_query(anime_id)
+
+    def set_last_torrent_search_query(self, anime_id: int, query: str) -> None:
+        self._facade.set_last_torrent_search_query(anime_id, query)
+
     def get_settings(self) -> dict[str, Any]:
         return self._facade.get_settings()
 
@@ -164,6 +188,9 @@ class ClientSDK:
 
     def get_relations(self, anime_id: int, relation_type: str = "anime") -> list[dict[str, Any]]:
         return self._facade.get_relations(anime_id, relation_type)
+
+    def list_anime_characters(self, anime_id: int) -> list[dict[str, Any]]:
+        return list(self._facade.list_anime_characters(anime_id) or [])
 
     def get_anime_torrents(self, anime_id: int) -> list[dict[str, Any]]:
         return self._facade.get_anime_torrents(anime_id)
@@ -192,6 +219,24 @@ class ClientSDK:
 
     def delete_episode_file(self, anime_id: int, file_id: str, user_id: int) -> bool:
         return bool(self._facade.delete_episode_file(anime_id, file_id, user_id))
+
+    def redownload_episode(self, anime_id: int, file_id: str, user_id: int) -> bool:
+        runner = getattr(self._facade, "redownload_episode", None)
+        if not callable(runner):
+            return False
+        return bool(runner(anime_id, file_id, user_id))
+
+    def delete_all_files(self, anime_id: int, user_id: int) -> int:
+        runner = getattr(self._facade, "delete_all_files", None)
+        if not callable(runner):
+            return 0
+        return int(runner(anime_id, user_id) or 0)
+
+    def delete_seen_episodes(self, anime_id: int, user_id: int) -> int:
+        runner = getattr(self._facade, "delete_seen_episodes", None)
+        if not callable(runner):
+            return 0
+        return int(runner(anime_id, user_id) or 0)
 
     def create_playback_session(
         self,

@@ -11,6 +11,17 @@ fast.
 
 This page is the canonical answer to *"which tests do I run when?"*
 
+Stability gate (refactor program)
+---------------------------------
+
+During the stability refactor, run the mandatory gate before every merge
+that touches metadata ingestion, provider adapters, or layer boundaries::
+
+   python scripts/stability_gate.py
+
+The gate runs ``pytest -m architecture`` plus the critical metadata
+pipeline unit slice. See :doc:`stability-slos` for SLO targets.
+
 Test layout
 -----------
 

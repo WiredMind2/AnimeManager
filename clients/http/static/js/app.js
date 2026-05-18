@@ -16,10 +16,13 @@
   document.addEventListener("DOMContentLoaded", () => {
     wireAutoSubmit();
     wireConfirmGuards();
+    wireCopyButtons();
+    wireTorrentDownloadForms();
     wireRelativeTimes();
     wireSearchDebounce();
     wireTrailerModal();
     wireEpisodePlayer(document);
+    wireEpisodeRowMenus(document);
     wireTorrentTermModal();
     wireScrollAnchors();
     wireTableSort(document);
@@ -41,11 +44,13 @@
   // anything that needs activation (e.g. SSE consumers in the inline
   // torrent search partial) every time a fragment lands.
   document.body && document.body.addEventListener("htmx:afterSwap", (ev) => {
+    wireCopyButtons();
     wireTableSort(ev.target || document);
     wireTablePagination(ev.target || document);
     wireTorrentFilters(ev.target || document);
     wireTorrentStreams(ev.target || document);
     wireEpisodePlayer(ev.target || document);
+    wireEpisodeRowMenus(ev.target || document);
     wireLogConsole(ev.target || document);
     wireDownloadsWebsocket(ev.target || document);
     wireLibrarySearchStream(ev.target || document);
@@ -75,6 +80,145 @@
           ev.stopImmediatePropagation();
         }
       });
+    });
+  }
+
+  function wireEpisodeRowMenus(root) {
+    const scope = root && root.querySelectorAll ? root : document;
+    $$("[data-episode-menu]", scope).forEach((menu) => {
+      if (menu.dataset.episodeMenuWired === "1") return;
+      menu.dataset.episodeMenuWired = "1";
+      const toggle = menu.querySelector("[data-episode-menu-toggle]");
+      const panel = menu.querySelector("[data-episode-menu-panel]");
+      if (!toggle || !panel) return;
+
+      const close = () => {
+        panel.hidden = true;
+        toggle.setAttribute("aria-expanded", "false");
+      };
+
+      const open = () => {
+        $$("[data-episode-menu-panel]").forEach((other) => {
+          if (other === panel) return;
+          other.hidden = true;
+          const otherToggle = other
+            .closest("[data-episode-menu]")
+            ?.querySelector("[data-episode-menu-toggle]");
+          if (otherToggle) otherToggle.setAttribute("aria-expanded", "false");
+        });
+        panel.hidden = false;
+        toggle.setAttribute("aria-expanded", "true");
+      };
+
+      toggle.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (panel.hidden) open();
+        else close();
+      });
+
+      panel.addEventListener("click", (ev) => {
+        const target = ev.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest("form") || target.matches("a[href]")) {
+          close();
+        }
+      });
+    });
+
+    if (!document.documentElement.dataset.episodeMenuDocWired) {
+      document.documentElement.dataset.episodeMenuDocWired = "1";
+      document.addEventListener("click", (ev) => {
+        const target = ev.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest("[data-episode-menu]")) return;
+        $$("[data-episode-menu-panel]").forEach((panel) => {
+          panel.hidden = true;
+          const toggle = panel
+            .closest("[data-episode-menu]")
+            ?.querySelector("[data-episode-menu-toggle]");
+          if (toggle) toggle.setAttribute("aria-expanded", "false");
+        });
+      });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Escape") return;
+        $$("[data-episode-menu-panel]").forEach((panel) => {
+          panel.hidden = true;
+          const toggle = panel
+            .closest("[data-episode-menu]")
+            ?.querySelector("[data-episode-menu-toggle]");
+          if (toggle) toggle.setAttribute("aria-expanded", "false");
+        });
+      });
+    }
+  }
+
+  function wireCopyButtons() {
+    $$("[data-copy-text]").forEach((el) => {
+      if (el.dataset.copyWired === "1") return;
+      el.dataset.copyWired = "1";
+      el.addEventListener("click", async () => {
+        const text = el.getAttribute("data-copy-text") || "";
+        if (!text.trim()) return;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+          }
+        } catch (_) {
+          // Fallback below.
+        }
+        const input = document.createElement("input");
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        try {
+          document.execCommand("copy");
+        } catch (_) {
+          // ignore fallback errors
+        }
+        input.remove();
+      });
+    });
+  }
+
+  function wireTorrentDownloadForms() {
+    if (document.documentElement.dataset.torrentDownloadWired === "1") return;
+    document.documentElement.dataset.torrentDownloadWired = "1";
+
+    document.addEventListener("submit", async (ev) => {
+      const form =
+        ev.target && ev.target.closest
+          ? ev.target.closest("[data-torrent-download-form]")
+          : null;
+      if (!form) return;
+
+      ev.preventDefault();
+      const submitBtn = form.querySelector("[data-torrent-download-button]");
+      if (submitBtn && submitBtn.disabled) return;
+
+      const originalLabel = submitBtn ? submitBtn.textContent : "";
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Queuing...";
+      }
+
+      try {
+        const res = await fetch(form.action, {
+          method: "POST",
+          body: new FormData(form),
+          credentials: "same-origin",
+          redirect: "follow",
+          headers: { "X-Requested-With": "fetch" },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (submitBtn) submitBtn.textContent = "Queued";
+      } catch (_) {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = originalLabel || "Download";
+        }
+      }
     });
   }
 
@@ -185,10 +329,22 @@
     const animeId = panel.getAttribute("data-play-anime-id") || "";
     const controller = panel.querySelector("media-controller");
     const video = panel.querySelector("[data-player-video]");
+    const videoWrap = panel.querySelector(".player-panel__video-wrap");
+    const assOverlayHost =
+      panel && typeof panel.querySelector === "function"
+        ? panel.querySelector("[data-player-ass-overlay]")
+        : null;
+    const fullscreenHost =
+      videoWrap &&
+      videoWrap.contains(video) &&
+      (!assOverlayHost || videoWrap.contains(assOverlayHost))
+        ? videoWrap
+        : null;
+    const fallbackFullscreenHost =
+      videoWrap && videoWrap.contains(video) ? videoWrap : null;
     const status = panel.querySelector("[data-player-status]");
     const title = panel.querySelector("[data-player-title]");
     const error = panel.querySelector("[data-player-error]");
-    const fullscreenButton = panel.querySelector("media-fullscreen-button");
     const host = panel.closest("[data-player-host]") || panel;
     const autoFileId = panel.getAttribute("data-player-auto-file-id") || "";
     const autoFileTitle = panel.getAttribute("data-player-auto-file-title") || "";
@@ -211,6 +367,54 @@
     const episodeProgressUrl =
       panel.getAttribute("data-episode-progress-url") || "";
     if (!endpoint || !video) return;
+    const resolveFullscreenTarget = () => {
+      // Prefer a host that contains both media and ASS overlay so
+      // fullscreen never excludes the subtitle canvas tree.
+      const baseTarget = fullscreenHost || fallbackFullscreenHost || controller || video;
+      if (
+        assOverlayHost &&
+        baseTarget &&
+        typeof baseTarget.contains === "function" &&
+        baseTarget.contains(video) &&
+        baseTarget.contains(assOverlayHost)
+      ) {
+        return baseTarget;
+      }
+      const overlayWrap =
+        assOverlayHost && typeof assOverlayHost.closest === "function"
+          ? assOverlayHost.closest(".player-panel__video-wrap")
+          : null;
+      if (
+        overlayWrap &&
+        typeof overlayWrap.contains === "function" &&
+        overlayWrap.contains(video) &&
+        (!assOverlayHost || overlayWrap.contains(assOverlayHost))
+      ) {
+        return overlayWrap;
+      }
+      return baseTarget || null;
+    };
+    const normalizedFullscreenHost = resolveFullscreenTarget();
+    if (normalizedFullscreenHost && !normalizedFullscreenHost.id) {
+      normalizedFullscreenHost.id = `watch-wrap-${animeId || "player"}`;
+    }
+    if (controller) {
+      // Normalize fullscreen ownership to the wrapper that contains both
+      // media and ASS overlay hosts.
+      const controllerFsTarget = normalizedFullscreenHost || video;
+      if (controllerFsTarget && !controllerFsTarget.id) {
+        controllerFsTarget.id =
+          controllerFsTarget === video
+            ? `watch-video-${animeId || "player"}`
+            : `watch-wrap-${animeId || "player"}`;
+      }
+      controller.setAttribute("fullscreenelement", controllerFsTarget ? controllerFsTarget.id : "");
+      try {
+        controller.fullscreenElement = controllerFsTarget || null;
+      } catch (_) {
+        /* ignore */
+      }
+    }
 
     let shakaPlayer = null;
     let sessionId = "";
@@ -224,6 +428,10 @@
     let replayQueued = false;
     let subtitleTrackRefs = {};
     let subtitleAssById = {};
+    let subtitleTracksReady = false;
+    // ASS/libass overlay is enabled and mounted into a dedicated overlay
+    // layer so subtitle visibility is independent from toolbar fades.
+    const enableAdvancedAssOverlay = true;
 
     const setStatus = (text) => {
       if (status) status.textContent = text;
@@ -399,16 +607,39 @@
       );
     }
 
+    const loadScriptTag = (src) =>
+      new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.async = true;
+        script.onload = () => resolve(window.shaka || null);
+        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+        document.head.appendChild(script);
+      });
+
     const loadShakaScript = () => {
       if (window.shaka && window.shaka.Player) return Promise.resolve(window.shaka);
       if (window.__animeManagerShakaPromise) return window.__animeManagerShakaPromise;
-      window.__animeManagerShakaPromise = new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.10.9/shaka-player.compiled.min.js";
-        script.async = true;
-        script.onload = () => resolve(window.shaka || null);
-        script.onerror = () => reject(new Error("Could not load Shaka playback engine."));
-        document.head.appendChild(script);
+      window.__animeManagerShakaPromise = (async () => {
+        const localSrc = "/ui/static/vendor/shaka-player/shaka-player.compiled.min.js";
+        // Keep CDN fallback aligned with the vendored build. 4.16.13+ includes
+        // fixes for external WebVTT timing with HLS (MPEG-TS), which older
+        // 4.10.x builds mishandled so sidecar subtitles never registered.
+        const cdnSrc =
+          "https://cdn.jsdelivr.net/npm/shaka-player@4.16.13/dist/shaka-player.compiled.min.js";
+        try {
+          return await loadScriptTag(localSrc);
+        } catch (localErr) {
+          playerLog("warn", "shaka_local_load_failed", {
+            source: localSrc,
+            message: localErr && localErr.message ? localErr.message : String(localErr || ""),
+          });
+        }
+        return loadScriptTag(cdnSrc);
+      })().catch((err) => {
+        throw new Error(
+          `Could not load Shaka playback engine. ${err && err.message ? err.message : ""}`.trim(),
+        );
       });
       return window.__animeManagerShakaPromise;
     };
@@ -430,6 +661,9 @@
         /* ignore */
       }
       shakaPlayer = null;
+      subtitleTrackRefs = {};
+      subtitleAssById = {};
+      subtitleTracksReady = false;
     };
 
     const stopSession = async () => {
@@ -479,6 +713,7 @@
         method: "POST",
         body: fd,
         credentials: "same-origin",
+        headers: { "X-AM-Player-Background": "true" },
       }).catch(() => {});
     };
 
@@ -603,6 +838,7 @@
         assUrl = "";
       }
       if (
+        enableAdvancedAssOverlay &&
         assUrl &&
         ams &&
         typeof ams.supportsLibass === "function" &&
@@ -610,6 +846,10 @@
         typeof ams.startLibassOctopus === "function"
       ) {
         disposeAss();
+        const overlayRoot =
+          assOverlayHost && typeof assOverlayHost.appendChild === "function"
+            ? assOverlayHost
+            : null;
         panel.__amLibassOctopus = ams.startLibassOctopus(video, assUrl, (err) => {
           playerLog("error", "libass_init_failed", {
             message: err && err.message ? err.message : String(err || ""),
@@ -631,7 +871,7 @@
               setError("Could not switch subtitle track.");
             }
           }
-        });
+        }, { overlayRoot });
         if (panel.__amLibassOctopus) {
           if (bridge && typeof bridge.setAssBridgeActive === "function") {
             bridge.setAssBridgeActive(true);
@@ -654,6 +894,13 @@
       }
       const ref = subtitleTrackRefs[chosen];
       if (!ref) {
+        // Subtitle options can be selected while a new session is still
+        // buffering/loading and text tracks are being registered. Defer
+        // validation until registration completes to avoid false "unavailable" errors.
+        if (!subtitleTracksReady) {
+          setError("");
+          return;
+        }
         setError("Selected subtitle track is unavailable for this stream.");
         return;
       }
@@ -768,7 +1015,8 @@
         if (!shaka.Player.isBrowserSupported()) {
           throw new Error("This browser does not support adaptive streaming.");
         }
-        shakaPlayer = new shaka.Player(video);
+        shakaPlayer = new shaka.Player();
+        await shakaPlayer.attach(video);
         // Segments produced by seek-on-demand transcoding may take a
         // moment to materialise. Increase Shaka's retry budget so a
         // single transient 404 / slow restart doesn't tear down the
@@ -792,18 +1040,26 @@
                 fuzzFactor: 0.2,
                 timeout: 15000,
               },
+              // Default HLS sequenceMode ignores MPEG-TS PTS and infers the
+              // MSE timeline from #EXTINF order only. Our transcoder keeps
+              // absolute presentation timestamps (-copyts) aligned with the
+              // canonical playlist; after seeks / media-chrome skip buttons,
+              // sequence mode drifts from real media when EXTINF and actual
+              // segment lengths differ slightly.
+              hls: {
+                sequenceMode: false,
+              },
             },
           };
-          if (
-            window.AmPlaybackSubtitles &&
-            typeof window.AmPlaybackSubtitles.createShakaTextDisplayFactory === "function"
-          ) {
-            streamCfg.textDisplayFactory = window.AmPlaybackSubtitles.createShakaTextDisplayFactory();
-          }
           shakaPlayer.configure(streamCfg);
         } catch (_) {
           /* older Shaka builds may use a different config tree */
         }
+        // NOTE: Keep Shaka's default text displayer for stability.
+        // Our custom textDisplayFactory integration currently triggers
+        // argument-shape warnings on Shaka 4.10 and can destabilize
+        // startup on some browsers. We can re-enable a custom factory
+        // once the integration is aligned with the exact runtime API.
         shakaPlayer.addEventListener("error", (evt) => {
           const detail = evt && evt.detail ? evt.detail : {};
           const plain = shakaErrorToPlain(shaka, detail);
@@ -833,7 +1089,12 @@
         // offset, so the very first segment is the one near the
         // resume point. Tell Shaka to start there too. ``startTime``
         // is honoured by ``Player.load`` for both DASH and HLS.
+        playerLog("info", "manifest_load_start", {
+          manifest_url: manifestUrl || "",
+          resume_seconds: resumeSeconds || 0,
+        });
         await shakaPlayer.load(manifestUrl, resumeSeconds || null);
+        subtitleTracksReady = false;
         subtitleTrackRefs = {};
         subtitleAssById = {};
         for (const track of subtitleTracks) {
@@ -848,9 +1109,15 @@
             }
           }
           if (track.url == null) continue;
+          let vttUri = String(track.url);
+          try {
+            vttUri = new URL(vttUri, window.location.origin).href;
+          } catch (_) {
+            /* keep relative string */
+          }
           try {
             const ref = await shakaPlayer.addTextTrackAsync(
-              String(track.url),
+              vttUri,
               "und",
               "subtitles",
               "text/vtt",
@@ -858,10 +1125,15 @@
               String(track.label || `Subtitle ${trackId}`),
             );
             subtitleTrackRefs[trackId] = ref;
-          } catch (_) {
-            /* unsupported track / malformed VTT */
+          } catch (err) {
+            playerLog("warn", "subtitle_text_track_register_failed", {
+              track_id: trackId,
+              vtt_uri: vttUri,
+              message: err && err.message ? err.message : String(err || ""),
+            });
           }
         }
+        subtitleTracksReady = true;
         if (subtitleSelect) {
           applySubtitleSelection();
         }
@@ -995,10 +1267,142 @@
       emitAnalytics("buffering_ended", {});
     });
     video.addEventListener("seeking", () => emitAnalytics("seek_started", {}));
-    video.addEventListener("seeked", () => emitAnalytics("seek_completed", {}));
+    video.addEventListener("seeked", () => {
+      emitAnalytics("seek_completed", {});
+      const ams = window.AmPlaybackSubtitles;
+      if (
+        ams &&
+        typeof ams.syncOctopusToVideo === "function" &&
+        panel.__amLibassOctopus
+      ) {
+        try {
+          ams.syncOctopusToVideo(panel.__amLibassOctopus, video);
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    });
 
     const fullscreenElement = () =>
       document.fullscreenElement || document.webkitFullscreenElement || null;
+    const enableFullscreenDiagnostics = true;
+    const describeElement = (el) => {
+      if (!el) return null;
+      return {
+        tag: el.tagName ? String(el.tagName).toLowerCase() : "",
+        id: el.id || "",
+        class_name: el.className ? String(el.className) : "",
+      };
+    };
+    const logFullscreenDiagnostics = (stage, extra) => {
+      if (!enableFullscreenDiagnostics) return;
+      const fsEl = fullscreenElement();
+      const inst = panel.__amLibassOctopus;
+      const canvasParent = inst && inst.canvasParent ? inst.canvasParent : null;
+      const canvasParentOwner = canvasParent && canvasParent.parentElement ? canvasParent.parentElement : null;
+      let canvasVisibility = "";
+      let canvasDisplay = "";
+      if (canvasParent && typeof window.getComputedStyle === "function") {
+        try {
+          const computed = window.getComputedStyle(canvasParent);
+          canvasVisibility = computed.visibility || "";
+          canvasDisplay = computed.display || "";
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      playerLog("info", "fullscreen_diag_state", Object.assign({
+        stage: stage || "",
+        fullscreen_element: describeElement(fsEl),
+        normalized_host: describeElement(normalizedFullscreenHost),
+        normalized_host_contains_video: !!(
+          normalizedFullscreenHost &&
+          video &&
+          normalizedFullscreenHost.contains(video)
+        ),
+        normalized_host_contains_ass_overlay: !!(
+          normalizedFullscreenHost &&
+          assOverlayHost &&
+          normalizedFullscreenHost.contains(assOverlayHost)
+        ),
+        ass_overlay_host: describeElement(assOverlayHost),
+        libass_canvas_parent: describeElement(canvasParent),
+        libass_canvas_parent_owner: describeElement(canvasParentOwner),
+        libass_canvas_parent_in_normalized_host: !!(
+          normalizedFullscreenHost &&
+          canvasParent &&
+          normalizedFullscreenHost.contains(canvasParent)
+        ),
+        libass_canvas_parent_visibility: canvasVisibility,
+        libass_canvas_parent_display: canvasDisplay,
+      }, extra || {}));
+    };
+    const computeRenderedVideoBox = () => {
+      const container = controller || video;
+      if (!container) {
+        return { left: 0, top: 0, width: 0, height: 0 };
+      }
+      const containerWidth = Number(container.clientWidth || 0);
+      const containerHeight = Number(container.clientHeight || 0);
+      if (containerWidth <= 0 || containerHeight <= 0) {
+        return { left: 0, top: 0, width: 0, height: 0 };
+      }
+      const sourceWidth = Number(video.videoWidth || 0);
+      const sourceHeight = Number(video.videoHeight || 0);
+      if (sourceWidth <= 0 || sourceHeight <= 0) {
+        return { left: 0, top: 0, width: containerWidth, height: containerHeight };
+      }
+      const scale = Math.min(containerWidth / sourceWidth, containerHeight / sourceHeight);
+      const renderedWidth = Math.max(1, Math.round(sourceWidth * scale));
+      const renderedHeight = Math.max(1, Math.round(sourceHeight * scale));
+      const left = Math.round((containerWidth - renderedWidth) / 2);
+      const top = Math.round((containerHeight - renderedHeight) / 2);
+      return {
+        left,
+        top,
+        width: renderedWidth,
+        height: renderedHeight,
+      };
+    };
+    const syncSubtitleGeometry = () => {
+      const box = computeRenderedVideoBox();
+      const targets = [controller, assOverlayHost];
+      for (const target of targets) {
+        if (!target || !target.style) continue;
+        target.style.setProperty("--am-video-box-left", `${box.left}px`);
+        target.style.setProperty("--am-video-box-top", `${box.top}px`);
+        target.style.setProperty("--am-video-box-width", `${box.width}px`);
+        target.style.setProperty("--am-video-box-height", `${box.height}px`);
+      }
+      return box;
+    };
+    const refreshSubtitleLayers = () => {
+      const box = syncSubtitleGeometry();
+      const bridge = video.__amShakaTextBridge;
+      const ams = window.AmPlaybackSubtitles;
+      if (bridge && typeof bridge.setTextVisibility === "function") {
+        try {
+          bridge.setTextVisibility(bridge.isTextVisible ? bridge.isTextVisible() : true);
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      if (
+        ams &&
+        typeof ams.refreshOctopusLayout === "function" &&
+        panel.__amLibassOctopus
+      ) {
+        try {
+          ams.refreshOctopusLayout(panel.__amLibassOctopus, {
+            video,
+            overlayRoot: assOverlayHost || undefined,
+            renderedBox: box,
+          });
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    };
     const requestFullscreenOn = async (el) => {
       if (!el) throw new Error("No fullscreen target.");
       if (typeof el.requestFullscreen === "function") {
@@ -1020,20 +1424,28 @@
     };
     const toggleFullscreen = async () => {
       if (!fullscreenElement()) {
-        const targets = [controller, video];
-        let lastError = null;
-        for (const target of targets) {
-          try {
-            await requestFullscreenOn(target);
-            return;
-          } catch (err) {
-            lastError = err;
-          }
-        }
-        playerLog("error", "fullscreen_request_failed", {
-          message: lastError && lastError.message ? lastError.message : String(lastError || ""),
+        const target = resolveFullscreenTarget();
+        logFullscreenDiagnostics("before_enter_request", {
+          requested_target: describeElement(target),
+          ass_overlay_outside_target: !!(
+            assOverlayHost &&
+            target &&
+            typeof target.contains === "function" &&
+            !target.contains(assOverlayHost)
+          ),
         });
+        try {
+          await requestFullscreenOn(target);
+        } catch (err) {
+          const fallbackErr =
+            err && err.message ? err.message : String(err || "");
+          playerLog("error", "fullscreen_request_failed", {
+            message: fallbackErr,
+            requested_target: describeElement(target),
+          });
+        }
       } else {
+        logFullscreenDiagnostics("before_exit_request", {});
         try {
           await exitFullscreen();
         } catch (err) {
@@ -1043,14 +1455,20 @@
         }
       }
     };
-    if (fullscreenButton) {
-      fullscreenButton.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        toggleFullscreen().catch(() => {});
-      });
-    }
-
+    const onFullscreenChange = () => {
+      logFullscreenDiagnostics("fullscreenchange", {});
+      // SubtitlesOctopus can need a post-fullscreen geometry refresh.
+      refreshSubtitleLayers();
+      window.setTimeout(refreshSubtitleLayers, 140);
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", onFullscreenChange);
+    video.addEventListener("loadedmetadata", refreshSubtitleLayers, { passive: true });
+    video.addEventListener("loadeddata", refreshSubtitleLayers, { passive: true });
+    video.addEventListener("resize", refreshSubtitleLayers, { passive: true });
+    window.addEventListener("resize", refreshSubtitleLayers, { passive: true });
+    logFullscreenDiagnostics("initialized", {});
+    refreshSubtitleLayers();
     host.setAttribute("tabindex", host.getAttribute("tabindex") || "0");
     host.addEventListener("keydown", (ev) => {
       const target = ev.target;
@@ -1075,6 +1493,9 @@
     });
 
     window.addEventListener("beforeunload", () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
+      window.removeEventListener("resize", refreshSubtitleLayers);
       savePosition();
       stopSession();
     });
@@ -1168,7 +1589,16 @@
         .closest("section")
         ?.querySelector?.("[data-stream-empty]");
 
+      const parsedLimit = parseInt(
+        String(tbody.getAttribute("data-stream-limit") || ""),
+        10,
+      );
+      const streamLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? parsedLimit
+        : 200;
       let count = 0;
+      let seq = 0;
+      const heap = [];
       const url = tbody.getAttribute("data-stream-url");
       let source;
       try {
@@ -1183,13 +1613,77 @@
       }
       setSuffix();
 
-      function appendRow(html) {
-        // Use a <template> so the parser doesn't strip <tr> outside of
-        // a <table> context.
-        const tpl = document.createElement("template");
-        tpl.innerHTML = html.trim();
-        const row = tpl.content.firstElementChild;
-        if (!row) return;
+      function heapSwap(i, j) {
+        const tmp = heap[i];
+        heap[i] = heap[j];
+        heap[j] = tmp;
+      }
+
+      function heapSiftUp(index) {
+        let i = index;
+        while (i > 0) {
+          const parent = Math.floor((i - 1) / 2);
+          if (heap[parent].seeds <= heap[i].seeds) break;
+          heapSwap(parent, i);
+          i = parent;
+        }
+      }
+
+      function heapSiftDown(index) {
+        let i = index;
+        while (true) {
+          const left = i * 2 + 1;
+          const right = left + 1;
+          let smallest = i;
+          if (left < heap.length && heap[left].seeds < heap[smallest].seeds) {
+            smallest = left;
+          }
+          if (right < heap.length && heap[right].seeds < heap[smallest].seeds) {
+            smallest = right;
+          }
+          if (smallest === i) break;
+          heapSwap(i, smallest);
+          i = smallest;
+        }
+      }
+
+      function heapPush(entry) {
+        heap.push(entry);
+        heapSiftUp(heap.length - 1);
+      }
+
+      function heapReplaceMin(entry) {
+        if (heap.length === 0) {
+          heapPush(entry);
+          return null;
+        }
+        const removed = heap[0];
+        heap[0] = entry;
+        heapSiftDown(0);
+        return removed;
+      }
+
+      function orderedEntries() {
+        return heap.slice().sort((a, b) => {
+          if (a.seeds !== b.seeds) return b.seeds - a.seeds;
+          return a.seq - b.seq;
+        });
+      }
+
+      function syncTableFromHeap() {
+        const ordered = orderedEntries();
+        const frag = document.createDocumentFragment();
+        ordered.forEach((entry) => frag.appendChild(entry.row));
+        tbody.appendChild(frag);
+      }
+
+      function updateCount() {
+        count = heap.length;
+        if (counter) counter.textContent = String(count);
+        setSuffix();
+      }
+
+      function markRowForPager(row) {
         // Mount hidden so the pagination observer can decide whether
         // this row belongs on the current page before it paints —
         // prevents a flash of overflow rows during streaming.
@@ -1197,10 +1691,25 @@
           row.setAttribute("data-pager-hidden", "");
           row.style.display = "none";
         }
-        tbody.appendChild(row);
-        count += 1;
-        if (counter) counter.textContent = String(count);
-        setSuffix();
+      }
+
+      function parseStreamRow(html) {
+        // Use a <template> so the parser doesn't strip <tr> outside of
+        // a <table> context.
+        const tpl = document.createElement("template");
+        tpl.innerHTML = html.trim();
+        const row = tpl.content.firstElementChild;
+        if (!row) return null;
+        const seeds = parseInt(String(row.getAttribute("data-sort-seeds") || "0"), 10);
+        return {
+          row,
+          seeds: Number.isFinite(seeds) ? seeds : 0,
+          seq: ++seq,
+        };
+      }
+
+      function addKeptRow(row) {
+        markRowForPager(row);
         if (empty) empty.style.display = "none";
         // Signal the filter layer (if any) that a new row arrived so
         // it can extend its select options without rescanning the DOM
@@ -1211,6 +1720,28 @@
             detail: { row },
           }),
         );
+      }
+
+      function appendRow(html) {
+        const candidate = parseStreamRow(html);
+        if (!candidate) return;
+        if (heap.length < streamLimit) {
+          heapPush(candidate);
+          addKeptRow(candidate.row);
+          syncTableFromHeap();
+          updateCount();
+          return;
+        }
+        const minSeeds = heap[0] ? heap[0].seeds : -Infinity;
+        // Equal seeds keep earlier arrivals to avoid table churn.
+        if (candidate.seeds <= minSeeds) return;
+        const removed = heapReplaceMin(candidate);
+        if (removed && removed.row && removed.row.parentNode === tbody) {
+          removed.row.remove();
+        }
+        addKeptRow(candidate.row);
+        syncTableFromHeap();
+        updateCount();
       }
 
       source.addEventListener("row", (ev) => {
@@ -1433,7 +1964,7 @@
   // Client-side filtering for the torrent search results table.
   //
   // The filter bar (`[data-torrent-filters]`) exposes one <select> per
-  // facet (publisher, resolution, codec, season, episode kind). The
+  // facet (publisher, resolution, codec, season, episode, episode kind). The
   // current selections form an AND filter that is applied by hiding
   // non-matching <tr> elements via `data-filter-hidden`. Pagination
   // (`wireTablePagination`) ignores rows it has hidden itself but
@@ -1485,35 +2016,36 @@
       // Static facets (option list ships with the template).
       const STATIC_FACETS = new Set(["episode-kind"]);
 
-      // Range filters use a pair of <input type="number"> elements
-      // sharing `data-torrent-filter-range="<facet>"` and distinguished
-      // by `data-range-bound="min|max"`. Each facet maps to the
-      // `data-<facet>-start` / `data-<facet>-end` numeric attributes on
-      // a row. A row matches when its [start, end] overlaps the
-      // user-supplied [min, max] (either bound being NaN = unbounded).
-      const rangeInputs = Array.from(
-        bar.querySelectorAll("[data-torrent-filter-range]"),
-      );
-      const rangeFacets = new Set(
-        rangeInputs.map((el) => el.getAttribute("data-torrent-filter-range")),
-      );
-      const rangeAttrByFacet = {
-        episode: { start: "data-ep-start", end: "data-ep-end" },
-      };
+      // Episode numbers to offer in the dropdown (per row). Small
+      // ranges are expanded so middle episodes are selectable; wide
+      // ranges contribute endpoints only.
+      const EPISODE_ENUM_MAX = 96;
 
-      function rangeBounds(facet) {
-        let min = NaN;
-        let max = NaN;
-        rangeInputs.forEach((el) => {
-          if (el.getAttribute("data-torrent-filter-range") !== facet) return;
-          const v = el.value;
-          if (v === "" || v === null || v === undefined) return;
-          const n = Number(v);
-          if (Number.isNaN(n)) return;
-          if (el.getAttribute("data-range-bound") === "min") min = n;
-          else if (el.getAttribute("data-range-bound") === "max") max = n;
-        });
-        return { min, max };
+      function harvestEpisodeOptions(row, select) {
+        const startRaw = row.getAttribute("data-ep-start");
+        const endRaw = row.getAttribute("data-ep-end");
+        const start =
+          startRaw !== null && startRaw !== ""
+            ? Number(startRaw)
+            : NaN;
+        const end =
+          endRaw !== null && endRaw !== "" ? Number(endRaw) : NaN;
+        if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
+          const span = end - start;
+          if (span <= EPISODE_ENUM_MAX) {
+            for (let n = start; n <= end; n++) {
+              addOption(select, String(n), "Ep " + n);
+            }
+          } else {
+            addOption(select, String(start), "Ep " + start);
+            addOption(select, String(end), "Ep " + end);
+          }
+          return;
+        }
+        const single = row.getAttribute("data-episode") || "";
+        if (single) {
+          addOption(select, single, "Ep " + single);
+        }
       }
 
       // Pretty-print canonical publisher slugs for the dropdown.
@@ -1558,6 +2090,10 @@
         selects.forEach((sel) => {
           const facet = sel.getAttribute("data-torrent-filter");
           if (STATIC_FACETS.has(facet)) return;
+          if (facet === "episode") {
+            harvestEpisodeOptions(row, sel);
+            return;
+          }
           const attr = "data-" + facet;
           const value = row.getAttribute(attr) || "";
           if (!value) return;
@@ -1577,31 +2113,32 @@
           const want = sel.value;
           if (!want) continue;
           const facet = sel.getAttribute("data-torrent-filter");
+          if (facet === "episode") {
+            const n = Number(want);
+            if (Number.isNaN(n)) return false;
+            const startRaw = row.getAttribute("data-ep-start");
+            const endRaw = row.getAttribute("data-ep-end");
+            if (
+              startRaw !== null &&
+              startRaw !== "" &&
+              endRaw !== null &&
+              endRaw !== ""
+            ) {
+              const start = Number(startRaw);
+              const end = Number(endRaw);
+              if (Number.isNaN(start) || Number.isNaN(end) || n < start ||
+                  n > end) {
+                return false;
+              }
+            } else {
+              const have = row.getAttribute("data-episode") || "";
+              if (have === "" || Number(have) !== n) return false;
+            }
+            continue;
+          }
           const attr = "data-" + facet;
           const have = row.getAttribute(attr) || "";
           if (have !== want) return false;
-        }
-        for (const facet of rangeFacets) {
-          const { min, max } = rangeBounds(facet);
-          if (Number.isNaN(min) && Number.isNaN(max)) continue;
-          const meta = rangeAttrByFacet[facet];
-          if (!meta) continue;
-          const startRaw = row.getAttribute(meta.start);
-          const endRaw = row.getAttribute(meta.end);
-          if (startRaw === null || startRaw === "" ||
-              endRaw === null || endRaw === "") {
-            // Row has no numeric bounds for this facet -> exclude
-            // whenever the range filter is active.
-            return false;
-          }
-          const start = Number(startRaw);
-          const end = Number(endRaw);
-          if (Number.isNaN(start) || Number.isNaN(end)) return false;
-          // Interval overlap: [start, end] vs [min, max] (open bounds
-          // are treated as -Infinity / +Infinity).
-          const lo = Number.isNaN(min) ? -Infinity : min;
-          const hi = Number.isNaN(max) ? Infinity : max;
-          if (end < lo || start > hi) return false;
         }
         return true;
       }
@@ -1656,29 +2193,12 @@
       selects.forEach((sel) => {
         sel.addEventListener("change", apply);
       });
-      rangeInputs.forEach((el) => {
-        // Apply on each keystroke, but debounce slightly so we don't
-        // re-run filtering for every individual digit being typed.
-        let timer = null;
-        const queue = () => {
-          if (timer) window.clearTimeout(timer);
-          timer = window.setTimeout(() => {
-            timer = null;
-            apply();
-          }, 120);
-        };
-        el.addEventListener("input", queue);
-        el.addEventListener("change", apply);
-      });
 
       bar.querySelectorAll("[data-torrent-filter-reset]").forEach((btn) => {
         btn.addEventListener("click", (ev) => {
           ev.preventDefault();
           selects.forEach((sel) => {
             sel.value = "";
-          });
-          rangeInputs.forEach((el) => {
-            el.value = "";
           });
           apply();
         });
@@ -1720,6 +2240,8 @@
           label = publisherLabel(row, value);
         } else if (facet === "season") {
           label = "Season " + value;
+        } else if (facet === "episode") {
+          label = "Ep " + value;
         }
         if (!STATIC_FACETS.has(facet)) {
           addOption(sel, value, label);

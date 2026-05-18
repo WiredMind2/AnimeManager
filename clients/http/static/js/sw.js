@@ -25,7 +25,7 @@
 // app.js had no ``wireLibrarySearchStream`` function, so without a
 // cache bump the page would stick on the server-rendered "Connecting…"
 // badge until the user manually reloaded twice.
-const CACHE_VERSION = "am-pwa-v3-search-focus";
+const CACHE_VERSION = "am-pwa-v9-libass-seek-resync";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -37,6 +37,7 @@ const PRECACHE_URLS = [
   "/ui/static/js/app.js",
   "/ui/static/js/pwa-register.js",
   "/ui/static/js/pwa-install.js",
+  "/ui/static/vendor/shaka-player/shaka-player.compiled.min.js",
   "/ui/static/icons/icon-192.png",
   "/ui/static/icons/icon-512.png",
   "/ui/static/icons/maskable-512.png",
