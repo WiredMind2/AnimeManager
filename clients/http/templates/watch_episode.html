@@ -3,12 +3,16 @@
 
 {% block topbar_title %}Watch · {{ anime.title|truncate(48, true, '…') }}{% endblock %}
 
-{% block topbar_actions %}
-  <a class="btn btn--ghost" href="{{ url_for('web_anime_detail', anime_id=anime.id) }}">← Back to details</a>
-{% endblock %}
+{% block topbar_actions %}{% endblock %}
 
 {% block content %}
   <section class="watch-view" data-player-host>
+    <nav class="watch-view__page-nav" aria-label="Watch page">
+      <a class="btn btn--ghost"
+         href="{{ url_for('web_anime_detail', anime_id=anime.id) }}">
+        ← Back to details
+      </a>
+    </nav>
     <div class="player-panel watch-view__panel"
          data-player-panel
          data-play-anime-id="{{ anime.id }}"
@@ -19,9 +23,13 @@
          data-player-auto-file-title="{{ selected_file_title }}"
          data-player-track-map='{{ track_map | tojson }}'
          data-player-auto-fullscreen="0">
-      <div class="player-panel__video-wrap watch-view__video-wrap">
-        <media-controller class="watch-view__controller">
+      <div class="player-panel__video-wrap watch-view__video-wrap"
+           id="watch-wrap-{{ anime.id }}">
+        <media-controller class="watch-view__controller"
+                          id="watch-controller-{{ anime.id }}"
+                          fullscreenelement="watch-wrap-{{ anime.id }}">
           <video class="player-panel__video watch-view__video"
+                 id="watch-video-{{ anime.id }}"
                  data-player-video
                  slot="media"
                  playsinline
@@ -40,6 +48,7 @@
             <media-fullscreen-button></media-fullscreen-button>
           </media-control-bar>
         </media-controller>
+        <div class="watch-view__ass-overlay" data-player-ass-overlay aria-hidden="true"></div>
         <div class="player-panel__status" data-player-status>
           Click play to start.
         </div>
@@ -75,14 +84,23 @@
 
     {% if episode_files %}
       <div class="table-wrap watch-view__table">
-        <table class="table">
+        <table class="table table--anime-episodes">
+          <colgroup>
+            <col class="col--episode-file" />
+            <col class="col--season" />
+            <col class="col--episode" />
+            <col class="col--size" />
+            <col class="col--progress" />
+            <col class="col--actions" />
+          </colgroup>
           <thead>
             <tr>
               <th class="truncate">Episode file</th>
               <th class="num">Season</th>
               <th class="num">Episode</th>
               <th class="num">Size</th>
-              <th></th>
+              <th>Watched</th>
+              <th class="num">Play</th>
             </tr>
           </thead>
           <tbody>
@@ -92,7 +110,46 @@
                 <td class="num">{{ item.season if item.season is not none else '—' }}</td>
                 <td class="num">{{ item.episode if item.episode is not none else '—' }}</td>
                 <td class="num">{{ (((item.size_bytes or 0) / 1024 / 1024)|round(1)|string ~ ' MB') if item.size_bytes else '—' }}</td>
-                <td class="num">
+                <td style="min-width: 148px">
+                  {% set dur = item.get('duration_seconds') %}
+                  {% set pos = item.get('position_seconds') %}
+                  {% if pos is none %}
+                    {% set pos = 0 %}
+                  {% endif %}
+                  {% set st = (item.get('watch_status') or 'UNSEEN')|upper %}
+                  {% if st == 'SEEN' %}
+                    {% set wpct = 100.0 %}
+                  {% elif dur is not none and dur > 0 %}
+                    {% set raw = (pos / dur * 100.0) %}
+                    {% set wpct = ([raw, 100.0]|min) %}
+                  {% else %}
+                    {% set wpct = 0.0 %}
+                  {% endif %}
+                  {% set pct_label = (wpct | round(0)) | int %}
+                  <div
+                    class="progress progress--watch{% if wpct > 80.0 %} progress--watch-high{% endif %}"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="{{ pct_label }}"
+                    aria-label="Watched {{ pct_label }} percent of this episode"
+                    title="{% if dur is not none and dur > 0 %}{{ (wpct | round(1)) }}% watched (~{{ (dur / 60) | round(1) }} min total){% elif st == 'SEEN' %}Watched (marked complete){% elif pos > 0 %}Played {{ pos | int }}s — duration unknown{% else %}Not started{% endif %}"
+                  >
+                    <div class="progress__bar" style="width: {{ wpct }}%"></div>
+                  </div>
+                  <div class="episode-watch-meta">
+                    {% if dur is not none and dur > 0 %}
+                      <span>{{ pct_label }}%</span>
+                    {% elif st == 'SEEN' %}
+                      <span>100%</span>
+                    {% elif pos > 0 %}
+                      <span>{{ pos | int }}s</span>
+                    {% else %}
+                      <span class="episode-watch-meta--muted">—</span>
+                    {% endif %}
+                  </div>
+                </td>
+                <td class="num" style="white-space: nowrap">
                   <button class="btn btn--ghost btn--small"
                           type="button"
                           data-play-file-id="{{ item.file_id }}"

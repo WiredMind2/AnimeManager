@@ -29,6 +29,7 @@ playlist" path so playback still works, just without scrubbing.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import hmac
 import logging
@@ -40,6 +41,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from application.commands import (
     CreatePlaybackSessionCommand,
@@ -48,6 +50,7 @@ from application.commands import (
 )
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
+from application.services.media_probe_cache import MediaProbeCache
 from domain.errors import InfrastructureError, NotFoundError, UnauthorizedError, ValidationError
 from ports.interfaces import MediaLibraryPort, MediaTranscoderPort
 
@@ -93,11 +96,15 @@ class MediaStreamingService:
         token_secret: str | bytes | None = None,
         default_ttl_seconds: int = 900,
         segment_seconds: int = _DEFAULT_SEGMENT_SECONDS,
+        probe_parallel_workers: int = 8,
     ) -> None:
         self._media_library = media_library
         self._transcoder = transcoder
         self._default_ttl_seconds = max(60, int(default_ttl_seconds))
         self._segment_seconds = max(2, int(segment_seconds))
+        self._probe_parallel_workers = max(1, int(probe_parallel_workers))
+        self._probe_cache: MediaProbeCache | None = None
+        self._probe_cache_lock = threading.Lock()
         if isinstance(token_secret, bytes):
             self._token_secret = token_secret
         elif isinstance(token_secret, str) and token_secret:
@@ -111,32 +118,128 @@ class MediaStreamingService:
         # over the same ffmpeg process.
         self._restart_locks: dict[str, threading.Lock] = {}
 
+    def _get_probe_cache(self) -> MediaProbeCache | None:
+        with self._probe_cache_lock:
+            if self._probe_cache is not None:
+                return self._probe_cache
+            try:
+                root = Path(self._media_library.get_stream_cache_root()).resolve()
+            except Exception as exc:  # noqa: BLE001
+                _LOG.debug("probe_cache_root_unavailable err=%s", exc)
+                return None
+            try:
+                self._probe_cache = MediaProbeCache(root / "_probe_cache")
+            except Exception as exc:  # noqa: BLE001
+                _LOG.warning("probe_cache_init_failed err=%s", exc)
+                return None
+            return self._probe_cache
+
+    @staticmethod
+    def _path_stat_triple(path: str) -> tuple[str, int, int] | None:
+        try:
+            st = os.stat(path)
+            resolved = os.path.realpath(path)
+            return resolved, int(st.st_mtime_ns), int(st.st_size)
+        except OSError:
+            return None
+
+    def _invoke_transcoder_probe(self, path: str) -> tuple[dict[str, list[dict[str, Any]]], float]:
+        meta = getattr(self._transcoder, "probe_media_metadata", None)
+        if callable(meta):
+            tracks_raw, duration_raw = meta(path)
+            tracks = {
+                "audio": list((tracks_raw or {}).get("audio") or []),
+                "subtitles": list((tracks_raw or {}).get("subtitles") or []),
+            }
+            try:
+                duration = float(duration_raw)
+            except (TypeError, ValueError):
+                duration = 0.0
+            return tracks, max(0.0, duration)
+        raw_tracks = self._transcoder.probe_media_tracks(path)
+        tracks = {
+            "audio": list(raw_tracks.get("audio") or []),
+            "subtitles": list(raw_tracks.get("subtitles") or []),
+        }
+        duration = 0.0
+        probe_dur = getattr(self._transcoder, "probe_media_duration", None)
+        if callable(probe_dur):
+            try:
+                duration = max(0.0, float(probe_dur(path)))
+            except Exception:  # noqa: BLE001
+                duration = 0.0
+        return tracks, duration
+
+    def _probe_tracks_and_duration(self, path: str) -> tuple[dict[str, list[dict[str, Any]]], float]:
+        triple = self._path_stat_triple(path)
+        cache = self._get_probe_cache()
+        if triple is not None and cache is not None:
+            resolved, mtime_ns, size = triple
+            cached = cache.get(resolved, mtime_ns, size)
+            if cached is not None:
+                tracks, dur_opt = cached
+                dur = float(dur_opt) if dur_opt is not None and dur_opt > 0 else 0.0
+                return tracks, dur
+        tracks, duration = self._invoke_transcoder_probe(path)
+        if triple is not None and cache is not None:
+            resolved, mtime_ns, size = triple
+            try:
+                cache.put(
+                    resolved,
+                    mtime_ns,
+                    size,
+                    tracks=tracks,
+                    duration_seconds=duration if duration > 0 else None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _LOG.debug("probe_cache_put_failed err=%s", exc)
+        return tracks, duration
+
+    def _episode_entry_from_row(self, row: dict[str, Any]) -> EpisodeFileDTO | None:
+        file_id = str(row.get("file_id") or "").strip()
+        path = str(row.get("path") or "").strip()
+        title = str(row.get("title") or row.get("name") or "").strip()
+        if not file_id or not path:
+            return None
+        tracks, duration = self._probe_tracks_and_duration(path)
+        duration_val = duration if duration > 0 else None
+        return EpisodeFileDTO(
+            file_id=file_id,
+            title=title or Path(path).name,
+            path=path,
+            size_bytes=_safe_int(row.get("size_bytes") or row.get("size")),
+            season=_safe_int(row.get("season")),
+            episode=_safe_int(row.get("episode")),
+            audio_tracks=list(tracks.get("audio", []) or []),
+            subtitle_tracks=list(tracks.get("subtitles", []) or []),
+            duration_seconds=duration_val,
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
-        out: list[EpisodeFileDTO] = []
+        prep: list[dict[str, Any]] = []
         for row in self._media_library.list_episode_files(query.anime_id) or []:
             file_id = str(row.get("file_id") or "").strip()
             path = str(row.get("path") or "").strip()
-            title = str(row.get("title") or row.get("name") or "").strip()
             if not file_id or not path:
                 continue
-            tracks = self._transcoder.probe_media_tracks(path)
-            out.append(
-                EpisodeFileDTO(
-                    file_id=file_id,
-                    title=title or Path(path).name,
-                    path=path,
-                    size_bytes=_safe_int(row.get("size_bytes") or row.get("size")),
-                    season=_safe_int(row.get("season")),
-                    episode=_safe_int(row.get("episode")),
-                    audio_tracks=list(tracks.get("audio", []) or []),
-                    subtitle_tracks=list(tracks.get("subtitles", []) or []),
-                )
-            )
-        return out
+            prep.append(row)
+        if not prep:
+            return []
+        workers = min(self._probe_parallel_workers, len(prep))
+        if workers <= 1:
+            out: list[EpisodeFileDTO] = []
+            for row in prep:
+                dto = self._episode_entry_from_row(row)
+                if dto is not None:
+                    out.append(dto)
+            return out
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            mapped = list(pool.map(self._episode_entry_from_row, prep))
+        return [dto for dto in mapped if dto is not None]
 
     def delete_episode_file(self, anime_id: int, file_id: str) -> bool:
         return bool(self._media_library.delete_episode_file(anime_id, file_id))
@@ -164,7 +267,11 @@ class MediaStreamingService:
         # the canonical playlist atomically. If probing fails we fall
         # back to the legacy "ffmpeg owns the playlist" flow so the
         # session still works (just without scrubbing).
-        duration = self._safe_probe_duration(selected.path)
+        d_sel = selected.duration_seconds
+        if isinstance(d_sel, (int, float)) and float(d_sel) > 0:
+            duration = float(d_sel)
+        else:
+            duration = self._safe_probe_duration(selected.path)
         seg_secs = self._segment_seconds
         total_segments = 0
         if duration > 0:
@@ -183,6 +290,15 @@ class MediaStreamingService:
             command.start_time_seconds,
             total_segments=total_segments,
             segment_seconds=seg_secs,
+        )
+
+        # Extract sidecar WebVTT/ASS *before* the long-running HLS encoder
+        # opens the source. On Windows a second ffmpeg reading the same
+        # MKV while the first holds it can fail intermittently, which
+        # left the session with no subtitle artifacts for the browser.
+        subtitle_tracks = self._materialize_soft_subtitles(
+            source_path=selected.path,
+            output_dir=str(output_dir),
         )
 
         try:
@@ -207,10 +323,6 @@ class MediaStreamingService:
                 subtitle_track=command.subtitle_track,
             )
         artifact_manifest = str(artifacts.get("manifest_path") or manifest_path)
-        subtitle_tracks = self._materialize_soft_subtitles(
-            source_path=selected.path,
-            output_dir=str(output_dir),
-        )
         if duration > 0:
             # With a pre-written VOD playlist the adapter doesn't need
             # to materialise a manifest itself. The canonical file we
@@ -490,17 +602,11 @@ class MediaStreamingService:
         return max(0, min(index, total_segments - 1))
 
     def _safe_probe_duration(self, source_path: str) -> float:
-        probe = getattr(self._transcoder, "probe_media_duration", None)
-        if not callable(probe):
-            return 0.0
         try:
-            value = probe(source_path)
+            _, duration = self._probe_tracks_and_duration(source_path)
+            return max(0.0, float(duration))
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("media_duration_probe_failed path=%s err=%s", source_path, exc)
-            return 0.0
-        try:
-            return max(0.0, float(value))
-        except (TypeError, ValueError):
             return 0.0
 
     def _materialize_soft_subtitles(

@@ -34,7 +34,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
     metadata = LegacyMetadataProviderAdapter(runtime, repository)
     download = LegacyDownloadAdapter(runtime, repository=repository)
     user_actions = LegacyUserActionsAdapter(runtime)
-    media_library = LegacyMediaLibraryAdapter(runtime)
+    media_library = LegacyMediaLibraryAdapter(runtime, download_port=download)
     # Both layers must agree on the segment cadence — the service
     # pre-writes a VOD playlist that assumes every segment is exactly
     # this many seconds long, and the adapter sets the matching
@@ -42,6 +42,12 @@ def build_embedded_facade() -> EmbeddedClientFacade:
     # up with the playlist's EXTINF entries.
     _SEGMENT_SECONDS = 4
     media_transcoder = FFmpegTranscoderAdapter(
+        video_codec="h264_nvenc",
+        require_hardware_acceleration=True,
+        # Keep NVENC encode required, but do not force CUDA decode:
+        # some source codecs/profiles fail early with mandatory HW decode
+        # and no segments are emitted, which surfaces as Shaka 1003.
+        use_cuda_hwaccel=False,
         max_active_sessions=2,
         segment_seconds=_SEGMENT_SECONDS,
     )

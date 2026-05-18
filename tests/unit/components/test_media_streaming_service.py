@@ -74,6 +74,13 @@ class _LegacyFakeTranscoder:
         _ = source_path
         return {"audio": [{"id": 0, "label": "UND"}], "subtitles": []}
 
+    def probe_media_duration(self, source_path: str) -> float:
+        _ = source_path
+        return 120.0
+
+    def probe_media_metadata(self, source_path: str):
+        return (self.probe_media_tracks(source_path), self.probe_media_duration(source_path))
+
 
 class _SeekableFakeTranscoder:
     """A modern adapter that supports the seek-on-demand API: it
@@ -129,6 +136,9 @@ class _SeekableFakeTranscoder:
     def probe_media_duration(self, source_path: str) -> float:
         _ = source_path
         return self._duration
+
+    def probe_media_metadata(self, source_path: str):
+        return (self.probe_media_tracks(source_path), self.probe_media_duration(source_path))
 
 
 def _legacy_service(tmp_path: Path) -> MediaStreamingService:
