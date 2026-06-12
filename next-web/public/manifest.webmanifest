@@ -1,0 +1,53 @@
+{
+  "name": "AnimeManager",
+  "short_name": "Anime",
+  "description": "Browse, tag, and queue downloads for your anime catalog — powered by the embedded AnimeManager SDK.",
+  "start_url": "/library",
+  "scope": "/",
+  "id": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0a0c10",
+  "theme_color": "#0a0c10",
+  "prefer_related_applications": false,
+  "categories": ["entertainment", "utilities"],
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Library",
+      "url": "/library",
+      "description": "Browse your anime catalog"
+    },
+    {
+      "name": "Downloads",
+      "url": "/downloads",
+      "description": "View active downloads"
+    },
+    {
+      "name": "Torrent search",
+      "url": "/torrents",
+      "description": "Search torrent providers"
+    }
+  ]
+}
