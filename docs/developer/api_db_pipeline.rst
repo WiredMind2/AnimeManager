@@ -50,6 +50,8 @@ End-to-end flow
     │   • rate limiter                 │
     │   • _spec_for(provider) for each │
     │     loaded AnimeAPI wrapper      │
+    │   • CatalogIdentityService       │
+    │     (canonical id + external_ids)│
     └─────────────────┬────────────────┘
                       │ IngestionPipeline.run(specs, terms, ...)
                       ▼
@@ -58,7 +60,7 @@ End-to-end flow
     │   • ThreadPoolExecutor (bounded) │
     │   • per-provider timeout         │
     │   • partial/failed accounting    │
-    │   • dedupe by AnimeRecord.id     │
+    │   • dedupe by canonical id       │
     └─────────────────┬────────────────┘
                       │ list[AnimeRecord] + optional sink
                       ▼
@@ -78,12 +80,27 @@ End-to-end flow
 Module responsibilities
 -----------------------
 
+``application/services/catalog_identity.py`` / ``catalog_merge.py``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* :class:`~application.services.catalog_identity.CatalogIdentityService`
+  resolves a single internal catalogue id from provider ``external_ids``
+  (``mal_id``, ``anilist_id``, ``kitsu_id``, …). Provider wrappers call
+  ``resolve_catalog_id`` during conversion instead of ad-hoc ``save_mapped``
+  SQL.
+* :class:`~application.services.catalog_merge.CatalogMergeService` folds
+  duplicate ``indexList`` / ``anime`` rows through
+  :mod:`adapters.persistence.catalog_repository` (transactional
+  ``save=True`` writes). Startup repair uses provider-id grouping by
+  default; title-based repair is opt-in.
+
 ``core/contracts.py``
 ~~~~~~~~~~~~~~~~~~~~~
 
 Defines the typed DTOs that every adapter must produce and that every
 persistence sink must accept. ``AnimeRecord`` is a frozen dataclass so
-adapters cannot mutate it after creation; ``IngestionResult`` reports
+adapters cannot mutate it after creation; ``external_ids`` carries
+cross-provider keys; ``IngestionResult`` reports
 the run-level status (``COMPLETE`` / ``PARTIAL`` / ``FAILED``) plus
 collected records, failed-provider count, total provider count,
 elapsed milliseconds, and per-provider error tags.

@@ -219,3 +219,18 @@ Whenever the legacy infrastructure is replaced (e.g. when an
 is to swap the implementation bound in ``backend/composition.py``.
 Neither :mod:`run`, nor :mod:`bootstrap`, nor any client adapter
 needs to change.
+
+Torrent persistence across restarts
+-----------------------------------
+
+* **qBittorrent / Transmission** — the external daemon owns session
+  state. AnimeManager reconnects via API after restart; nothing is
+  re-added from the database.
+* **Embedded LibTorrent** — fast-resume files under
+  ``<dataPath>/.libtorrent_resume/`` (one ``{info_hash}.resume`` per
+  torrent). On startup, :mod:`adapters.torrent.libtorrent` loads these
+  into a fresh session before serving downloads. The ``torrents``
+  table also stores ``save_path`` so a magnet re-add can recover when a
+  resume file is missing but files remain on disk. Graceful shutdown
+  (HTTP lifespan / Tk close) calls :meth:`LegacyDownloadAdapter.close`
+  to flush resume data before exit.

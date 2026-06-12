@@ -29,6 +29,8 @@ omit = [
     "*/__pycache__/*",
     "*/build/*",
     "*/dist/*",
+    "*/clients/*",
+    "*/search_engines/nova3/*",
 ]
 
 [tool.coverage.report]
