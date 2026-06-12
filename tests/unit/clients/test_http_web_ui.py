@@ -78,6 +78,7 @@ class FakeSDK:
             "windows": {"mainWindowHeight": 500},
         }
         self._terms: dict[int, list[str]] = {1: ["SubsPlease 1080p"]}
+        self._disabled_titles: dict[int, set[str]] = {}
         self._tags: dict[int, str] = {}
         self._likes: dict[int, bool] = {}
         self._playback_sessions: dict[str, dict] = {}
@@ -123,6 +124,7 @@ class FakeSDK:
         return {
             "id": anime_id,
             "title": "Bleach",
+            "title_synonyms": ["ブリーチ", "BLEACH"],
             "picture": "https://example.com/p.jpg",
             "status": "FINISHED",
             "synopsis": "A boy who can see ghosts.",
@@ -137,6 +139,22 @@ class FakeSDK:
 
     def get_search_terms(self, anime_id: int):
         return list(self._terms.get(anime_id, []))
+
+    def get_disabled_search_titles(self, anime_id: int):
+        return sorted(self._disabled_titles.get(anime_id, set()))
+
+    def disable_search_title(self, anime_id: int, title: str):
+        self._record("disable_search_title", anime_id, title)
+        self._disabled_titles.setdefault(anime_id, set()).add(title)
+        return True
+
+    def enable_search_title(self, anime_id: int, title: str):
+        self._record("enable_search_title", anime_id, title)
+        disabled = self._disabled_titles.get(anime_id, set())
+        if title in disabled:
+            disabled.remove(title)
+            return True
+        return False
 
     def get_relations(self, anime_id: int, relation_type: str = "anime"):
         return [{"id": 9, "title": "Bleach: TYBW", "type": "sequel"}]
@@ -294,6 +312,11 @@ class FakeSDK:
         session["expires_at"] = time.time() + 600
         return dict(session)
 
+    def get_playback_session(self, session_id: str):
+        self._record("get_playback_session", session_id)
+        session = self._playback_sessions.get(session_id)
+        return dict(session) if session else None
+
     def stop_playback_session(self, session_id: str):
         self._record("stop_playback_session", session_id)
         self._playback_sessions.pop(session_id, None)
@@ -345,6 +368,13 @@ def test_ui_alias_redirects_to_library(client):
     resp = client.get("/ui")
     assert resp.status_code == 307
     assert resp.headers["location"].endswith("/ui/library")
+
+
+def test_ui_alias_redirects_to_next_frontend(client, monkeypatch):
+    monkeypatch.setenv("WEB_FRONTEND_URL", "http://127.0.0.1:3000")
+    resp = client.get("/ui")
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "http://127.0.0.1:3000/library"
 
 
 def test_library_renders_grid(client):
@@ -447,6 +477,7 @@ def test_search_terms_add_returns_partial(client):
     )
     assert resp.status_code == 200
     assert "Erai-raws 720p" in resp.text
+    assert 'id="torrent-search-options"' in resp.text
 
 
 def test_search_terms_delete_returns_partial(client):
@@ -455,9 +486,7 @@ def test_search_terms_delete_returns_partial(client):
         params={"term": "SubsPlease 1080p"},
     )
     assert resp.status_code == 200
-    # The term chip is gone — only the (untouched) placeholder mention
-    # of "SubsPlease 1080p" remains in the add-new input.
-    assert 'class="term"' not in resp.text
+    assert 'id="torrent-search-options"' in resp.text
     assert ("remove_search_term", (1, "SubsPlease 1080p"), {}) in client.fake.calls
 
 
@@ -529,10 +558,26 @@ def test_start_download_action(client):
     resp = client.post(
         "/ui/anime/1/download",
         data={"url": "magnet:?xt=urn:btih:abc"},
+        headers={"referer": "http://testserver/ui/anime/1"},
     )
     assert resp.status_code == 303
-    assert resp.headers["location"].endswith("/ui/downloads")
+    assert resp.headers["location"].endswith("/ui/anime/1")
     assert ("start_download", (1, "magnet:?xt=urn:btih:abc", None, 1), {}) in client.fake.calls
+
+
+def test_start_download_action_htmx_stays_on_page(client):
+    resp = client.post(
+        "/ui/anime/1/download",
+        data={"url": "magnet:?xt=urn:btih:abc"},
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert "Queued" in resp.text
+    assert "location" not in resp.headers
+    assert 'id="anime-downloaded-episodes"' in resp.text
+    assert 'hx-swap-oob="outerHTML"' in resp.text
+    assert "[SubsPlease] Bleach - 01.mkv" in resp.text
+    assert "DOWNLOADING" in resp.text
 
 
 def test_cancel_download_action(client):
@@ -1035,16 +1080,19 @@ def test_cancel_download_redirects_to_downloads_page(client):
 
 def test_start_download_validates_missing_url(client):
     """Without url or hash_value the SDK should raise; route swallows
-    the error and still redirects (UX: PRG always lands on /downloads)."""
+    the error and still redirects back to the anime page."""
     from domain.errors import ValidationError
 
     def boom(*_args, **_kwargs):
         raise ValidationError("Either url or hash_value must be provided.")
 
     client.fake.start_download = boom  # type: ignore[assignment]
-    resp = client.post("/ui/anime/1/download")
+    resp = client.post(
+        "/ui/anime/1/download",
+        headers={"referer": "http://testserver/ui/anime/1"},
+    )
     assert resp.status_code == 303
-    assert resp.headers["location"].endswith("/ui/downloads")
+    assert resp.headers["location"].endswith("/ui/anime/1")
 
 
 # ---------------------------------------------------------------------------
@@ -1099,53 +1147,104 @@ def test_youtube_embed_url_helper_recognizes_common_forms():
 # ---------------------------------------------------------------------------
 
 
-def test_anime_torrent_search_partial_uses_saved_terms_by_default(client):
-    """No explicit term -> the route falls back to the anime's saved
-    search terms (and tells the user that's what happened)."""
+def test_anime_torrent_search_partial_uses_catalog_and_manual_terms_by_default(client):
+    """No explicit terms -> enabled catalog titles plus manual custom terms."""
     resp = client.get("/ui/anime/1/torrents")
     assert resp.status_code == 200
     body = resp.text
-    assert "SubsPlease 1080p" in body  # the saved term echoed in header
-    assert "saved search terms" in body.lower()
-    # The skeleton wires the SSE feed -- no synchronous search runs in
-    # the partial anymore (rows arrive over `/torrents/stream`).
+    assert "Bleach" in body
+    assert "SubsPlease 1080p" in body
+    assert "Searching" in body
     assert "/ui/anime/1/torrents/stream" in body
+    assert "terms=Bleach" in body
+    assert "/torrents/stream?terms=" in body
     assert 'data-stream-rows' in body
-    # Should NOT carry the chrome of a full page (no <html> -- it's a partial)
     assert "<html" not in body
-    # And no engine call yet -- streaming starts when the SSE connects.
     assert not any(c[0] in {"search_torrents", "stream_torrents"} for c in client.fake.calls)
 
 
-def test_anime_torrent_search_partial_honors_override_term(client):
+def test_anime_torrent_search_partial_honors_explicit_terms(client):
     resp = client.get(
         "/ui/anime/1/torrents",
-        params={"term": "horriblesubs 720p"},
+        params=[("terms", "horriblesubs 720p"), ("terms", "erai-raws")],
     )
     assert resp.status_code == 200
     body = resp.text
     assert "horriblesubs 720p" in body
-    # The stream URL carries the override term verbatim.
-    assert "term=horriblesubs%20720p" in body or "term=horriblesubs+720p" in body
+    assert "terms=horriblesubs" in body
+    assert "terms=erai-raws" in body
 
 
 def test_anime_torrent_stream_returns_sse_rows(client):
     resp = client.get(
         "/ui/anime/1/torrents/stream",
-        params={"term": "bleach 1080p"},
+        params={"terms": "bleach 1080p"},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
     body = resp.text
-    # Each result is a separate SSE frame
     assert body.count("event: row") == 2
     assert "[SubsPlease] Bleach S01 - 01 [1080p].mkv" in body
     assert "[Erai-raws] Bleach S01 - 02" in body
-    # The stream completes with a final end event carrying the row count
     assert "event: end" in body
-    # And the SDK was asked to stream (not the materialized variant)
     last_call = [c for c in client.fake.calls if c[0] == "stream_torrents"][-1]
     assert last_call[1][0] == ["bleach 1080p"]
+
+
+def test_anime_torrent_stream_uses_active_terms_from_db_by_default(client):
+    resp = client.get("/ui/anime/1/torrents/stream")
+    assert resp.status_code == 200
+    last_call = [c for c in client.fake.calls if c[0] == "stream_torrents"][-1]
+    terms = last_call[1][0]
+    assert "Bleach" in terms
+    assert "ブリーチ" in terms
+    assert "SubsPlease 1080p" in terms
+
+
+def test_anime_torrent_stream_excludes_disabled_catalog_title(client):
+    client.fake.disable_search_title(1, "Bleach")
+    resp = client.get("/ui/anime/1/torrents/stream")
+    assert resp.status_code == 200
+    last_call = [c for c in client.fake.calls if c[0] == "stream_torrents"][-1]
+    terms = last_call[1][0]
+    assert "Bleach" not in terms
+    assert "ブリーチ" in terms
+
+
+def test_toggle_search_title_returns_options_partial(client):
+    resp = client.post(
+        "/ui/anime/1/search-titles/toggle",
+        data={"title": "Bleach", "enabled": "false"},
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert 'id="torrent-search-options"' in resp.text
+    assert ("disable_search_title", (1, "Bleach"), {}) in client.fake.calls
+
+
+def test_catalog_titles_dedupes_primary_and_synonyms():
+    anime = {
+        "title": "Bleach",
+        "title_synonyms": ["BLEACH", "ブリーチ", "Bleach"],
+    }
+    titles = http_web._catalog_titles(anime)
+    assert titles == ["Bleach", "ブリーチ"]
+
+
+def test_build_torrent_stream_url_uses_question_mark_before_query(client):
+    resp = client.get("/ui/anime/1/torrents")
+    body = resp.text
+    assert "/torrents/stream?terms=" in body
+    assert "torrents/stream&terms=" not in body
+
+
+def test_resolve_anime_search_terms_splits_catalog_and_manual(client):
+    active, ctx = http_web._resolve_anime_search_terms(client.fake, 1)
+    assert "Bleach" in active
+    assert "ブリーチ" in active
+    assert "SubsPlease 1080p" in active
+    assert "SubsPlease 1080p" in ctx["manual_terms"]
+    assert any(s["title"] == "Bleach" for s in ctx["catalog_title_states"])
 
 
 def test_anime_torrent_stream_emits_error_event_when_no_term(client, monkeypatch):
@@ -1153,8 +1252,9 @@ def test_anime_torrent_stream_emits_error_event_when_no_term(client, monkeypatch
     monkeypatch.setattr(
         client.fake,
         "get_anime",
-        lambda anime_id: {"id": anime_id, "title": ""},
+        lambda anime_id: {"id": anime_id, "title": "", "title_synonyms": []},
     )
+    monkeypatch.setattr(client.fake, "get_disabled_search_titles", lambda anime_id: [])
     resp = client.get("/ui/anime/1/torrents/stream")
     assert resp.status_code == 200
     body = resp.text
@@ -1166,13 +1266,12 @@ def test_anime_detail_page_wires_inline_torrent_search(client):
     resp = client.get("/ui/anime/1")
     assert resp.status_code == 200
     body = resp.text
-    # The detail page links the torrent section via HTMX (no full nav
-    # to /ui/torrents like the old "Find torrents" topbar link did).
     assert 'id="anime-torrents"' in body
     assert "/ui/anime/1/torrents" in body
     assert 'hx-target="#anime-torrent-results"' in body
-    # The HTMX form auto-loads results on page open
     assert 'hx-trigger="load"' in body
+    assert 'id="torrent-search-options"' in body
+    assert "Known titles" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1246,6 +1345,28 @@ def test_stream_manifest_serves_playlist(client):
     assert "#EXTM3U" in resp.text
 
 
+def test_streaming_allows_hostname_that_resolves_to_private_lan(client, monkeypatch):
+    """Regression: ``http://my-pc:8081`` must not 403 every segment request."""
+    monkeypatch.setattr(
+        "clients.http.web._client_host",
+        lambda _request: "my-media-pc.local",
+    )
+    monkeypatch.setattr(
+        "clients.http.web._host_resolves_to_private_address",
+        lambda _host: True,
+    )
+    created = client.post("/ui/anime/1/play", data={"file_id": "ep-001"}).json()
+    token = created["token"]
+    session_id = created["session_id"]
+    manifest_resp = client.get(
+        f"/ui/stream/{session_id}/index.m3u8",
+        params={"token": token},
+    )
+    assert manifest_resp.status_code == 200
+    seg_resp = client.get(f"/ui/stream/{session_id}/segment_00001.ts")
+    assert seg_resp.status_code == 200
+
+
 def test_stream_segment_allows_tokenless_fetch_for_relative_playlist_urls(client):
     client.post("/ui/anime/1/play", data={"file_id": "ep-001"})
     resp = client.get("/ui/stream/sess-1/segment_00001.ts")
@@ -1259,4 +1380,30 @@ def test_stream_heartbeat_and_stop_endpoints(client):
     assert hb.status_code == 200
     stop = client.post("/ui/stream/sess-1/stop")
     assert stop.status_code == 200
+
+
+def test_stream_player_log_ingest(client):
+    client.post("/ui/anime/1/play", data={"file_id": "ep-001"})
+    resp = client.post(
+        "/ui/stream/sess-1/log",
+        json={
+            "events": [
+                {
+                    "ts": "2026-06-12T12:00:00.000Z",
+                    "event": "buffering_started",
+                    "level": "info",
+                    "data": {
+                        "ts": 1718190000000,
+                        "current_time": 0,
+                        "video_ready_state": 2,
+                    },
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "accepted": 1}
+    log_path = client.fake._play_root / "_player.log"  # type: ignore[attr-defined]
+    assert log_path.is_file()
+    assert "buffering_started" in log_path.read_text(encoding="utf-8")
     

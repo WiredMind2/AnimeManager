@@ -66,11 +66,15 @@ def _shutdown_embedded_background() -> None:
     if dm is None:
         return
     try:
-        closer = getattr(dm, "close", None)
-        if callable(closer):
-            closer()
+        port_closer = getattr(port, "close", None)
+        if callable(port_closer):
+            port_closer()
+        else:
+            closer = getattr(dm, "close", None)
+            if callable(closer):
+                closer()
     except Exception as exc:  # noqa: BLE001
-        _LOG.debug("download manager shutdown skipped: %s", exc)
+        _LOG.debug("download port shutdown skipped: %s", exc)
 
 
 @asynccontextmanager
@@ -113,7 +117,7 @@ def root(request: Request):
     """
     accept = request.headers.get("accept", "").lower()
     if "text/html" in accept:
-        return RedirectResponse("/ui/library", status_code=307)
+        return RedirectResponse(_web.browser_library_url(), status_code=307)
     return {"service": "animemanager-http-client-adapter", "status": "ok"}
 
 
@@ -250,6 +254,64 @@ def add_search_term(anime_id: int, term: str):
 def remove_search_term(anime_id: int, term: str):
     try:
         return {"removed": get_sdk().remove_search_term(anime_id, term)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/anime/{anime_id}/relations")
+def anime_relations(anime_id: int):
+    try:
+        return {"items": get_sdk().get_relations(anime_id)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/anime/{anime_id}/episode-files")
+def anime_episode_files(anime_id: int, user_id: int = 1):
+    try:
+        return {"items": get_sdk().list_episode_files(anime_id, user_id=user_id)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/anime/{anime_id}/library-torrents")
+def anime_library_torrents(anime_id: int):
+    """Saved and in-flight torrents for the anime detail downloads table."""
+    try:
+        from . import web as web_module
+
+        return {"items": web_module._collect_anime_torrents(get_sdk(), anime_id)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/anime/{anime_id}/torrent-search-options")
+def anime_torrent_search_options(anime_id: int):
+    """Catalog title toggles, manual terms, and active search terms."""
+    try:
+        from . import web as web_module
+
+        ctx = web_module._build_torrent_search_options_context(get_sdk(), anime_id)
+        return {
+            "catalog_title_states": ctx.get("catalog_title_states") or [],
+            "manual_terms": ctx.get("manual_terms") or [],
+            "active_terms": ctx.get("active_terms") or [],
+        }
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.post("/anime/{anime_id}/search-titles/toggle")
+def toggle_search_title(anime_id: int, title: str, enabled: bool = True):
+    try:
+        sdk = get_sdk()
+        clean = title.strip()
+        if clean:
+            if enabled:
+                sdk.enable_search_title(anime_id, clean)
+            else:
+                sdk.disable_search_title(anime_id, clean)
+        return {"ok": True}
     except Exception as exc:  # pragma: no cover
         raise _map_error(exc) from exc
 

@@ -156,6 +156,15 @@ class ClientSDK:
     def remove_search_term(self, anime_id: int, term: str) -> bool:
         return self._facade.remove_search_term(anime_id, term)
 
+    def get_disabled_search_titles(self, anime_id: int) -> list[str]:
+        return self._facade.get_disabled_search_titles(anime_id)
+
+    def disable_search_title(self, anime_id: int, title: str) -> bool:
+        return self._facade.disable_search_title(anime_id, title)
+
+    def enable_search_title(self, anime_id: int, title: str) -> bool:
+        return self._facade.enable_search_title(anime_id, title)
+
     def get_settings(self) -> dict[str, Any]:
         return self._facade.get_settings()
 
@@ -214,6 +223,10 @@ class ClientSDK:
             start_time_seconds=start_time_seconds,
         )
         return asdict(session)
+
+    def get_playback_session(self, session_id: str) -> dict[str, Any] | None:
+        session = self._facade.get_playback_session(session_id)
+        return asdict(session) if session is not None else None
 
     def heartbeat_playback_session(self, session_id: str) -> dict[str, Any]:
         return asdict(self._facade.heartbeat_playback_session(session_id))

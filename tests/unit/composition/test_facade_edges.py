@@ -147,6 +147,21 @@ def test_remove_search_term_forwards(facade, service):
     assert facade.remove_search_term(1, "t") is True
 
 
+def test_get_disabled_search_titles_forwards(facade, service):
+    service.get_disabled_search_titles.return_value = ["a"]
+    assert facade.get_disabled_search_titles(1) == ["a"]
+
+
+def test_disable_search_title_forwards(facade, service):
+    service.disable_search_title.return_value = True
+    assert facade.disable_search_title(1, "t") is True
+
+
+def test_enable_search_title_forwards(facade, service):
+    service.enable_search_title.return_value = True
+    assert facade.enable_search_title(1, "t") is True
+
+
 def test_get_settings_returns_dict(facade, service):
     service.get_settings.return_value = {"x": 1}
     assert facade.get_settings() == {"x": 1}

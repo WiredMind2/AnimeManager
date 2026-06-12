@@ -167,6 +167,15 @@ class EmbeddedClientFacade:
     def remove_search_term(self, anime_id: int, term: str) -> bool:
         return self._service.remove_search_term(anime_id, term)
 
+    def get_disabled_search_titles(self, anime_id: int) -> list[str]:
+        return self._service.get_disabled_search_titles(anime_id)
+
+    def disable_search_title(self, anime_id: int, title: str) -> bool:
+        return self._service.disable_search_title(anime_id, title)
+
+    def enable_search_title(self, anime_id: int, title: str) -> bool:
+        return self._service.enable_search_title(anime_id, title)
+
     def get_settings(self) -> dict:
         return self._service.get_settings()
 
@@ -221,6 +230,9 @@ class EmbeddedClientFacade:
             subtitle_track=subtitle_track,
             start_time_seconds=start_time_seconds,
         )
+
+    def get_playback_session(self, session_id: str):
+        return self._service.get_playback_session(session_id)
 
     def heartbeat_playback_session(self, session_id: str):
         return self._service.heartbeat_playback_session(session_id)

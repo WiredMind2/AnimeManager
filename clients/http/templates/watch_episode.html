@@ -93,12 +93,16 @@
                 <td class="num">{{ item.episode if item.episode is not none else '—' }}</td>
                 <td class="num">{{ (((item.size_bytes or 0) / 1024 / 1024)|round(1)|string ~ ' MB') if item.size_bytes else '—' }}</td>
                 <td class="num">
-                  <button class="btn btn--ghost btn--small"
-                          type="button"
-                          data-play-file-id="{{ item.file_id }}"
-                          data-play-title="{{ item.title }}">
-                    Play
-                  </button>
+                  {% if item.playable is not defined or item.playable %}
+                    <button class="btn btn--ghost btn--small"
+                            type="button"
+                            data-play-file-id="{{ item.file_id }}"
+                            data-play-title="{{ item.title }}">
+                      Play
+                    </button>
+                  {% else %}
+                    <span class="badge" title="The file is incomplete — its download is likely still in progress.">Downloading…</span>
+                  {% endif %}
                 </td>
               </tr>
             {% endfor %}

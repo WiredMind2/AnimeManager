@@ -1,0 +1,65 @@
+<section id="anime-downloaded-episodes"
+         class="detail__section"
+         {% if hx_swap_oob %}hx-swap-oob="{{ hx_swap_oob }}"{% endif %}>
+  <div class="detail__section-title">
+    <h3>Downloaded episodes</h3>
+    <span class="meta">
+      {% if anime_torrents %}{{ anime_torrents|length }} torrent{{ '' if anime_torrents|length == 1 else 's' }}{% else %}Nothing downloaded yet{% endif %}
+    </span>
+  </div>
+
+  {% if anime_torrents %}
+    <div class="table-wrap">
+    <table class="table table--anime-downloads">
+      <colgroup>
+        <col class="col--release" />
+        <col class="col--size" />
+        <col class="col--progress" />
+        <col class="col--state" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="truncate">Release</th>
+          <th class="num">Size</th>
+          <th class="num">Progress</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in anime_torrents %}
+          {% set pct = ((row.progress or 0) * 100)|round(1) if row.progress is not none else None %}
+          <tr>
+            <td class="truncate" title="{{ row.name }}">
+              {{ row.name or row.hash or '—' }}
+              {% if row.path %}<div style="font-size:11px; color: var(--text-faint)">{{ row.path }}</div>{% endif %}
+            </td>
+            <td class="num">{{ row.size_human or '—' }}</td>
+            <td class="num" style="min-width: 120px">
+              {% if pct is not none %}
+                <div class="progress" aria-label="Download progress">
+                  <div class="progress__bar" style="width: {{ pct }}%"></div>
+                </div>
+                <span style="font-size: 11px; color: var(--text-muted)">{{ pct }}%</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% set state = (row.state or 'SAVED')|upper %}
+              {% if state == 'COMPLETE' %}
+                <span class="badge badge--good">{{ state }}</span>
+              {% elif state == 'DOWNLOADING' %}
+                <span class="badge badge--accent">{{ state }}</span>
+              {% else %}
+                <span class="badge">{{ state }}</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p style="color: var(--text-faint); font-size: 13px">
+      Nothing downloaded yet — pick a release from the torrent search above to start.
+    </p>
+  {% endif %}
+</section>

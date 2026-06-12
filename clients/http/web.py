@@ -17,17 +17,20 @@ import asyncio
 import json
 import ipaddress
 import logging
+import os
 import queue
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import (
     APIRouter,
     Form,
     HTTPException,
+    Query,
     Request,
     Response,
     WebSocket,
@@ -52,8 +55,10 @@ try:  # pragma: no cover - import path differs depending on launch mode
         ValidationError,
     )
     from ..sdk import ClientSDK
+    from application.services import player_session_log
     from . import log_buffer, settings_form
 except ImportError:  # pragma: no cover
+    from application.services import player_session_log  # type: ignore
     from clients.sdk import ClientSDK
     from clients.http import log_buffer, settings_form  # type: ignore  # noqa: F401
     from domain.errors import (  # type: ignore  # noqa: F401
@@ -394,6 +399,19 @@ def _redirect_get(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
+def browser_library_url() -> str:
+    """Browser entry point for the library — Next.js or legacy ``/ui/library``.
+
+    When ``WEB_FRONTEND_URL`` is set (e.g. ``http://127.0.0.1:3000`` for the
+    Next.js dev server), HTML clients are sent to the modern frontend. Otherwise
+    the embedded Jinja UI remains the default so existing deployments keep working.
+    """
+    frontend = os.environ.get("WEB_FRONTEND_URL", "").strip()
+    if frontend:
+        return f"{frontend.rstrip('/')}/library"
+    return "/ui/library"
+
+
 def _is_htmx(request: Request) -> bool:
     """Return True when the request was issued by HTMX.
 
@@ -435,6 +453,52 @@ def _anime_actions_response(
     )
 
 
+def _stay_on_page_redirect(request: Request, anime_id: int) -> RedirectResponse:
+    """PRG fallback that returns the user to the page they submitted from."""
+    referer = request.headers.get("referer", "")
+    if referer:
+        parsed = urlparse(referer)
+        path = parsed.path or ""
+        if path.startswith("/ui/"):
+            suffix = f"?{parsed.query}" if parsed.query else ""
+            return _redirect(f"{path}{suffix}")
+    return _redirect(f"/ui/anime/{anime_id}")
+
+
+def _start_download_response(request: Request, anime_id: int) -> Response:
+    """Keep torrent download actions on the current page (HTMX or PRG)."""
+    if not _is_htmx(request):
+        return _stay_on_page_redirect(request, anime_id)
+    sdk = get_sdk()
+    return _render(
+        request,
+        "partials/download_started.html",
+        {
+            "anime_torrents": _collect_anime_torrents(sdk, anime_id),
+        },
+    )
+
+
+def _annotate_episode_playability(episode_files: list[Any]) -> list[Any]:
+    """Tag each episode file dict with a ``playable`` flag.
+
+    Files whose probe found no tracks at all are typically torrent
+    preallocations whose download hasn't finished — ffmpeg can't read
+    them, so the UI should not offer a Play action. Items that lack the
+    probe keys entirely (older SDK shapes) are assumed playable.
+    """
+    for item in episode_files:
+        if not isinstance(item, dict):
+            continue
+        has_probe_info = "audio_tracks" in item or "subtitle_tracks" in item
+        item["playable"] = bool(
+            not has_probe_info
+            or item.get("audio_tracks")
+            or item.get("subtitle_tracks")
+        )
+    return episode_files
+
+
 def _episode_player_response(request: Request, anime_id: int) -> Response:
     """Swap the episode table after HTMX mutations; redirect otherwise."""
     if not _is_htmx(request):
@@ -445,8 +509,8 @@ def _episode_player_response(request: Request, anime_id: int) -> Response:
     except Exception:  # noqa: BLE001
         anime = {"id": anime_id, "title": ""}
     try:
-        episode_files = list(
-            sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or []
+        episode_files = _annotate_episode_playability(
+            list(sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or [])
         )
     except Exception:  # noqa: BLE001
         _LOG.debug("episode file lookup failed (panel)", exc_info=True)
@@ -497,17 +561,37 @@ def _host_in_allowlist(host: str, rules: list[str]) -> bool:
     return False
 
 
+def _host_resolves_to_private_address(host: str) -> bool:
+    """True when ``host`` is a DNS name that resolves to a LAN address."""
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(
+            host,
+            None,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return True
+    return False
+
+
 def _is_client_allowed_for_streaming(request: Request, sdk: ClientSDK) -> bool:
     host = _client_host(request)
     if not host:
         return False
     if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
         return True
-
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
 
     settings = {}
     try:
@@ -523,6 +607,16 @@ def _is_client_allowed_for_streaming(request: Request, sdk: ClientSDK) -> bool:
         return True
     if allow_public:
         return True
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Browsers often use a machine name (``http://desktop:8081``) rather
+        # than a literal IP. The old check rejected every non-IP host, which
+        # made manifests load (from HTML) while every segment/manifest fetch
+        # returned 403 and the player sat on "Buffering…" forever.
+        return _host_resolves_to_private_address(host)
+
     return bool(ip.is_private or ip.is_loopback or ip.is_link_local)
 
 
@@ -533,7 +627,7 @@ def _is_client_allowed_for_streaming(request: Request, sdk: ClientSDK) -> bool:
 
 @router.get("/ui", include_in_schema=False)
 def web_ui_root() -> RedirectResponse:
-    return _redirect_get("/ui/library")
+    return _redirect_get(browser_library_url())
 
 
 @router.get("/ui/library", name="web_library")
@@ -839,12 +933,14 @@ def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
 
     anime_torrents = _collect_anime_torrents(sdk, anime_id)
     try:
-        episode_files = list(
-            sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or []
+        episode_files = _annotate_episode_playability(
+            list(sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or [])
         )
     except Exception:  # noqa: BLE001
         _LOG.debug("episode file lookup failed", exc_info=True)
         episode_files = []
+
+    torrent_search = _build_torrent_search_options_context(sdk, anime_id)
 
     return _render(
         request,
@@ -859,42 +955,40 @@ def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
             "trailer_embed": trailer_embed,
             "anime_torrents": anime_torrents,
             "episode_files": episode_files,
+            **torrent_search,
         },
     )
 
 
-@router.get("/ui/anime/{anime_id}/watch", name="web_anime_watch")
-def web_anime_watch(
-    request: Request,
+def _watch_page_context(
+    sdk: Any,
     anime_id: int,
+    *,
     file_id: str = "",
-) -> HTMLResponse:
-    sdk = get_sdk()
+) -> dict[str, Any]:
+    """Shared watch-page data (``web_anime_watch`` / ``web_anime_watch_json``)."""
     try:
         anime = sdk.get_anime(anime_id)
-    except NotFoundError:
-        return _render(
-            request,
-            "error.html",
-            {
-                "status_code": 404,
-                "status_text": "Not Found",
-                "detail": f"No anime with id {anime_id}.",
-                "active_nav": "library",
-            },
-            status_code=404,
-        )
+    except NotFoundError as exc:
+        raise exc
 
     try:
-        episode_files = list(
-            sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or []
+        episode_files = _annotate_episode_playability(
+            list(sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or [])
         )
     except Exception:  # noqa: BLE001
         episode_files = []
 
     selected_file_id = str(file_id or "").strip()
     if not selected_file_id and episode_files:
-        selected_file_id = str(episode_files[0].get("file_id") or "")
+        # Default to the first *playable* file. Files that ffprobe could
+        # not read (no tracks at all) are typically still-downloading
+        # torrent preallocations and would fail to start.
+        playable = next(
+            (item for item in episode_files if item.get("playable")),
+            episode_files[0],
+        )
+        selected_file_id = str(playable.get("file_id") or "")
     selected_title = ""
     selected_audio_tracks: list[dict[str, Any]] = []
     selected_subtitle_tracks: list[dict[str, Any]] = []
@@ -923,18 +1017,59 @@ def web_anime_watch(
         if pos >= 10.0:
             episode_resume_map[fid] = pos
 
+    return {
+        "anime": anime,
+        "episode_files": episode_files,
+        "selected_file_id": selected_file_id,
+        "selected_file_title": selected_title,
+        "selected_audio_tracks": selected_audio_tracks,
+        "selected_subtitle_tracks": selected_subtitle_tracks,
+        "track_map": track_map,
+        "episode_resume_map": episode_resume_map,
+    }
+
+
+@router.get("/ui/anime/{anime_id}/watch.json", name="web_anime_watch_json")
+def web_anime_watch_json(
+    anime_id: int,
+    file_id: str = Query(""),
+) -> JSONResponse:
+    sdk = get_sdk()
+    try:
+        ctx = _watch_page_context(sdk, anime_id, file_id=file_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail=f"No anime with id {anime_id}.") from None
+    return JSONResponse(ctx, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ui/anime/{anime_id}/watch", name="web_anime_watch")
+def web_anime_watch(
+    request: Request,
+    anime_id: int,
+    file_id: str = "",
+) -> HTMLResponse:
+    sdk = get_sdk()
+    try:
+        ctx = _watch_page_context(sdk, anime_id, file_id=file_id)
+    except NotFoundError:
+        return _render(
+            request,
+            "error.html",
+            {
+                "status_code": 404,
+                "status_text": "Not Found",
+                "detail": f"No anime with id {anime_id}.",
+                "active_nav": "library",
+            },
+            status_code=404,
+        )
+
+    anime = ctx["anime"]
     return _render(
         request,
         "watch_episode.html",
         {
-            "anime": anime,
-            "episode_files": episode_files,
-            "selected_file_id": selected_file_id,
-            "selected_file_title": selected_title,
-            "selected_audio_tracks": selected_audio_tracks,
-            "selected_subtitle_tracks": selected_subtitle_tracks,
-            "track_map": track_map,
-            "episode_resume_map": episode_resume_map,
+            **ctx,
             "active_nav": "library",
             "page_title": f"Watch · {anime.get('title')}" if isinstance(anime, dict) else "Watch",
         },
@@ -1040,14 +1175,7 @@ def web_action_add_term(
         _LOG.info("add_search_term validation: %s", exc)
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("add_search_term failed: %s", exc)
-    return _render(
-        request,
-        "partials/search_terms.html",
-        {
-            "anime": {"id": anime_id},
-            "terms": list(sdk.get_search_terms(anime_id) or []),
-        },
-    )
+    return _torrent_search_options_response(request, sdk, anime_id)
 
 
 @router.delete("/ui/anime/{anime_id}/terms", name="web_action_remove_term")
@@ -1061,19 +1189,136 @@ def web_action_remove_term(
         sdk.remove_search_term(anime_id, term)
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("remove_search_term failed: %s", exc)
-    return _render(
-        request,
-        "partials/search_terms.html",
-        {
-            "anime": {"id": anime_id},
-            "terms": list(sdk.get_search_terms(anime_id) or []),
-        },
-    )
+    return _torrent_search_options_response(request, sdk, anime_id)
+
+
+@router.get("/ui/anime/{anime_id}/torrent-search-options", name="web_torrent_search_options")
+def web_torrent_search_options(request: Request, anime_id: int) -> HTMLResponse:
+    """Render the torrent search options partial for the anime detail modal."""
+    return _torrent_search_options_response(request, get_sdk(), anime_id)
+
+
+@router.post("/ui/anime/{anime_id}/search-titles/toggle", name="web_action_toggle_search_title")
+def web_action_toggle_search_title(
+    request: Request,
+    anime_id: int,
+    title: str = Form(""),
+    enabled: str = Form(""),
+) -> HTMLResponse:
+    sdk = get_sdk()
+    clean = title.strip()
+    if clean:
+        try:
+            if enabled.strip().lower() in ("true", "1", "yes", "on"):
+                sdk.enable_search_title(anime_id, clean)
+            else:
+                sdk.disable_search_title(anime_id, clean)
+        except ValidationError as exc:
+            _LOG.info("toggle search title validation: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("toggle search title failed: %s", exc)
+    return _torrent_search_options_response(request, sdk, anime_id)
 
 
 # ---------------------------------------------------------------------------
 # Media playback
 # ---------------------------------------------------------------------------
+
+
+def _streaming_settings_snapshot(sdk: ClientSDK) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    try:
+        raw = sdk.get_settings() or {}
+        if isinstance(raw, dict):
+            settings = raw
+    except Exception:  # noqa: BLE001
+        settings = {}
+    web_cfg = settings.get("web", {}) if isinstance(settings, dict) else {}
+    if not isinstance(web_cfg, dict):
+        web_cfg = {}
+    allowlist = web_cfg.get("player_allowlist", [])
+    if isinstance(allowlist, str):
+        allowlist = [allowlist]
+    return {
+        "player_allow_public": bool(web_cfg.get("player_allow_public", False)),
+        "player_allowlist": list(allowlist) if isinstance(allowlist, list) else [],
+    }
+
+
+def _playback_output_dir(sdk: ClientSDK, session_id: str) -> str:
+    session = sdk.get_playback_session(session_id)
+    if session and str(session.get("output_dir") or "").strip():
+        return str(session["output_dir"])
+    return ""
+
+
+def _log_stream_access_denied(
+    request: Request,
+    sdk: ClientSDK,
+    *,
+    session_id: str = "",
+    route: str,
+) -> None:
+    host = _client_host(request)
+    snapshot = _streaming_settings_snapshot(sdk)
+    fields: dict[str, Any] = {
+        "client_host": host,
+        "route": route,
+        "result": "403",
+        **snapshot,
+    }
+    if session_id:
+        fields["session_id"] = session_id
+    output_dir = _playback_output_dir(sdk, session_id) if session_id else ""
+    if output_dir:
+        player_session_log.append(
+            output_dir,
+            source="server",
+            event="stream_access_denied",
+            level="warn",
+            **fields,
+        )
+    _LOG.warning(
+        "[PLAYER] stream_access_denied route=%s host=%s session=%s",
+        route,
+        host,
+        session_id or "-",
+    )
+
+
+def _log_stream_resolve_event(
+    *,
+    output_dir: str,
+    event: str,
+    client_host: str,
+    session_id: str,
+    segment: str | None,
+    started_at: float,
+    result: str,
+    status_code: int | None = None,
+    detail: str | None = None,
+) -> None:
+    if not output_dir:
+        return
+    fields: dict[str, Any] = {
+        "client_host": client_host,
+        "session_id": session_id,
+        "latency_ms": int((time.monotonic() - started_at) * 1000),
+        "result": result,
+    }
+    if segment is not None:
+        fields["segment"] = segment
+    if status_code is not None:
+        fields["status"] = status_code
+    if detail:
+        fields["detail"] = detail
+    player_session_log.append(
+        output_dir,
+        source="server",
+        event=event,
+        level="warn" if result not in {"ok"} else "info",
+        **fields,
+    )
 
 
 @router.post("/ui/anime/{anime_id}/play", name="web_action_play")
@@ -1087,6 +1332,7 @@ def web_action_play(
 ) -> JSONResponse:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, route="play")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
     audio_idx: int | None = None
     subtitle_idx: int | None = None
@@ -1135,6 +1381,22 @@ def web_action_play(
     session_id = session.get("session_id")
     token = session.get("token")
     manifest_url = f"/ui/stream/{session_id}/index.m3u8?token={token}"
+    output_dir = str(session.get("output_dir") or "")
+    if output_dir:
+        player_session_log.append(
+            output_dir,
+            source="server",
+            event="play_ok",
+            session_id=session_id,
+            anime_id=anime_id,
+            file_id=file_id.strip(),
+            client_host=_client_host(request),
+            manifest_url=manifest_url,
+            hls_anchor_segment=session.get("hls_anchor_segment"),
+            duration_seconds=session.get("duration_seconds"),
+            total_segments=session.get("total_segments"),
+            subtitle_track_count=len(session.get("subtitle_tracks") or []),
+        )
     subtitle_tracks_payload: list[dict[str, Any]] = []
     for track in session.get("subtitle_tracks") or []:
         if not isinstance(track, dict):
@@ -1179,10 +1441,62 @@ def web_stream_manifest(
     token: str,
 ) -> Response:
     sdk = get_sdk()
+    started_at = time.monotonic()
+    client_host = _client_host(request)
     if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, session_id=session_id, route="manifest")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    output_dir = _playback_output_dir(sdk, session_id)
     try:
         _session, path = sdk.resolve_playback_media_path(
+            session_id=session_id,
+            token=token,
+            segment_name=None,
+        )
+        if not output_dir:
+            output_dir = str(_session.get("output_dir") or "")
+        _log_stream_resolve_event(
+            output_dir=output_dir,
+            event="manifest_request",
+            client_host=client_host,
+            session_id=session_id,
+            segment=None,
+            started_at=started_at,
+            result="ok",
+        )
+    except Exception as exc:  # noqa: BLE001
+        code, msg = _map_error(exc)
+        _log_stream_resolve_event(
+            output_dir=output_dir,
+            event="manifest_resolve_error",
+            client_host=client_host,
+            session_id=session_id,
+            segment=None,
+            started_at=started_at,
+            result="error",
+            status_code=code,
+            detail=msg,
+        )
+        raise HTTPException(status_code=code, detail=msg) from exc
+    return FileResponse(
+        path=path,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/ui/stream/{session_id}/player.log", name="web_stream_player_log_download")
+def web_stream_player_log_download(
+    request: Request,
+    session_id: str,
+    token: str = "",
+) -> Response:
+    sdk = get_sdk()
+    if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, session_id=session_id, route="player_log_download")
+        raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    try:
+        session, _path = sdk.resolve_playback_media_path(
             session_id=session_id,
             token=token,
             segment_name=None,
@@ -1190,9 +1504,14 @@ def web_stream_manifest(
     except Exception as exc:  # noqa: BLE001
         code, msg = _map_error(exc)
         raise HTTPException(status_code=code, detail=msg) from exc
+    output_dir = str(session.get("output_dir") or "")
+    log_path = player_session_log.player_log_path(output_dir)
+    if not log_path.is_file():
+        raise HTTPException(status_code=404, detail="Player debug log not found.")
     return FileResponse(
-        path=path,
-        media_type="application/vnd.apple.mpegurl",
+        path=str(log_path),
+        media_type="text/plain",
+        filename="_player.log",
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1205,16 +1524,42 @@ def web_stream_segment(
     token: str = "",
 ) -> Response:
     sdk = get_sdk()
+    started_at = time.monotonic()
+    client_host = _client_host(request)
     if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, session_id=session_id, route="segment")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    output_dir = _playback_output_dir(sdk, session_id)
     try:
         _session, path = sdk.resolve_playback_media_path(
             session_id=session_id,
             token=token,
             segment_name=segment_name,
         )
+        if not output_dir:
+            output_dir = str(_session.get("output_dir") or "")
+        _log_stream_resolve_event(
+            output_dir=output_dir,
+            event="segment_request",
+            client_host=client_host,
+            session_id=session_id,
+            segment=segment_name,
+            started_at=started_at,
+            result="ok",
+        )
     except Exception as exc:  # noqa: BLE001
         code, msg = _map_error(exc)
+        _log_stream_resolve_event(
+            output_dir=output_dir,
+            event="segment_resolve_error",
+            client_host=client_host,
+            session_id=session_id,
+            segment=segment_name,
+            started_at=started_at,
+            result="error",
+            status_code=code,
+            detail=msg,
+        )
         raise HTTPException(status_code=code, detail=msg) from exc
     media_type = "video/mp2t"
     if segment_name.endswith(".m4s"):
@@ -1256,13 +1601,49 @@ def web_stream_heartbeat(request: Request, session_id: str) -> JSONResponse:
 def web_stream_stop(request: Request, session_id: str) -> JSONResponse:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, session_id=session_id, route="stop")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    output_dir = _playback_output_dir(sdk, session_id)
     try:
         sdk.stop_playback_session(session_id)
+        if output_dir:
+            player_session_log.append(
+                output_dir,
+                source="server",
+                event="session_stopped",
+                session_id=session_id,
+                client_host=_client_host(request),
+            )
     except Exception as exc:  # noqa: BLE001
         code, msg = _map_error(exc)
         raise HTTPException(status_code=code, detail=msg) from exc
     return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/ui/stream/{session_id}/log", name="web_stream_player_log")
+async def web_stream_player_log(
+    request: Request,
+    session_id: str,
+) -> JSONResponse:
+    sdk = get_sdk()
+    if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, session_id=session_id, route="player_log")
+        raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    output_dir = _playback_output_dir(sdk, session_id)
+    if not output_dir:
+        raise HTTPException(status_code=404, detail="Playback session not found.")
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON body.") from exc
+    events = body.get("events") if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="Expected { events: [...] }.")
+    accepted = player_session_log.append_client_batch(output_dir, events)
+    return JSONResponse(
+        {"ok": True, "accepted": accepted},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1556,10 +1937,11 @@ async def web_downloads_ws(websocket: WebSocket) -> None:
 
 @router.post("/ui/anime/{anime_id}/download", name="web_action_start_download")
 def web_action_start_download(
+    request: Request,
     anime_id: int,
     url: str | None = Form(None),
     hash_value: str | None = Form(None),
-) -> RedirectResponse:
+) -> Response:
     sdk = get_sdk()
     try:
         sdk.start_download(
@@ -1570,7 +1952,7 @@ def web_action_start_download(
         )
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("start_download failed: %s", exc)
-    return _redirect("/ui/downloads")
+    return _start_download_response(request, anime_id)
 
 
 @router.post("/ui/anime/{anime_id}/cancel", name="web_action_cancel")
@@ -1618,36 +2000,161 @@ def web_torrents(
     )
 
 
-def _resolve_anime_search_term(sdk: ClientSDK, anime_id: int, raw_term: str | None) -> tuple[str, bool]:
-    """Return ``(term, fallback_used)`` for the inline torrent search.
+def _catalog_titles(anime: dict[str, Any] | None) -> list[str]:
+    """Return deduplicated catalog titles (primary + synonyms), preserving order."""
+    if not anime or not isinstance(anime, dict):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    candidates = [anime.get("title")] + list(anime.get("title_synonyms") or [])
+    for raw in candidates:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
 
-    Empty / whitespace-only ``raw_term`` falls back to the anime's saved
-    search terms; if none are saved, the anime title is used. This is
-    extracted because both the synchronous partial and the SSE stream
-    need the same resolution logic so they never diverge.
-    """
-    term_clean = (raw_term or "").strip()
-    if term_clean:
-        return term_clean, False
+
+def _catalog_title_keys(catalog: list[str]) -> set[str]:
+    return {title.casefold() for title in catalog}
+
+
+def _dedupe_terms(terms: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in terms:
+        text = str(raw).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _manual_search_terms(saved: list[str], catalog_keys: set[str]) -> list[str]:
+    """Saved DB terms that are not catalog titles (case-insensitive)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in saved:
+        text = str(raw).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in catalog_keys or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _build_torrent_search_options_context(
+    sdk: ClientSDK, anime_id: int
+) -> dict[str, Any]:
+    anime: dict[str, Any] = {"id": anime_id}
+    try:
+        loaded = sdk.get_anime(anime_id)
+        if isinstance(loaded, dict):
+            anime = loaded
+    except Exception:  # noqa: BLE001
+        pass
+
+    catalog = _catalog_titles(anime)
+    catalog_keys = _catalog_title_keys(catalog)
+
     try:
         saved = list(sdk.get_search_terms(anime_id) or [])
     except Exception:  # noqa: BLE001
         saved = []
-    if saved:
-        return ", ".join(saved), True
+
+    manual = _manual_search_terms(saved, catalog_keys)
+
     try:
-        anime = sdk.get_anime(anime_id)
+        disabled = list(sdk.get_disabled_search_titles(anime_id) or [])
     except Exception:  # noqa: BLE001
-        return "", False
-    if isinstance(anime, dict) and anime.get("title"):
-        return str(anime["title"]).strip(), True
-    return "", False
+        disabled = []
+
+    disabled_keys = {title.casefold() for title in disabled}
+    catalog_title_states = [
+        {"title": title, "enabled": title.casefold() not in disabled_keys}
+        for title in catalog
+    ]
+    enabled_catalog = [
+        state["title"] for state in catalog_title_states if state["enabled"]
+    ]
+    active_terms = _dedupe_terms([*enabled_catalog, *manual])
+
+    return {
+        "anime": anime,
+        "anime_id": anime_id,
+        "catalog_titles": catalog,
+        "catalog_title_states": catalog_title_states,
+        "disabled_titles": disabled,
+        "manual_terms": manual,
+        "active_terms": active_terms,
+    }
+
+
+def _torrent_search_options_response(
+    request: Request, sdk: ClientSDK, anime_id: int
+) -> HTMLResponse:
+    return _render(
+        request,
+        "partials/torrent_search_options.html",
+        _build_torrent_search_options_context(sdk, anime_id),
+    )
+
+
+def _resolve_anime_search_terms(
+    sdk: ClientSDK, anime_id: int
+) -> tuple[list[str], dict[str, Any]]:
+    """Return active search terms and template context for inline torrent search."""
+    ctx = _build_torrent_search_options_context(sdk, anime_id)
+    return list(ctx.get("active_terms") or []), ctx
+
+
+def _parse_torrent_search_terms(
+    sdk: ClientSDK,
+    anime_id: int,
+    terms: list[str] | None,
+    legacy_term: str | None,
+) -> list[str]:
+    """Resolve explicit query params or fall back to DB-backed active terms."""
+    if terms:
+        parsed = _dedupe_terms(terms)
+        if parsed:
+            return parsed
+    legacy = (legacy_term or "").strip()
+    if legacy:
+        return _dedupe_terms(legacy.split(","))
+    active, _ctx = _resolve_anime_search_terms(sdk, anime_id)
+    return active
+
+
+def _build_torrent_stream_url(
+    request: Request, anime_id: int, terms: list[str]
+) -> str:
+    """Build the SSE stream URL with repeated ``terms`` query parameters."""
+    base = str(request.url_for("web_anime_torrent_stream", anime_id=anime_id))
+    if not terms:
+        return base
+    qs = urlencode([("terms", term) for term in terms])
+    return f"{base}?{qs}"
 
 
 @router.get("/ui/anime/{anime_id}/torrents", name="web_anime_torrent_search")
 def web_anime_torrent_search(
     request: Request,
     anime_id: int,
+    terms: list[str] | None = Query(None),
     term: str | None = None,
 ) -> HTMLResponse:
     """Inline (HTMX) torrent search scoped to an anime.
@@ -1657,18 +2164,18 @@ def web_anime_torrent_search(
     SSE connection to :func:`web_anime_torrent_stream`; rows are then
     appended progressively as engines respond.
 
-    When ``term`` is empty we fall back to the anime's saved search
-    terms (if any) and finally to its title.
+    When no explicit ``terms`` are provided, enabled catalog titles plus
+    manual custom terms are searched in parallel.
     """
     sdk = get_sdk()
-    term_clean, fallback_used = _resolve_anime_search_term(sdk, anime_id, term)
+    active_terms = _parse_torrent_search_terms(sdk, anime_id, terms, term)
     return _render(
         request,
         "partials/anime_torrent_results.html",
         {
-            "term": term_clean,
+            "terms": active_terms,
             "anime_id": anime_id,
-            "fallback_used": fallback_used,
+            "stream_url": _build_torrent_stream_url(request, anime_id, active_terms),
             "search_error": None,
         },
     )
@@ -1678,6 +2185,7 @@ def web_anime_torrent_search(
 def web_anime_torrent_stream(
     request: Request,
     anime_id: int,
+    terms: list[str] | None = Query(None),
     term: str | None = None,
 ) -> StreamingResponse:
     """Server-Sent Events feed for the inline torrent search.
@@ -1690,18 +2198,17 @@ def web_anime_torrent_stream(
     before the slowest engine finishes.
     """
     sdk = get_sdk()
-    term_clean, _fallback = _resolve_anime_search_term(sdk, anime_id, term)
+    active_terms = _parse_torrent_search_terms(sdk, anime_id, terms, term)
 
     def event_stream() -> Iterable[bytes]:
-        if not term_clean:
+        if not active_terms:
             yield _sse_event(
                 "error",
-                "Provide a search term, save one above, or set an anime title.",
+                "No search terms available — enable titles or add custom terms in Search options.",
             )
             yield _sse_event("end", "")
             return
 
-        terms = [t.strip() for t in term_clean.split(",") if t.strip()]
         # Warm signal -- lets the JS show "Searching…" before the first
         # engine returns. SSE comments are ignored by the client but
         # flush the connection.
@@ -1710,7 +2217,7 @@ def web_anime_torrent_stream(
         emitted = 0
         try:
             for raw in sdk.stream_torrents(
-                terms, profile="interactive", limit=TORRENT_RESULT_LIMIT
+                active_terms, profile="interactive", limit=TORRENT_RESULT_LIMIT
             ):
                 if emitted >= TORRENT_RESULT_LIMIT:
                     break

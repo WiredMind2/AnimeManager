@@ -83,19 +83,31 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Running the desktop client
+### Running the application (default: Next.js web UI)
 
 ```bash
 python run.py
 # equivalent to:
+python run.py web
+```
+
+This starts the FastAPI backend (port **8081**) and the Next.js frontend
+(port **3000**). Open http://127.0.0.1:3000 in your browser.
+
+First-time setup for the frontend:
+
+```bash
+cd next-web
+npm install
+```
+
+### Running the desktop client
+
+```bash
 python run.py gui
 ```
 
-`run.py` is the single root-level startup script (ADR 0006). It parses
-`mode` plus optional `--host`/`--port` and delegates to
-`bootstrap.main`.
-
-### Running the HTTP client (JSON API + web UI)
+### Running the HTTP client only (JSON API + legacy web UI)
 
 ```bash
 python run.py api --host 0.0.0.0 --port 8081
@@ -106,16 +118,13 @@ This launches uvicorn against the canonical ASGI target
 
 * the **JSON API** at `/anime/*`, `/animelist`, `/search`,
   `/download/*`, `/torrents/*`, `/settings`, etc.
-* the **web UI** at `/ui/*` — a server-rendered (Jinja2 + HTMX) admin
-  interface with the same feature surface as the desktop client:
-  browser/search/filter, anime detail with like/tag/seen + search-term
-  manager, torrent search, live downloads view, and a JSON-backed
-  settings editor.
+* the **legacy web UI** at `/ui/*` — a server-rendered (Jinja2 + HTMX)
+  admin interface (superseded by the Next.js app in `next-web/`).
 
-Browsers hitting `/` are redirected to `/ui/library`; API tooling
-still receives the JSON status payload at `/`. See
-[`docs/features/web_ui.rst`](docs/features/web_ui.rst) for the full
-route map and design notes.
+When launched via `python run.py` (web mode), browsers are redirected to
+the Next.js frontend. API tooling still receives the JSON status payload
+at `/`. See [`docs/features/web_ui.rst`](docs/features/web_ui.rst) for the
+legacy route map.
 
 ### Convenience launcher (Windows)
 

@@ -25,7 +25,7 @@
 // app.js had no ``wireLibrarySearchStream`` function, so without a
 // cache bump the page would stick on the server-rendered "Connecting…"
 // badge until the user manually reloaded twice.
-const CACHE_VERSION = "am-pwa-v3-search-focus";
+const CACHE_VERSION = "am-pwa-v7-event-manifest";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -88,7 +88,8 @@ self.addEventListener("fetch", (event) => {
   // caching a stream would deadlock the EventSource consumer.
   const accept = req.headers.get("accept") || "";
   if (accept.includes("text/event-stream")) return;
-  if (url.pathname.endsWith("/stream")) return;
+  // Match normal and legacy malformed stream paths (…/stream?… or …/stream&…).
+  if (url.pathname.includes("/torrents/stream")) return;
 
   // JSON API surface (/anime, /animelist, /search, /download/...) and
   // the OpenAPI docs route are not part of the offline shell — let

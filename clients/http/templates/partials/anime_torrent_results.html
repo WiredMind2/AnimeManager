@@ -2,11 +2,16 @@
   <div class="flash flash--error" role="alert">{{ search_error }}</div>
 {% endif %}
 
-{% if term %}
+{% if terms %}
   <p class="anime-torrent-summary"
      style="color: var(--text-faint); font-size: 12px; margin-bottom: var(--sp-3)">
-    {% if fallback_used %}Using saved search terms / title:{% else %}Search:{% endif %}
-    <strong style="color: var(--text-muted)">{{ term }}</strong>
+    Searching {{ terms|length }} term{{ '' if terms|length == 1 else 's' }}:
+    {% for t in terms[:3] %}
+      <strong style="color: var(--text-muted)">{{ t }}</strong>{% if not loop.last %}, {% endif %}
+    {% endfor %}
+    {% if terms|length > 3 %}
+      <span style="color: var(--text-faint)">… +{{ terms|length - 3 }} more</span>
+    {% endif %}
     ·
     <span data-stream-count>0</span>
     <span data-stream-count-suffix>results</span>
@@ -58,7 +63,7 @@
         </tr>
       </thead>
       <tbody data-stream-rows data-paginate
-             data-stream-url="{{ url_for('web_anime_torrent_stream', anime_id=anime_id) }}?term={{ term|urlencode }}">
+             data-stream-url="{{ stream_url|e }}">
       </tbody>
     </table>
     </div>
@@ -68,8 +73,8 @@
   <p class="anime-torrent-empty"
      data-stream-empty
      style="display:none; color: var(--text-faint); font-size: 13px; margin-top: var(--sp-4)">
-    No releases matched <strong>{{ term }}</strong>. Add a more specific
-    search term above or refine the saved terms.
+    No releases matched the active search terms. Open
+    <strong>Search options</strong> to enable more titles or add custom terms.
   </p>
   <p class="anime-torrent-empty"
      data-stream-filter-empty
@@ -82,13 +87,13 @@
   <noscript>
     <p style="color: var(--text-faint); font-size: 13px; margin-top: var(--sp-4)">
       Live result streaming requires JavaScript.
-      <a href="{{ url_for('web_torrents') }}?term={{ term|urlencode }}&anime_id={{ anime_id }}">
+      <a href="{{ url_for('web_torrents') }}?term={{ terms[0]|urlencode }}&anime_id={{ anime_id }}">
         Open the full torrent search page instead →
       </a>
     </p>
   </noscript>
 {% else %}
   <p style="color: var(--text-faint); font-size: 13px">
-    Enter a search term above to look for releases.
+    No search terms available — open <strong>Search options</strong> to enable titles or add custom terms.
   </p>
 {% endif %}

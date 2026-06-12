@@ -485,6 +485,12 @@ class TestRootProbe:
         assert resp.status_code == 307
         assert resp.headers["location"] == "/ui/library"
 
+    def test_browser_redirect_next_frontend(self, client, monkeypatch):
+        monkeypatch.setenv("WEB_FRONTEND_URL", "http://127.0.0.1:3000")
+        resp = client.get("/", headers={"accept": "text/html"})
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "http://127.0.0.1:3000/library"
+
     def test_unknown_route_returns_404(self, client):
         resp = client.get("/this-endpoint-does-not-exist")
         assert resp.status_code == 404

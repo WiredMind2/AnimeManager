@@ -768,7 +768,7 @@
         if (!shaka.Player.isBrowserSupported()) {
           throw new Error("This browser does not support adaptive streaming.");
         }
-        shakaPlayer = new shaka.Player(video);
+        shakaPlayer = new shaka.Player();
         // Segments produced by seek-on-demand transcoding may take a
         // moment to materialise. Increase Shaka's retry budget so a
         // single transient 404 / slow restart doesn't tear down the
@@ -776,6 +776,11 @@
         try {
           const streamCfg = {
             streaming: {
+              // Avoid pulling segment 0 on mid-file resumes; the server
+              // rejects segments before the session anchor.
+              segmentPrefetchLimit: 2,
+              bufferingGoal: 12,
+              rebufferingGoal: 4,
               retryParameters: {
                 maxAttempts: 6,
                 baseDelay: 800,
@@ -785,6 +790,9 @@
               },
             },
             manifest: {
+              hls: {
+                ignoreManifestProgramDateTime: true,
+              },
               retryParameters: {
                 maxAttempts: 4,
                 baseDelay: 500,
@@ -804,6 +812,25 @@
         } catch (_) {
           /* older Shaka builds may use a different config tree */
         }
+        try {
+          const net = shakaPlayer.getNetworkingEngine();
+          if (net && typeof net.registerResponseFilter === "function") {
+            net.registerResponseFilter((type, response) => {
+              if (!response || response.uri == null) return;
+              const uri = String(response.uri);
+              if (!uri.includes("/ui/stream/")) return;
+              if (response.code >= 400) {
+                playerLog("warn", "stream_http_error", {
+                  uri,
+                  status: response.code,
+                });
+              }
+            });
+          }
+        } catch (_) {
+          /* networking filters optional */
+        }
+        await shakaPlayer.attach(video);
         shakaPlayer.addEventListener("error", (evt) => {
           const detail = evt && evt.detail ? evt.detail : {};
           const plain = shakaErrorToPlain(shaka, detail);
@@ -1101,12 +1128,14 @@
       lastTrigger = trigger || null;
       modal.hidden = false;
       document.body.classList.add("modal-open");
-      const input = modal.querySelector("input[name='term']");
-      if (input) {
+      const focusTarget = modal.querySelector(
+        "input[type='checkbox'], input[name='term'], button",
+      );
+      if (focusTarget) {
         try {
-          input.focus({ preventScroll: true });
+          focusTarget.focus({ preventScroll: true });
         } catch (_) {
-          input.focus();
+          focusTarget.focus();
         }
       }
     }
@@ -1146,6 +1175,35 @@
     });
   }
 
+  function normalizeTorrentStreamUrl(raw) {
+    if (!raw) return raw;
+    let url = String(raw).trim();
+    if (url.includes("/torrents/stream?")) {
+      return url;
+    }
+    if (url.includes("/torrents/stream&")) {
+      return url.replace("/torrents/stream&", "/torrents/stream?");
+    }
+    try {
+      const parsed = new URL(url, window.location.href);
+      const marker = "/torrents/stream";
+      let path = parsed.pathname;
+      if (path.includes("%26") || path.includes("&")) {
+        path = decodeURIComponent(path);
+      }
+      const idx = path.indexOf(marker);
+      if (idx !== -1) {
+        const rest = path.slice(idx + marker.length);
+        if (rest.startsWith("&")) {
+          return path.slice(0, idx + marker.length) + "?" + rest.slice(1);
+        }
+      }
+    } catch (_) {
+      /* ignore malformed URLs */
+    }
+    return url;
+  }
+
   function wireTorrentStreams(root) {
     if (!root || !("EventSource" in window)) return;
     const scope = root.querySelectorAll
@@ -1169,7 +1227,9 @@
         ?.querySelector?.("[data-stream-empty]");
 
       let count = 0;
-      const url = tbody.getAttribute("data-stream-url");
+      const url = normalizeTorrentStreamUrl(
+        tbody.getAttribute("data-stream-url"),
+      );
       let source;
       try {
         source = new EventSource(url);
@@ -1198,6 +1258,11 @@
           row.style.display = "none";
         }
         tbody.appendChild(row);
+        // Rows arrive after the HTMX swap that mounted this tbody, so
+        // HTMX never sees their download forms unless we process them.
+        if (window.htmx && typeof window.htmx.process === "function") {
+          window.htmx.process(row);
+        }
         count += 1;
         if (counter) counter.textContent = String(count);
         setSuffix();

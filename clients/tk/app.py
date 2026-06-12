@@ -115,7 +115,26 @@ class AnimeManagerTkClient:
             return
         self._view.set_status(text)
 
+    def _shutdown_download_port(self) -> None:
+        sdk = getattr(self._presenter, "_sdk", None)
+        if sdk is None:
+            return
+        inner = getattr(sdk, "_facade", sdk)
+        service = getattr(inner, "_service", None)
+        if service is None:
+            return
+        port = getattr(service, "_download_port", None)
+        if port is None:
+            return
+        closer = getattr(port, "close", None)
+        if callable(closer):
+            closer()
+
     def _on_close(self) -> None:
+        try:
+            self._shutdown_download_port()
+        except Exception:
+            pass
         try:
             self._runner.close()
         finally:

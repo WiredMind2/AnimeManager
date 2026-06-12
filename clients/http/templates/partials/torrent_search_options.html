@@ -1,0 +1,74 @@
+<div id="torrent-search-options">
+  <div class="torrent-search-options__section">
+    <h3 class="torrent-search-options__heading">Known titles</h3>
+    <p class="meta torrent-search-options__hint">
+      Each enabled title is searched in parallel. Disabled titles are remembered for this anime.
+    </p>
+    {% if catalog_title_states %}
+      <ul class="title-toggle-list">
+        {% for state in catalog_title_states %}
+          <li class="title-toggle-list__item">
+            <label class="title-toggle">
+              <input type="hidden" name="title" value="{{ state.title }}" />
+              <input class="title-toggle__checkbox"
+                     type="checkbox"
+                     name="enabled"
+                     value="true"
+                     {% if state.enabled %}checked{% endif %}
+                     hx-post="{{ url_for('web_action_toggle_search_title', anime_id=anime_id) }}"
+                     hx-trigger="change"
+                     hx-target="#torrent-search-options"
+                     hx-swap="outerHTML"
+                     hx-include="closest .title-toggle" />
+              <span class="title-toggle__label">{{ state.title }}</span>
+            </label>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="meta" style="margin: 0">
+        No catalog titles available for this anime.
+      </p>
+    {% endif %}
+  </div>
+
+  <div class="torrent-search-options__section">
+    <h3 class="torrent-search-options__heading">Custom search terms</h3>
+    <p class="meta torrent-search-options__hint">
+      Add release-specific queries (e.g. SubsPlease 1080p). These are always included when present.
+    </p>
+    {% if manual_terms %}
+      <div class="term-list">
+        {% for term in manual_terms %}
+          <span class="term">
+            {{ term }}
+            <button class="term__remove"
+                    type="button"
+                    title="Remove"
+                    aria-label="Remove {{ term }}"
+                    hx-delete="{{ url_for('web_action_remove_term', anime_id=anime_id) }}?term={{ term|urlencode }}"
+                    hx-target="#torrent-search-options"
+                    hx-swap="outerHTML">
+              ×
+            </button>
+          </span>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="meta" style="margin: 0 0 var(--sp-3)">
+        No custom terms yet.
+      </p>
+    {% endif %}
+
+    <form class="form-row"
+          hx-post="{{ url_for('web_action_add_term', anime_id=anime_id) }}"
+          hx-target="#torrent-search-options"
+          hx-swap="outerHTML">
+      <input class="input"
+             name="term"
+             placeholder="Add a search term (e.g. SubsPlease 1080p)"
+             autocomplete="off" />
+      <button class="btn btn--primary" type="submit">Add</button>
+    </form>
+  </div>
+</div>

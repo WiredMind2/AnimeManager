@@ -1046,6 +1046,52 @@ textarea {
   object-fit: contain;
 }
 
+/* Keep the seek bar from overlapping fixed-width transport buttons. */
+.watch-view__controller media-control-bar {
+  width: 100%;
+  box-sizing: border-box;
+  --media-control-bar-display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-inline: max(0.5rem, env(safe-area-inset-left, 0px))
+    max(0.5rem, env(safe-area-inset-right, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.watch-view__controller media-time-range {
+  flex: 1 1 0;
+  min-width: 2.5rem;
+}
+
+.watch-view__controller media-volume-range {
+  flex: 0 1 5rem;
+  min-width: 2rem;
+  max-width: 6rem;
+}
+
+.watch-view__controller media-time-display {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.watch-view__controller media-play-button,
+.watch-view__controller media-seek-backward-button,
+.watch-view__controller media-seek-forward-button,
+.watch-view__controller media-mute-button,
+.watch-view__controller media-pip-button,
+.watch-view__controller media-fullscreen-button {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .watch-view__controller media-seek-backward-button,
+  .watch-view__controller media-seek-forward-button,
+  .watch-view__controller media-pip-button,
+  .watch-view__controller media-volume-range {
+    display: none;
+  }
+}
+
 .watch-view__controller
   .shaka-text-container
   span:not(.shaka-text-region):not(.shaka-text-wrapper) {
@@ -2451,6 +2497,67 @@ tr:hover .torrent-name::after,
   color: var(--danger);
 }
 
+.torrent-search-options__section + .torrent-search-options__section {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border);
+}
+
+.torrent-search-options__heading {
+  margin: 0 0 var(--sp-2);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.torrent-search-options__hint {
+  margin: 0 0 var(--sp-3);
+}
+
+.title-toggle-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.title-toggle-list__item {
+  margin: 0;
+}
+
+.title-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.title-toggle:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+
+.title-toggle__checkbox {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.title-toggle__label {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 /* -------------------------------------------------------------------------- *
  * HTMX feedback
  * -------------------------------------------------------------------------- */
@@ -2781,11 +2888,46 @@ tr:hover .torrent-name::after,
   table-layout: fixed;
 }
 
-.table--anime-episodes .col--episode-file { width: 34%; }
-.table--anime-episodes .col--season       { width: 10%; }
-.table--anime-episodes .col--episode      { width: 28%; }
-.table--anime-episodes .col--size         { width: 14%; }
-.table--anime-episodes .col--actions      { width: 14%; }
+.table--anime-episodes .col--episode-file { width: 26%; }
+.table--anime-episodes .col--season       { width: 8%; }
+.table--anime-episodes .col--episode      { width: 8%; }
+.table--anime-episodes .col--size         { width: 10%; }
+.table--anime-episodes .col--progress     { width: 22%; }
+.table--anime-episodes .col--actions      { width: 26%; }
+
+.table--anime-episodes .episode-table__progress {
+  overflow: hidden;
+}
+
+.table--anime-episodes .episode-table__progress .progress {
+  width: 100%;
+}
+
+.table--anime-episodes .episode-table__progress-form {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.table--anime-episodes .episode-table__progress-form .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.table--anime-episodes .episode-table__actions {
+  white-space: nowrap;
+}
+
+.table--anime-episodes .episode-watch-meta {
+  margin-top: var(--sp-1);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.table--anime-episodes .episode-watch-meta--muted {
+  color: var(--text-faint);
+}
 
 .table--anime-downloads .col--release     { width: 56%; }
 .table--anime-downloads .col--size        { width: 12%; }
