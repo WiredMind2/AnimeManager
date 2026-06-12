@@ -157,3 +157,7 @@ coverage.xml
 .github/
 .vscode/
 test-results/
+next-web/.next/
+next-web/node_modules/
+next-web/.env.local
+next-web/tsconfig.tsbuildinfo
