@@ -12,7 +12,13 @@ export type AmPlaybackSubtitlesApi = {
     onError?: (err: unknown) => void,
   ) => { dispose: () => void; canvasParent?: HTMLElement } | null;
   disposeOctopus: (inst: { dispose?: () => void } | null) => void;
-  createShakaTextDisplayFactory: () => (video: HTMLVideoElement, videoContainer: HTMLElement) => unknown;
+  createShakaTextDisplayFactory: () => (player: ShakaPlayerForTextDisplay) => unknown;
+};
+
+/** Minimal Shaka player surface used by the text-display factory (4.10+). */
+export type ShakaPlayerForTextDisplay = {
+  getMediaElement?: () => HTMLVideoElement | null;
+  getVideoContainer?: () => HTMLElement | null;
 };
 
 const LIBASS_BASE = "/vendor/libass-wasm/package/dist/js/";
@@ -89,15 +95,24 @@ type ShakaTextBridge = {
   setAssBridgeActive: (active: boolean) => void;
 };
 
+function resolveVideoContainer(
+  player: ShakaPlayerForTextDisplay,
+  video: HTMLVideoElement | null,
+): HTMLElement | null {
+  const fromPlayer = player.getVideoContainer?.() ?? null;
+  if (fromPlayer) return fromPlayer;
+  return video?.closest?.("[data-player-panel]") ?? null;
+}
+
 function createShakaTextDisplayFactory() {
-  return function amTextDisplayFactory(video: HTMLVideoElement, videoContainer: HTMLElement) {
+  return function amTextDisplayFactory(player: ShakaPlayerForTextDisplay) {
     const shaka = window.shaka;
     if (!shaka?.text?.UITextDisplayer) {
       return null;
     }
-    const inner = new shaka.text.UITextDisplayer(video, videoContainer, {
-      captionsUpdatePeriod: 0.25,
-    });
+    const inner = new shaka.text.UITextDisplayer(player);
+    const video = player.getMediaElement?.() ?? null;
+    const videoContainer = resolveVideoContainer(player, video);
     const bridge: ShakaTextBridge = {
       _assBridgeActive: false,
       _userWantsTextVisible: false,
@@ -133,7 +148,7 @@ function createShakaTextDisplayFactory() {
       },
       setAssBridgeActive(active) {
         bridge._assBridgeActive = !!active;
-        const el = videoContainer.querySelector(".shaka-text-container") as HTMLElement | null;
+        const el = videoContainer?.querySelector(".shaka-text-container") as HTMLElement | null;
         if (el?.style) {
           el.style.display = active ? "none" : "";
         }
@@ -144,8 +159,10 @@ function createShakaTextDisplayFactory() {
         }
       },
     };
-    (video as HTMLVideoElement & { __amShakaTextBridge?: ShakaTextBridge }).__amShakaTextBridge =
-      bridge;
+    if (video) {
+      (video as HTMLVideoElement & { __amShakaTextBridge?: ShakaTextBridge }).__amShakaTextBridge =
+        bridge;
+    }
     return bridge;
   };
 }

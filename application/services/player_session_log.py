@@ -155,7 +155,7 @@ def append_client_batch(
             event=event,
             level=level,  # type: ignore[arg-type]
             ts=ts_str,
-            **extra,
+            **{k: v for k, v in extra.items() if k != "ts"},
         )
         accepted += 1
     return accepted

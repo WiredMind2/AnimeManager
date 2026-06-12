@@ -58,19 +58,31 @@
     }
   }
 
+  function resolveVideoContainer(player, video) {
+    if (player && typeof player.getVideoContainer === "function") {
+      const fromPlayer = player.getVideoContainer();
+      if (fromPlayer) return fromPlayer;
+    }
+    if (video && video.closest) {
+      return video.closest("[data-player-panel]");
+    }
+    return null;
+  }
+
   /**
    * Shaka ``textDisplayFactory``: wraps ``UITextDisplayer`` and hides its DOM
    * while libass renders ASS/SSA on a canvas overlay.
    */
   function createShakaTextDisplayFactory() {
-    return function amTextDisplayFactory(video, videoContainer) {
+    return function amTextDisplayFactory(player) {
       const shaka = global.shaka;
       if (!shaka || !shaka.text || !shaka.text.UITextDisplayer) {
         return null;
       }
-      const inner = new shaka.text.UITextDisplayer(video, videoContainer, {
-        captionsUpdatePeriod: 0.25,
-      });
+      const inner = new shaka.text.UITextDisplayer(player);
+      const video =
+        player && typeof player.getMediaElement === "function" ? player.getMediaElement() : null;
+      const videoContainer = resolveVideoContainer(player, video);
       const bridge = {
         _assBridgeActive: false,
         _userWantsTextVisible: false,
@@ -105,7 +117,7 @@
         },
         setAssBridgeActive(active) {
           bridge._assBridgeActive = !!active;
-          const el = videoContainer.querySelector(".shaka-text-container");
+          const el = videoContainer && videoContainer.querySelector(".shaka-text-container");
           if (el && el.style) {
             el.style.display = active ? "none" : "";
           }
@@ -116,7 +128,9 @@
           }
         },
       };
-      video.__amShakaTextBridge = bridge;
+      if (video) {
+        video.__amShakaTextBridge = bridge;
+      }
       return bridge;
     };
   }

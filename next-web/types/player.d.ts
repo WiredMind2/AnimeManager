@@ -33,6 +33,9 @@ declare global {
         destroy: () => Promise<void>;
         load: (url: string, startTime?: number) => Promise<void>;
         configure: (cfg: unknown) => void;
+        setVideoContainer?: (container: HTMLElement) => void;
+        getMediaElement?: () => HTMLVideoElement | null;
+        getVideoContainer?: () => HTMLElement | null;
         addEventListener: (type: string, cb: (evt: unknown) => void) => void;
         addTextTrackAsync: (
           url: string,
@@ -54,11 +57,7 @@ declare global {
         };
       };
       text?: {
-        UITextDisplayer: new (
-          video: HTMLVideoElement,
-          container: HTMLElement,
-          opts?: { captionsUpdatePeriod?: number },
-        ) => {
+        UITextDisplayer: new (player: unknown) => {
           configure: (config: unknown) => void;
           append: (cues: unknown) => void;
           remove: (start: number, end: number) => unknown;

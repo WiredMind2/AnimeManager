@@ -447,6 +447,10 @@ export function usePlaybackSession(
           throw new Error("This browser does not support adaptive streaming.");
         }
         const player = new shaka.Player();
+        const videoContainer = panelRef.current;
+        if (videoContainer && typeof player.setVideoContainer === "function") {
+          player.setVideoContainer(videoContainer);
+        }
         const streamCfg: Record<string, unknown> = {
           streaming: {
             segmentPrefetchLimit: 2,
@@ -474,7 +478,11 @@ export function usePlaybackSession(
         if (AmPlaybackSubtitles.createShakaTextDisplayFactory) {
           streamCfg.textDisplayFactory = AmPlaybackSubtitles.createShakaTextDisplayFactory() as never;
         }
-        player.configure(streamCfg);
+        try {
+          player.configure(streamCfg);
+        } catch {
+          /* Shaka may reject unknown config keys on older builds */
+        }
         try {
           const net = player.getNetworkingEngine?.();
           if (net && typeof net.registerResponseFilter === "function") {
@@ -580,6 +588,7 @@ export function usePlaybackSession(
       animeId,
       applySubtitleSelection,
       audioTrackId,
+      panelRef,
       postEpisodeProgress,
       readResumeSeconds,
       stopSession,
