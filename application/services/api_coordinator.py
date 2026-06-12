@@ -28,6 +28,8 @@ from typing import Any, Dict, Iterable, List, Optional
 from shared.base_component import BaseComponent
 from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus, ProviderName
 from application.services.ingestion_pipeline import IngestionPipeline, ProviderSpec
+from application.services.catalog_identity import CatalogIdentityService
+from adapters.persistence.catalog_repository import CatalogIndexRepository
 from shared.telemetry import get_telemetry
 from adapters.legacy.legacy_classes import Anime, AnimeList
 
@@ -55,6 +57,7 @@ class APICoordinator(BaseComponent):
             provider_timeout_s=provider_timeout_s,
             executor=self._executor,
         )
+        self._catalog_identity: Optional[CatalogIdentityService] = None
 
     def close(self) -> None:
         """Release the pipeline executor; safe to call more than once."""
@@ -74,6 +77,11 @@ class APICoordinator(BaseComponent):
     def set_database_manager(self, database_manager) -> None:
         """Attach the database manager used for unified persistence."""
         self._database_manager = database_manager
+        self._catalog_identity = None
+
+    def set_catalog_identity(self, service: CatalogIdentityService) -> None:
+        """Attach the catalogue identity service (optional; lazy-inited from DB)."""
+        self._catalog_identity = service
 
     def configure(self, flags: Dict[str, bool]) -> None:
         """Update feature flags. Unknown keys are ignored by the pipeline."""
@@ -314,11 +322,82 @@ class APICoordinator(BaseComponent):
                 return ()
             return provider.searchAnime(terms, limit=limit)
 
-        return ProviderSpec(name=provider_name, search=search, adapter=self._legacy_adapter)
+        def adapter(raw: Any) -> Optional[AnimeRecord]:
+            return self._legacy_adapter(raw, provider_name=provider_name)
+
+        return ProviderSpec(name=provider_name, search=search, adapter=adapter)
+
+    def _ensure_catalog_identity(self) -> Optional[CatalogIdentityService]:
+        if self._catalog_identity is not None:
+            return self._catalog_identity
+        db_manager = self._database_manager
+        if db_manager is None:
+            return None
+        db = db_manager.get_database()
+        if db is None:
+            return None
+        self._catalog_identity = CatalogIdentityService.from_database(
+            db,
+            log_fn=lambda msg: self.log("API_COORDINATOR", msg),
+        )
+        return self._catalog_identity
+
+    def _legacy_adapter(
+        self,
+        raw: Any,
+        *,
+        provider_name: str = "",
+    ) -> Optional[AnimeRecord]:
+        """Project a legacy `Anime`-like object into the canonical record."""
+        record = self._project_legacy_anime(raw, provider_name=provider_name)
+        if record is None:
+            return None
+
+        identity = self._ensure_catalog_identity()
+        db_manager = self._database_manager
+        if identity is None or db_manager is None:
+            return record
+
+        db = db_manager.get_database()
+        if db is None:
+            return record
+
+        external_ids = CatalogIndexRepository(db).get_external_ids(record.id)
+        if not external_ids:
+            return record
+
+        resolved = identity.resolve_external_ids(
+            external_ids,
+            source_provider=record.source_provider.value,
+        )
+        if resolved.catalog_id == record.id and resolved.external_ids == record.external_ids:
+            return record
+
+        return AnimeRecord(
+            id=resolved.catalog_id,
+            title=record.title,
+            title_synonyms=record.title_synonyms,
+            synopsis=record.synopsis,
+            episodes=record.episodes,
+            duration=record.duration,
+            status=record.status,
+            rating=record.rating,
+            date_from=record.date_from,
+            date_to=record.date_to,
+            picture=record.picture,
+            trailer=record.trailer,
+            broadcast=record.broadcast,
+            genres=record.genres,
+            external_ids=dict(resolved.external_ids),
+            source_provider=record.source_provider,
+        )
 
     @staticmethod
-    def _legacy_adapter(raw: Any) -> Optional[AnimeRecord]:
-        """Project a legacy `Anime`-like object into the canonical record."""
+    def _project_legacy_anime(
+        raw: Any,
+        *,
+        provider_name: str = "",
+    ) -> Optional[AnimeRecord]:
         if raw is None:
             return None
         rid = getattr(raw, "id", None)
@@ -329,9 +408,23 @@ class APICoordinator(BaseComponent):
         except (TypeError, ValueError):
             return None
         title = getattr(raw, "title", None) or ""
+        source = _provider_name_from_spec(provider_name)
+        genres = getattr(raw, "genres", None) or ()
+        if isinstance(genres, list):
+            genres = tuple(str(g) for g in genres if g)
+        else:
+            genres = ()
+        synonyms = getattr(raw, "title_synonyms", None) or ()
+        if isinstance(synonyms, list):
+            synonyms = tuple(str(s) for s in synonyms if s)
+        elif synonyms:
+            synonyms = (str(synonyms),)
+        else:
+            synonyms = ()
         return AnimeRecord(
             id=rid,
             title=str(title),
+            title_synonyms=synonyms,
             synopsis=getattr(raw, "synopsis", None),
             episodes=_safe_int(getattr(raw, "episodes", None)),
             duration=_safe_int(getattr(raw, "duration", None)),
@@ -342,7 +435,9 @@ class APICoordinator(BaseComponent):
             picture=_safe_str(getattr(raw, "picture", None)),
             trailer=_safe_str(getattr(raw, "trailer", None)),
             broadcast=_safe_str(getattr(raw, "broadcast", None)),
-            source_provider=ProviderName.UNKNOWN,
+            genres=genres,
+            external_ids={},
+            source_provider=source,
         )
 
     @staticmethod
@@ -388,6 +483,17 @@ class APICoordinator(BaseComponent):
                 return 0
 
         return sink
+
+
+def _provider_name_from_spec(provider_name: str) -> ProviderName:
+    lowered = (provider_name or "").lower()
+    if "jikan" in lowered or "mal" in lowered:
+        return ProviderName.JIKAN
+    if "anilist" in lowered:
+        return ProviderName.ANILIST
+    if "kitsu" in lowered:
+        return ProviderName.KITSU
+    return ProviderName.UNKNOWN
 
 
 def _safe_int(value: Any) -> Optional[int]:

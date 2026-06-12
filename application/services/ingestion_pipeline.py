@@ -219,7 +219,7 @@ class IngestionPipeline:
 
 
 def _deduplicate(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
-    """Dedupe by `AnimeRecord.id`, preserving first-seen order."""
+    """Dedupe by canonical `AnimeRecord.id`, preserving first-seen order."""
     seen: set = set()
     out: List[AnimeRecord] = []
     for record in records:

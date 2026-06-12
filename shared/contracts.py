@@ -97,3 +97,43 @@ class IngestionResult:
 
 VALID_ASSET_SIZES = frozenset({"small", "medium", "large", "original"})
 VALID_RELATION_TYPES = frozenset({"anime", "manga", "novel", "character"})
+
+INDEX_PROVIDER_KEYS = frozenset({"mal_id", "kitsu_id", "anilist_id", "anidb_id"})
+
+
+class RepairStrategy(str, Enum):
+    """How startup/catalog repair groups duplicate rows."""
+
+    PROVIDER_ID = "provider_id"
+    TITLE = "title"
+    ALL = "all"
+
+
+@dataclass(frozen=True)
+class ProviderAnimePayload:
+    """Provider-neutral anime metadata before catalog identity resolution."""
+
+    title: str
+    external_ids: Dict[str, int] = field(default_factory=dict)
+    title_synonyms: Tuple[str, ...] = ()
+    synopsis: Optional[str] = None
+    episodes: Optional[int] = None
+    duration: Optional[int] = None
+    status: Optional[str] = None
+    rating: Optional[str] = None
+    date_from: Optional[int] = None
+    date_to: Optional[int] = None
+    picture: Optional[str] = None
+    trailer: Optional[str] = None
+    broadcast: Optional[str] = None
+    genres: Tuple[str, ...] = ()
+    source_provider: ProviderName = ProviderName.UNKNOWN
+
+
+@dataclass(frozen=True)
+class ResolvedCatalogEntry:
+    """Canonical internal catalogue id for a provider payload."""
+
+    catalog_id: int
+    external_ids: Dict[str, int] = field(default_factory=dict)
+    merged_from: Tuple[int, ...] = ()

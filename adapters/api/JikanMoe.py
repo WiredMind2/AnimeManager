@@ -153,7 +153,8 @@ class JikanMoeWrapper(APIUtils):
         return self._convertCharacter(c.get("data"))
 
     def _convertAnime(self, a):
-        id = self.database.getId("mal_id", int(a["mal_id"]))
+        external_ids = {"mal_id": int(a["mal_id"])}
+        id = self.resolve_catalog_id(external_ids)
         out = Anime()
 
         out["id"] = id
@@ -274,18 +275,15 @@ class JikanMoeWrapper(APIUtils):
                 self.save_relations(id, rels)
 
         if "external" in a.keys():
-            mapped = []
             for external in a["external"]:
                 if external["name"] in self.mapped_external:
                     ext_data = self.mapped_external[external["name"]]
                     match = re.match(ext_data["regex"], external["url"])
                     if match:
                         api_key = ext_data["api_key"]
-                        api_id = match.group(1)
-                        mapped.append((api_key, api_id))
+                        external_ids[api_key] = int(match.group(1))
 
-            self.save_mapped(int(a["mal_id"]), mapped)
-
+        out["id"] = self.resolve_catalog_id(external_ids)
         return out
 
     def _convertCharacter(self, c, role: str | None = None, anime_id=None):

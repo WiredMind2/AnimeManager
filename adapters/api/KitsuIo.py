@@ -222,15 +222,13 @@ class KitsuIoWrapper(APIUtils):
             # Unexpected object shape
             return None
 
+        external_ids = {"kitsu_id": int(a.id)}
         try:
-            with self.database.get_lock():
-                id = self.database.getId("kitsu_id", int(a.id))
+            id = self.resolve_catalog_id(external_ids)
         except Exception:
-            # If id mapping fails return None
             return None
 
         data = Anime()
-        # data['kitsu_id'] = int(a.id)
         data["id"] = id
         try:
             if a.canonicalTitle and a.canonicalTitle[-1] == ".":
@@ -327,22 +325,15 @@ class KitsuIoWrapper(APIUtils):
 
         try:
             if not isinstance(a.relationships.mappings, relationships.LinkRelationship):
-                mapped = []
-
-                for m in a.mappings:  # Iterate over each external anime
+                for m in a.mappings:
                     api_id = m.externalId
                     site = m.externalSite
-
-                    if site in self.mappedSites.keys():  # Only save known websites
-                        api_key = self.mappedSites[site]
-                        mapped.append((api_key, api_id))
-                    else:
-                        pass  # TODO - handle unknown sites?
-
-                self.save_mapped(int(a.id), mapped)
+                    if site in self.mappedSites:
+                        external_ids[self.mappedSites[site]] = int(api_id)
         except Exception:
             pass
 
+        data["id"] = self.resolve_catalog_id(external_ids)
         return data
 
     def _convertCharacter(self, c, anime_id=None):

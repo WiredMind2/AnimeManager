@@ -354,32 +354,32 @@ class TestPipelineSearch:
 
 class TestLegacyAdapter:
     def test_none_returns_none(self, APICoordinator):
-        assert APICoordinator._legacy_adapter(None) is None
+        assert APICoordinator._project_legacy_anime(None) is None
 
     def test_missing_id_returns_none(self, APICoordinator):
         raw = SimpleNamespace(title="x")
-        assert APICoordinator._legacy_adapter(raw) is None
+        assert APICoordinator._project_legacy_anime(raw) is None
 
     def test_non_int_id_returns_none(self, APICoordinator):
         raw = SimpleNamespace(id="not-int", title="x")
-        assert APICoordinator._legacy_adapter(raw) is None
+        assert APICoordinator._project_legacy_anime(raw) is None
 
     def test_int_id_returns_record(self, APICoordinator):
         raw = SimpleNamespace(id=42, title="naruto")
-        rec = APICoordinator._legacy_adapter(raw)
+        rec = APICoordinator._project_legacy_anime(raw)
         assert rec is not None
         assert rec.id == 42
         assert rec.title == "naruto"
 
     def test_str_int_id_coerced(self, APICoordinator):
         raw = SimpleNamespace(id="42", title="naruto")
-        rec = APICoordinator._legacy_adapter(raw)
+        rec = APICoordinator._project_legacy_anime(raw)
         assert rec is not None
         assert rec.id == 42
 
     def test_no_title_uses_empty(self, APICoordinator):
         raw = SimpleNamespace(id=1)
-        rec = APICoordinator._legacy_adapter(raw)
+        rec = APICoordinator._project_legacy_anime(raw)
         assert rec is not None
         assert rec.title == ""
 
@@ -390,7 +390,7 @@ class TestLegacyAdapter:
             picture="", trailer="",
             broadcast="    air    ",
         )
-        rec = APICoordinator._legacy_adapter(raw)
+        rec = APICoordinator._project_legacy_anime(raw)
         assert rec is not None
         # _safe_str returns None for empty after strip.
         assert rec.status is None
@@ -402,7 +402,7 @@ class TestLegacyAdapter:
 
     def test_non_int_episodes_coerced_to_none(self, APICoordinator):
         raw = SimpleNamespace(id=1, title="x", episodes="abc")
-        rec = APICoordinator._legacy_adapter(raw)
+        rec = APICoordinator._project_legacy_anime(raw)
         assert rec is not None
         assert rec.episodes is None
 

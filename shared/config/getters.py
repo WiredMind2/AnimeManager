@@ -232,8 +232,10 @@ class Getters:
             if hasattr(self, "fm") and getattr(self, "fm", None) is not None:
                 fm_settings = getattr(self.fm, "settings", {}) or {}
                 dataPath = fm_settings.get("dataPath")
-                if dataPath and "download_path" not in args:
-                    args["download_path"] = os.path.join(dataPath, "Downloads")
+                if dataPath:
+                    args["dataPath"] = dataPath
+                    if "download_path" not in args:
+                        args["download_path"] = os.path.join(dataPath, "Downloads")
         except Exception:
             pass
 
@@ -243,8 +245,18 @@ class Getters:
                 'All torrent managers should have a "settings" attribute'
             )
 
-        args = self.tm.settings
-        # Save torrent manager settings immediately
+        args = dict(self.tm.settings)
+        # Persist injected dataPath so LibTorrent resume files stay under
+        # the library root across restarts (not only for this process).
+        try:
+            if hasattr(self, "fm") and getattr(self, "fm", None) is not None:
+                fm_settings = getattr(self.fm, "settings", {}) or {}
+                dataPath = fm_settings.get("dataPath")
+                if dataPath:
+                    args["dataPath"] = dataPath
+        except Exception:
+            pass
+        self.tm.settings = args
         settings_to_save = {manager: args, "last_tm_used": manager}
         self.setSettings(settings_to_save)
 

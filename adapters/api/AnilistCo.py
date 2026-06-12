@@ -290,7 +290,11 @@ class AnilistCoWrapper(APIUtils):
     def _convertAnime(self, a):
         if a is None:
             return
-        id = self.database.getId(self.apiKey, a.get("id"))
+        external_ids = {"anilist_id": int(a.get("id"))}
+        mal_id = a.get("mal_id") or a.get("idMal")
+        if mal_id:
+            external_ids["mal_id"] = int(mal_id)
+        id = self.resolve_catalog_id(external_ids)
         out = Anime()
 
         out.id = id
@@ -399,11 +403,6 @@ class AnilistCoWrapper(APIUtils):
 
             if len(rels) > 0:
                 self.save_relations(id, rels)
-
-        # Mapped animes
-        mal_id = a.get("mal_id")
-        if mal_id:
-            self.save_mapped(out.id, [("mal_id", mal_id)])
 
         # Characters
         if a.get("characters"):

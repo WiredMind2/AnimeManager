@@ -244,21 +244,48 @@ class DatabaseManager(BaseComponent):
         )
         return query.to_args()
 
-    def save_torrent(self, anime_id: int, torrent) -> None:
+    def _ensure_torrent_columns(self, db) -> None:
+        """Add ``save_path`` to ``torrents`` when missing (SQLite / MariaDB)."""
+        try:
+            info = db.sql("PRAGMA table_info(torrents)")
+            if info:
+                names = {str(row[1]) for row in info if row and len(row) > 1}
+                if "save_path" in names:
+                    return
+        except Exception:
+            pass
+        try:
+            db.sql("ALTER TABLE torrents ADD COLUMN save_path TEXT", (), save=False)
+            db.save()
+        except Exception:
+            pass
+
+    def save_torrent(
+        self,
+        anime_id: int,
+        torrent,
+        *,
+        save_path: Optional[str] = None,
+    ) -> None:
         """
         Save torrent data to database.
 
         Args:
             anime_id: Anime ID
             torrent: Torrent object
+            save_path: Optional on-disk folder for this torrent
         """
         try:
             with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
                 trackers = torrent.trackers
                 if isinstance(trackers, (list, tuple, set)):
                     trackers = json.dumps(list(trackers))
                 elif trackers is None:
                     trackers = json.dumps([])
+                path_value = save_path
+                if path_value is None:
+                    path_value = getattr(torrent, "path", None)
                 exists = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)",
                     (anime_id, torrent.hash),
@@ -276,14 +303,92 @@ class DatabaseManager(BaseComponent):
                 )
                 if not exists or not exists[0][0]:
                     db.sql(
-                        "INSERT INTO torrents(hash, name, trackers) VALUES(?, ?, ?)",
-                        (torrent.hash, torrent.name, trackers),
+                        "INSERT INTO torrents(hash, name, trackers, save_path) "
+                        "VALUES(?, ?, ?, ?)",
+                        (torrent.hash, torrent.name, trackers, path_value),
+                        save=False,
+                    )
+                elif path_value:
+                    db.sql(
+                        "UPDATE torrents SET save_path=? WHERE hash=?",
+                        (path_value, torrent.hash),
                         save=False,
                     )
                 db.save()
         except Exception as e:
             self.log("DB_ERROR", f"Failed to save torrent: {e}")
             raise
+
+    def update_torrent_save_path(self, hash_value: str, save_path: str) -> None:
+        """Persist the folder where a torrent's payload is stored."""
+        if not hash_value or not save_path:
+            return
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                exists = db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)",
+                    (hash_value,),
+                )
+                if exists and exists[0][0]:
+                    db.sql(
+                        "UPDATE torrents SET save_path=? WHERE hash=?",
+                        (save_path, hash_value),
+                        save=False,
+                    )
+                else:
+                    db.sql(
+                        "INSERT INTO torrents(hash, name, trackers, save_path) "
+                        "VALUES(?, ?, ?, ?)",
+                        (hash_value, None, json.dumps([]), save_path),
+                        save=False,
+                    )
+                db.save()
+        except Exception as e:
+            self.log("DB_ERROR", f"Failed to update torrent save_path: {e}")
+
+    def list_torrents_for_restore(self) -> List[Dict[str, Any]]:
+        """Rows for LibTorrent fallback restore (hash, name, trackers, save_path, anime_id)."""
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                rows = db.sql(
+                    (
+                        "SELECT t.hash, t.name, t.trackers, t.save_path, i.id "
+                        "FROM torrents AS t "
+                        "INNER JOIN torrentsIndex AS i "
+                        "ON LOWER(i.value) = LOWER(t.hash)"
+                    ),
+                )
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to list torrents for restore: {exc}")
+            return []
+        out: List[Dict[str, Any]] = []
+        seen_hashes: set[str] = set()
+        for row in rows or []:
+            if not row or len(row) < 5:
+                continue
+            try:
+                hash_val = str(row[0]).strip()
+                hash_key = hash_val.lower()
+            except (TypeError, ValueError):
+                continue
+            if not hash_val or hash_key in seen_hashes:
+                continue
+            seen_hashes.add(hash_key)
+            save_path = row[3]
+            if not save_path or not str(save_path).strip():
+                continue
+            out.append(
+                {
+                    "hash": hash_val,
+                    "name": row[1],
+                    "trackers": row[2],
+                    "save_path": str(save_path).strip(),
+                    "anime_id": row[4],
+                }
+            )
+        return out
 
     def get_torrent_data(self, hash_value: str) -> Optional[Tuple]:
         """
@@ -492,6 +597,33 @@ class DatabaseManager(BaseComponent):
                     "DB_WARNING",
                     f"Failed saving metadata for {anime_id}: {exc}",
                 )
+
+    def repair_duplicate_anime_entries(
+        self,
+        *,
+        include_title_merge: bool = False,
+    ) -> int:
+        """Merge catalogue rows that share a provider id (optional title heuristic)."""
+        from application.services.catalog_merge import CatalogMergeService
+        from shared.contracts import RepairStrategy
+
+        strategy = (
+            RepairStrategy.ALL
+            if include_title_merge
+            else RepairStrategy.PROVIDER_ID
+        )
+        try:
+            with self.get_connection() as db:
+                merged = CatalogMergeService(
+                    db,
+                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                ).repair_duplicates(strategy=strategy)
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed repairing duplicate anime rows: {exc}")
+            raise
+        if merged:
+            self.log("DB_MANAGER", f"Repaired {merged} duplicate anime row(s)")
+        return merged
 
     def enqueue_anime(self, record: Anime) -> bool:
         """Add a record to the async batched write queue.

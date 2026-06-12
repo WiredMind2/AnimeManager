@@ -360,37 +360,37 @@ class APIUtils:
                         )
                         self.database.execute(sql, v)
 
+    _INDEX_PROVIDER_COLUMNS = frozenset(
+        {"mal_id", "kitsu_id", "anilist_id", "anidb_id"}
+    )
+
+    def _catalog_identity(self):
+        identity = getattr(self, "_catalog_identity_service", None)
+        if identity is None:
+            from application.services.catalog_identity import CatalogIdentityService
+
+            identity = CatalogIdentityService.from_database(
+                self.database,
+                log_fn=lambda msg: self.log("API_UTILS", msg),
+            )
+            self._catalog_identity_service = identity
+        return identity
+
+    def resolve_catalog_id(self, external_ids) -> int:
+        """Allocate or merge to a single canonical internal catalogue id."""
+        return self._catalog_identity().resolve_external_ids(
+            external_ids or {},
+            source_provider=str(getattr(self, "apiKey", "unknown")),
+        ).catalog_id
+
     @cached_request
     def save_mapped(self, id, mapped):
         # mapped must be a list of tuples, each containing two elements: 'api_key' and 'api_id'
         if len(mapped) == 0:
-            return
+            return id
 
-        return  # TODO - Implement this
-        with self.database.get_lock():
-            for m in mapped:  # Iterate over each external anime
-                api_key, api_ip = m
-
-                # Get the id of the external anime
-                sql = f"SELECT id FROM indexList WHERE {api_key}=?"
-
-                associated = self.database.sql(sql, (api_ip,))
-                if len(associated) == 0:
-                    continue
-
-                ass_id = associated[0][0]
-                if ass_id != id:  # Merge both ids
-
-                    # Remove new id and merge with old one
-                    self.database.remove(id=id)
-
-                    # Merge
-                    self.database.sql(
-                        f"UPDATE indexList SET {api_key} = ? WHERE id=?",
-                        (api_ip, ass_id),
-                    )
-
-                    # TODO - Also update animeRelations!
+        link_ids = {api_key: api_id for api_key, api_id in mapped}
+        return self._catalog_identity().link(int(id), link_ids)
 
     @cached_request
     def save_pictures(self, id, pictures):

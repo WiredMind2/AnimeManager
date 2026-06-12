@@ -59,6 +59,7 @@ def test_anilist_convert_methods(monkeypatch):
         "isAdult": False,
         "coverImage": {"medium": "http://img", "large": "http://imgl"},
         "genres": ["Action"],
+        "idMal": 62604,
     }
 
     data = api._convertAnime(a)
