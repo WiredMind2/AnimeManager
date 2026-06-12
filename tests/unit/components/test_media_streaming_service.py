@@ -12,7 +12,7 @@ from application.commands import (
 )
 from application.queries import GetPlaybackSessionQuery
 from application.services.media_streaming_service import MediaStreamingService
-from domain.errors import NotFoundError, UnauthorizedError
+from domain.errors import NotFoundError, UnauthorizedError, ValidationError
 
 
 class _FakeLibrary:
@@ -96,7 +96,9 @@ class _SeekableFakeTranscoder:
         subtitle_track: int | None = None,
         start_segment_index: int = 0,
         segment_seconds: int | None = None,
+        duration_seconds: float | None = None,
     ):
+        _ = duration_seconds
         _ = (session_id, source_path, audio_track, subtitle_track)
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -155,6 +157,37 @@ def _seekable_service(
         segment_seconds=segment_seconds,
     )
     return svc, transcoder
+
+
+class _UnreadableFakeTranscoder(_SeekableFakeTranscoder):
+    """Probe behaviour of an incomplete torrent file: no duration and
+    no tracks at all (ffprobe cannot read the container header)."""
+
+    def __init__(self) -> None:
+        super().__init__(duration=0.0)
+
+    def probe_media_tracks(self, source_path: str):
+        _ = source_path
+        return {"audio": [], "subtitles": []}
+
+
+def test_create_session_rejects_unreadable_incomplete_file(tmp_path: Path):
+    svc = MediaStreamingService(
+        media_library=_FakeLibrary(tmp_path),
+        transcoder=_UnreadableFakeTranscoder(),
+        token_secret="test-secret",
+        default_ttl_seconds=120,
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        svc.create_session(
+            CreatePlaybackSessionCommand(
+                anime_id=1,
+                file_id="ep-1",
+                client_host="127.0.0.1",
+                ttl_seconds=120,
+            )
+        )
+    assert "can't be played yet" in str(excinfo.value)
 
 
 # --- Legacy compatibility (adapter without seek-on-demand support) ---
@@ -227,6 +260,34 @@ def test_media_session_heartbeat_and_stop(tmp_path: Path):
 # --- Seek-on-demand HLS pipeline ---
 
 
+def test_resolve_segment_before_anchor_rejects_without_restart(tmp_path: Path):
+    """Prefetch of segment 0 on a mid-file resume must not restart ffmpeg
+    at the beginning — that leaves the player stuck buffering."""
+    svc, transcoder = _seekable_service(tmp_path, duration=600.0, segment_seconds=4)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=80.0,
+        )
+    )
+    assert transcoder.calls[0]["start_segment_index"] == 19
+    assert session.hls_anchor_segment == 19
+
+    with pytest.raises(NotFoundError, match="anchor"):
+        svc.resolve_media_path(
+            GetPlaybackSessionQuery(
+                session_id=session.session_id,
+                token=session.token,
+                segment_name="segment_00000.ts",
+            )
+        )
+    # No seek-on-demand restart was triggered for the bogus prefetch.
+    assert len(transcoder.calls) == 1
+
+
 def test_create_session_honours_start_time_hint(tmp_path: Path):
     """When the client tells us its saved resume position, we must
     spawn ffmpeg at the matching segment offset rather than wasting
@@ -249,10 +310,9 @@ def test_create_session_honours_start_time_hint(tmp_path: Path):
     assert transcoder.calls[0]["start_segment_index"] == 19
 
 
-def test_create_session_writes_vod_playlist_with_full_duration(tmp_path: Path):
-    """The whole point of the new pipeline: the manifest the client
-    fetches lists every segment with #EXT-X-ENDLIST so Shaka can
-    render the full progress bar."""
+def test_create_session_writes_event_playlist_until_encode_complete(tmp_path: Path):
+    """The manifest lists the full timeline for the seek bar but stays
+    in EVENT mode (no ``#EXT-X-ENDLIST``) until every segment exists."""
     svc, _ = _seekable_service(tmp_path, duration=130.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -270,14 +330,42 @@ def test_create_session_writes_vod_playlist_with_full_duration(tmp_path: Path):
 
     manifest_text = Path(session.manifest_path).read_text(encoding="utf-8")
     assert "#EXTM3U" in manifest_text
-    assert "#EXT-X-PLAYLIST-TYPE:VOD" in manifest_text
-    assert "#EXT-X-ENDLIST" in manifest_text
+    assert "#EXT-X-PLAYLIST-TYPE:EVENT" in manifest_text
+    assert "#EXT-X-ENDLIST" not in manifest_text
     # First and last segments are both listed by filename.
     assert "segment_00000.ts" in manifest_text
     assert "segment_00032.ts" in manifest_text
     # The final segment carries the leftover duration (130 - 32*4 = 2s)
     # rather than padding to a full 4-second segment.
     assert "#EXTINF:2.000," in manifest_text
+
+
+def test_resolve_manifest_finishes_vod_when_all_segments_exist(tmp_path: Path):
+    svc, _ = _seekable_service(tmp_path, duration=12.0, segment_seconds=4)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+        )
+    )
+    out = Path(session.output_dir)
+    for index in range(session.total_segments):
+        (out / f"segment_{index:05d}.ts").write_bytes(b"seg")
+
+    from application.queries import GetPlaybackSessionQuery
+
+    _session, _path = svc.resolve_media_path(
+        GetPlaybackSessionQuery(
+            session_id=session.session_id,
+            token=session.token,
+            segment_name=None,
+        )
+    )
+    manifest_text = Path(session.manifest_path).read_text(encoding="utf-8")
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in manifest_text
+    assert "#EXT-X-ENDLIST" in manifest_text
 
 
 def test_resolve_segment_restarts_transcoder_when_user_seeks_ahead(tmp_path: Path):

@@ -47,6 +47,7 @@ from application.commands import (
     StopPlaybackSessionCommand,
 )
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
+from application.services import player_session_log
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
 from domain.errors import InfrastructureError, NotFoundError, UnauthorizedError, ValidationError
 from ports.interfaces import MediaLibraryPort, MediaTranscoderPort
@@ -124,6 +125,7 @@ class MediaStreamingService:
             if not file_id or not path:
                 continue
             tracks = self._transcoder.probe_media_tracks(path)
+            duration = self._safe_probe_duration(path)
             out.append(
                 EpisodeFileDTO(
                     file_id=file_id,
@@ -134,6 +136,7 @@ class MediaStreamingService:
                     episode=_safe_int(row.get("episode")),
                     audio_tracks=list(tracks.get("audio", []) or []),
                     subtitle_tracks=list(tracks.get("subtitles", []) or []),
+                    duration_seconds=duration if duration > 0 else None,
                 )
             )
         return out
@@ -165,6 +168,18 @@ class MediaStreamingService:
         # back to the legacy "ffmpeg owns the playlist" flow so the
         # session still works (just without scrubbing).
         duration = self._safe_probe_duration(selected.path)
+        # Torrent downloads are preallocated at full size, so a half-
+        # finished episode looks like a normal file on disk but starts
+        # with zeroed bytes. ffprobe can't read such a container at all:
+        # no duration *and* no tracks. Fail fast with an actionable
+        # message instead of spawning an ffmpeg that dies instantly and
+        # surfaces as an opaque transcoder error.
+        if duration <= 0 and not selected.audio_tracks and not selected.subtitle_tracks:
+            raise ValidationError(
+                "This episode can't be played yet — the file looks incomplete "
+                "(its download may still be in progress). Wait for the torrent "
+                "to finish and try again."
+            )
         seg_secs = self._segment_seconds
         total_segments = 0
         if duration > 0:
@@ -185,36 +200,37 @@ class MediaStreamingService:
             segment_seconds=seg_secs,
         )
 
-        try:
-            artifacts = self._transcoder.ensure_hls_session(
-                session_id=session_id,
-                source_path=selected.path,
-                output_dir=str(output_dir),
-                audio_track=command.audio_track,
-                subtitle_track=command.subtitle_track,
-                start_segment_index=start_segment,
-                segment_seconds=seg_secs,
-            )
-        except TypeError:
-            # Older transcoder implementations may not accept the new
-            # keyword arguments. Fall back to the legacy call shape so
-            # third-party adapters keep working.
-            artifacts = self._transcoder.ensure_hls_session(
-                session_id=session_id,
-                source_path=selected.path,
-                output_dir=str(output_dir),
-                audio_track=command.audio_track,
-                subtitle_track=command.subtitle_track,
-            )
-        artifact_manifest = str(artifacts.get("manifest_path") or manifest_path)
+        # Start the HLS encoder immediately so the browser's first segment
+        # fetch does not sit idle while we synchronously extract subtitles.
+        # Subtitle extraction still runs before the session is returned, but
+        # it no longer blocks ffmpeg from spawning.
+        artifacts = self._invoke_ensure_hls_session(
+            session_id=session_id,
+            source_path=selected.path,
+            output_dir=str(output_dir),
+            audio_track=command.audio_track,
+            subtitle_track=command.subtitle_track,
+            start_segment_index=start_segment,
+            segment_seconds=seg_secs,
+            duration_seconds=duration if duration > 0 else None,
+        )
         subtitle_tracks = self._materialize_soft_subtitles(
             source_path=selected.path,
             output_dir=str(output_dir),
         )
         if duration > 0:
-            # With a pre-written VOD playlist the adapter doesn't need
-            # to materialise a manifest itself. The canonical file we
-            # serve is the one we wrote.
+            first_segment = Path(output_dir) / f"segment_{start_segment:05d}.ts"
+            if not self._wait_for_file(first_segment, 25.0):
+                _LOG.warning(
+                    "media_first_segment_slow session=%s seg=%s",
+                    session_id,
+                    start_segment,
+                )
+        artifact_manifest = str(artifacts.get("manifest_path") or manifest_path)
+        if duration > 0:
+            # With a pre-written growing playlist the adapter doesn't
+            # need to materialise a manifest itself. The canonical file
+            # we serve is the one we wrote (refreshed on each manifest GET).
             manifest_path_to_use = manifest_path
         else:
             manifest_path_to_use = artifact_manifest
@@ -243,19 +259,42 @@ class MediaStreamingService:
             duration_seconds=duration,
             segment_seconds=seg_secs if duration > 0 else 0,
             total_segments=total_segments,
+            hls_anchor_segment=start_segment,
+            transcode_start_segment=start_segment,
         )
         with self._lock:
             self._sessions[session_id] = dto
             self._restart_locks[session_id] = threading.Lock()
+        startup_ms = int((time.time() - started_at) * 1000)
         _LOG.info(
             "media_session_started anime_id=%s session=%s startup_ms=%s file=%s duration=%.1f",
             command.anime_id,
             session_id,
-            int((time.time() - started_at) * 1000),
+            startup_ms,
             selected.title,
             duration,
         )
+        player_session_log.append(
+            str(output_dir),
+            source="server",
+            event="session_started",
+            session_id=session_id,
+            anime_id=command.anime_id,
+            file_id=selected.file_id,
+            file_title=selected.title,
+            startup_ms=startup_ms,
+            duration_seconds=duration,
+            total_segments=total_segments,
+            hls_anchor_segment=start_segment,
+            transcode_start_segment=start_segment,
+            subtitle_track_count=len(subtitle_tracks),
+            client_host=command.client_host or "",
+        )
         return dto
+
+    def get_session(self, session_id: str) -> PlaybackSessionDTO | None:
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def heartbeat(self, command: HeartbeatPlaybackSessionCommand) -> PlaybackSessionDTO:
         with self._lock:
@@ -295,6 +334,8 @@ class MediaStreamingService:
             self._ensure_segment_available(session, segment_name, target)
             target_path = str(target)
         else:
+            if session.total_segments > 0:
+                self._refresh_manifest_playlist(session)
             target_path = session.manifest_path
 
         if not os.path.isfile(target_path):
@@ -339,6 +380,14 @@ class MediaStreamingService:
         if segment_name in _RESERVED_INTERNAL_NAMES:
             raise NotFoundError("Internal stream artifact is not exposed.")
         if target.is_file():
+            player_session_log.append(
+                session.output_dir,
+                source="server",
+                event="segment_cache_hit",
+                level="debug",
+                session_id=session.session_id,
+                segment=segment_name,
+            )
             return
 
         match = _SEGMENT_NAME_RE.match(segment_name)
@@ -358,6 +407,28 @@ class MediaStreamingService:
         if segment_index >= session.total_segments:
             raise NotFoundError("Requested segment is past the end of the stream.")
 
+        # Shaka (and other players) often prefetch segment 0 even when
+        # playback starts mid-file. Those segments are intentionally
+        # absent — restarting ffmpeg at index 0 would purge the anchor
+        # encode and leave the playhead waiting forever.
+        if segment_index < session.hls_anchor_segment:
+            if target.is_file():
+                return
+            player_session_log.append(
+                session.output_dir,
+                source="server",
+                event="segment_before_anchor",
+                level="warn",
+                session_id=session.session_id,
+                segment=segment_name,
+                segment_index=segment_index,
+                hls_anchor_segment=session.hls_anchor_segment,
+            )
+            raise NotFoundError("Requested segment is before the stream anchor.")
+
+        if not self._transcode_process_running(session.session_id):
+            self._restart_transcode_at(session, segment_index)
+
         # Step 1: short wait — but only if we're "close" to the
         # encoder head. When the user obviously seeked forward (the
         # requested segment is well past the latest one on disk) we
@@ -365,8 +436,35 @@ class MediaStreamingService:
         # stall on every scrub.
         latest_existing = self._latest_existing_segment(session.output_dir)
         far_ahead = segment_index > latest_existing + _FAR_AHEAD_SEGMENT_THRESHOLD
-        if not far_ahead and self._wait_for_file(target, _FORWARD_WAIT_SECONDS):
-            return
+        if not far_ahead:
+            wait_started = time.monotonic()
+            if self._wait_for_file(target, _FORWARD_WAIT_SECONDS):
+                player_session_log.append(
+                    session.output_dir,
+                    source="server",
+                    event="segment_wait",
+                    session_id=session.session_id,
+                    segment=segment_name,
+                    segment_index=segment_index,
+                    wait_ms=int((time.monotonic() - wait_started) * 1000),
+                    wait_type="forward",
+                    result="ok",
+                    latest_existing=latest_existing,
+                )
+                return
+            player_session_log.append(
+                session.output_dir,
+                source="server",
+                event="segment_wait",
+                level="debug",
+                session_id=session.session_id,
+                segment=segment_name,
+                segment_index=segment_index,
+                wait_ms=int((time.monotonic() - wait_started) * 1000),
+                wait_type="forward",
+                result="timeout",
+                latest_existing=latest_existing,
+            )
 
         # Step 2: still missing. Ask the transcoder to restart at the
         # requested segment. The per-session lock collapses concurrent
@@ -375,39 +473,26 @@ class MediaStreamingService:
         with lock:
             if target.is_file():
                 return
-            _LOG.info(
-                "media_segment_restart session=%s seg=%s latest_existing=%s",
-                session.session_id,
-                segment_index,
-                latest_existing,
-            )
-            try:
-                self._transcoder.ensure_hls_session(
-                    session_id=session.session_id,
-                    source_path=session.source_path,
-                    output_dir=session.output_dir,
-                    audio_track=session.audio_track,
-                    subtitle_track=session.subtitle_track,
-                    start_segment_index=segment_index,
-                    segment_seconds=session.segment_seconds,
-                )
-            except TypeError:
-                # Legacy transcoders without seek support can't satisfy
-                # this — fall through to the wait below; if the
-                # sequential encode happens to reach the segment, great.
-                pass
-            except Exception as exc:  # noqa: BLE001
-                _LOG.warning(
-                    "media_segment_restart_failed session=%s seg=%s err=%s",
-                    session.session_id,
-                    segment_index,
-                    exc,
-                )
+            self._restart_transcode_at(session, segment_index, latest_existing=latest_existing)
 
         # Step 3: wait for the segment to materialise. ffmpeg writes
         # segments with the ``temp_file`` flag (rename-on-complete), so
         # ``is_file`` is a safe completion check.
+        long_wait_started = time.monotonic()
         if self._wait_for_file(target, _SEGMENT_AVAILABILITY_TIMEOUT_SECONDS):
+            player_session_log.append(
+                session.output_dir,
+                source="server",
+                event="segment_wait",
+                session_id=session.session_id,
+                segment=segment_name,
+                segment_index=segment_index,
+                wait_ms=int((time.monotonic() - long_wait_started) * 1000),
+                wait_type="post_restart",
+                result="ok",
+                latest_existing=self._latest_existing_segment(session.output_dir),
+                far_ahead=far_ahead,
+            )
             return
 
         # The segment never showed up. Log enough context that we can
@@ -422,13 +507,140 @@ class MediaStreamingService:
                 log_hint = tail.strip()
         except OSError:
             log_hint = ""
+        latest_after = self._latest_existing_segment(session.output_dir)
         _LOG.warning(
             "media_segment_unavailable session=%s seg=%s latest_existing=%s log_tail=%r",
             session.session_id,
             segment_index,
-            self._latest_existing_segment(session.output_dir),
+            latest_after,
             log_hint,
         )
+        player_session_log.append(
+            session.output_dir,
+            source="server",
+            event="segment_timeout",
+            level="error",
+            session_id=session.session_id,
+            segment=segment_name,
+            segment_index=segment_index,
+            wait_ms=int((time.monotonic() - long_wait_started) * 1000),
+            latest_existing=latest_after,
+            far_ahead=far_ahead,
+            ffmpeg_log_tail=log_hint,
+        )
+
+    def _invoke_ensure_hls_session(
+        self,
+        *,
+        session_id: str,
+        source_path: str,
+        output_dir: str,
+        audio_track: int | None,
+        subtitle_track: int | None,
+        start_segment_index: int,
+        segment_seconds: int,
+        duration_seconds: float | None,
+    ) -> dict[str, object]:
+        """Call the transcoder, peeling optional kwargs for legacy adapters."""
+        attempts: list[dict[str, object]] = [
+            {
+                "session_id": session_id,
+                "source_path": source_path,
+                "output_dir": output_dir,
+                "audio_track": audio_track,
+                "subtitle_track": subtitle_track,
+                "start_segment_index": start_segment_index,
+                "segment_seconds": segment_seconds,
+                "duration_seconds": duration_seconds,
+            },
+            {
+                "session_id": session_id,
+                "source_path": source_path,
+                "output_dir": output_dir,
+                "audio_track": audio_track,
+                "subtitle_track": subtitle_track,
+                "start_segment_index": start_segment_index,
+                "segment_seconds": segment_seconds,
+            },
+            {
+                "session_id": session_id,
+                "source_path": source_path,
+                "output_dir": output_dir,
+                "audio_track": audio_track,
+                "subtitle_track": subtitle_track,
+            },
+        ]
+        last_error: TypeError | None = None
+        for kwargs in attempts:
+            if "duration_seconds" in kwargs and kwargs["duration_seconds"] is None:
+                kwargs = dict(kwargs)
+                kwargs.pop("duration_seconds", None)
+            try:
+                return dict(
+                    self._transcoder.ensure_hls_session(**kwargs)  # type: ignore[arg-type]
+                )
+            except TypeError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise InfrastructureError("Transcoder did not accept any session invocation shape.")
+
+    def _transcode_process_running(self, session_id: str) -> bool:
+        probe = getattr(self._transcoder, "is_hls_session_running", None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe(session_id))
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _restart_transcode_at(
+        self,
+        session: PlaybackSessionDTO,
+        segment_index: int,
+        *,
+        latest_existing: int | None = None,
+    ) -> None:
+        if latest_existing is None:
+            latest_existing = self._latest_existing_segment(session.output_dir)
+        _LOG.info(
+            "media_segment_restart session=%s seg=%s latest_existing=%s",
+            session.session_id,
+            segment_index,
+            latest_existing,
+        )
+        player_session_log.append(
+            session.output_dir,
+            source="server",
+            event="segment_restart",
+            session_id=session.session_id,
+            segment_index=segment_index,
+            latest_existing=latest_existing,
+        )
+        duration = session.duration_seconds if session.duration_seconds > 0 else None
+        try:
+            self._invoke_ensure_hls_session(
+                session_id=session.session_id,
+                source_path=session.source_path,
+                output_dir=session.output_dir,
+                audio_track=session.audio_track,
+                subtitle_track=session.subtitle_track,
+                start_segment_index=segment_index,
+                segment_seconds=session.segment_seconds,
+                duration_seconds=duration,
+            )
+            with self._lock:
+                live = self._sessions.get(session.session_id)
+                if live is not None:
+                    live.transcode_start_segment = segment_index
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning(
+                "media_segment_restart_failed session=%s seg=%s err=%s",
+                session.session_id,
+                segment_index,
+                exc,
+            )
 
     def _restart_lock_for(self, session_id: str) -> threading.Lock:
         with self._lock:
@@ -548,6 +760,51 @@ class MediaStreamingService:
             out.append(entry)
         return out
 
+    def _refresh_manifest_playlist(self, session: PlaybackSessionDTO) -> None:
+        """Rewrite ``index.m3u8`` for the current encode progress.
+
+        The file lists the full timeline so the seek bar matches the
+        source duration, but we omit ``#EXT-X-ENDLIST`` until every
+        segment exists. Shaka then treats the stream as in-progress
+        (EVENT) and does not try to fetch the entire tail of the
+        playlist on startup — that was leaving the player stuck on
+        "Buffering…" while only a handful of ``.ts`` files existed.
+        """
+        text = self._render_client_playlist(session)
+        tmp_path = session.manifest_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp_path, session.manifest_path)
+
+    @staticmethod
+    def _render_client_playlist(session: PlaybackSessionDTO) -> str:
+        total = max(1, session.total_segments)
+        seg_secs = max(1, session.segment_seconds)
+        duration = max(0.0, session.duration_seconds)
+        last_seg_seconds = duration - (total - 1) * seg_secs
+        if last_seg_seconds <= 0 or last_seg_seconds > seg_secs:
+            last_seg_seconds = float(seg_secs)
+
+        latest = MediaStreamingService._latest_existing_segment(session.output_dir)
+        complete = latest >= total - 1 and (
+            Path(session.output_dir) / f"segment_{total - 1:05d}.ts"
+        ).is_file()
+
+        lines: list[str] = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            f"#EXT-X-TARGETDURATION:{seg_secs}",
+            "#EXT-X-MEDIA-SEQUENCE:0",
+            "#EXT-X-PLAYLIST-TYPE:VOD" if complete else "#EXT-X-PLAYLIST-TYPE:EVENT",
+        ]
+        for index in range(total):
+            seg_dur = last_seg_seconds if index == total - 1 else float(seg_secs)
+            lines.append(f"#EXTINF:{seg_dur:.3f},")
+            lines.append(f"segment_{index:05d}.ts")
+        if complete:
+            lines.append("#EXT-X-ENDLIST")
+        return "\n".join(lines) + "\n"
+
     @staticmethod
     def _write_vod_playlist(
         *,
@@ -556,34 +813,25 @@ class MediaStreamingService:
         segment_seconds: int,
     ) -> None:
         total = max(1, math.ceil(duration / segment_seconds))
-        target_duration = max(1, segment_seconds)
-        # The final segment carries the remainder so the total length
-        # matches the source rather than rounding up to the next
-        # multiple of segment_seconds.
-        last_seg_seconds = duration - (total - 1) * segment_seconds
-        if last_seg_seconds <= 0 or last_seg_seconds > segment_seconds:
-            last_seg_seconds = float(segment_seconds)
-
-        lines: list[str] = [
-            "#EXTM3U",
-            "#EXT-X-VERSION:6",
-            f"#EXT-X-TARGETDURATION:{target_duration}",
-            "#EXT-X-PLAYLIST-TYPE:VOD",
-            "#EXT-X-MEDIA-SEQUENCE:0",
-            "#EXT-X-INDEPENDENT-SEGMENTS",
-        ]
-        for index in range(total):
-            seg_dur = (
-                last_seg_seconds if index == total - 1 else float(segment_seconds)
-            )
-            lines.append(f"#EXTINF:{seg_dur:.3f},")
-            lines.append(f"segment_{index:05d}.ts")
-        lines.append("#EXT-X-ENDLIST")
-        # Atomic-ish write so that a partially-written manifest is
-        # never observed by the player.
+        session = PlaybackSessionDTO(
+            session_id="",
+            anime_id=0,
+            file_id="",
+            file_title="",
+            manifest_path=manifest_path,
+            output_dir=str(Path(manifest_path).parent),
+            token="",
+            expires_at=0.0,
+            created_at=0.0,
+            last_seen_at=0.0,
+            duration_seconds=duration,
+            segment_seconds=segment_seconds,
+            total_segments=total,
+        )
+        text = MediaStreamingService._render_client_playlist(session)
         tmp_path = manifest_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("\n".join(lines) + "\n")
+            fh.write(text)
         os.replace(tmp_path, manifest_path)
 
     def _teardown_session(self, session: PlaybackSessionDTO) -> None:

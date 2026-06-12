@@ -7,9 +7,12 @@ handler below; they do not get their own ``__main__.py``.
 
 Modes
 -----
+``web``
+    Launch the FastAPI backend plus the Next.js frontend
+    (``next-web/``). Default.
 ``gui``
     Launch the embedded Tk client adapter
-    (``clients.tk.run``). Default.
+    (``clients.tk.run``).
 ``api``
     Launch the FastAPI / Uvicorn HTTP client adapter
     (``clients.http.app:app``). The HTTP runtime is a peer client of
@@ -21,7 +24,12 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import shutil
+import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from typing import Callable, Dict, Optional
 
 _LOG = logging.getLogger("animemanager.bootstrap")
@@ -108,9 +116,169 @@ def _run_api(host: str = "0.0.0.0", port: int = 8081) -> int:
     return 0
 
 
+def _repo_root() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _loopback_host(host: str) -> str:
+    if host in ("0.0.0.0", "::", "[::]"):
+        return "127.0.0.1"
+    return host
+
+
+def _service_origin(host: str, port: int) -> str:
+    return f"http://{_loopback_host(host)}:{port}"
+
+
+def _web_prerequisite_error(next_web_dir: str) -> Optional[int]:
+    """Return an exit code when web mode cannot start, else ``None``."""
+    try:
+        import uvicorn  # type: ignore  # noqa: F401
+    except ImportError as exc:
+        _LOG.error("uvicorn is required for the 'web' mode: %s", exc)
+        print(
+            "ERROR: 'web' mode requires uvicorn. Install with: pip install uvicorn fastapi",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from clients.http.app import app  # noqa: F401
+    except ImportError as exc:
+        _LOG.error("HTTP client adapter unavailable: %s", exc)
+        return 2
+
+    if shutil.which("npm") is None:
+        print(
+            "ERROR: 'web' mode requires Node.js/npm on PATH. "
+            "Install Node.js from https://nodejs.org/ and retry.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not os.path.isfile(os.path.join(next_web_dir, "package.json")):
+        print(
+            f"ERROR: Next.js frontend not found at {next_web_dir!r}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not os.path.isdir(os.path.join(next_web_dir, "node_modules")):
+        print(
+            "ERROR: next-web dependencies are not installed.\n"
+            "Run: cd next-web && npm install",
+            file=sys.stderr,
+        )
+        return 2
+
+    return None
+
+
+def _wait_for_http(url: str, timeout: float = 60.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if response.status < 500:
+                    return True
+        except (urllib.error.URLError, TimeoutError, OSError):
+            time.sleep(0.25)
+    return False
+
+
+def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def _run_web(
+    host: str = "0.0.0.0",
+    port: int = 8081,
+    next_port: int = 3000,
+) -> int:
+    """Launch FastAPI and the Next.js dev server together."""
+    repo = _repo_root()
+    next_web_dir = os.path.join(repo, "next-web")
+
+    prereq_error = _web_prerequisite_error(next_web_dir)
+    if prereq_error is not None:
+        return prereq_error
+
+    backend_origin = _service_origin(host, port)
+    frontend_origin = _service_origin("127.0.0.1", next_port)
+
+    _kickoff_startup_jobs()
+
+    api_env = os.environ.copy()
+    api_env["WEB_FRONTEND_URL"] = frontend_origin
+
+    next_env = os.environ.copy()
+    next_env["BACKEND_URL"] = backend_origin
+    next_env["NEXT_PUBLIC_APP_URL"] = frontend_origin
+    next_env["PORT"] = str(next_port)
+
+    print(f"Starting FastAPI backend at {backend_origin} ...")
+    api_proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "clients.http.app:app",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--timeout-graceful-shutdown",
+            "8",
+        ],
+        cwd=repo,
+        env=api_env,
+    )
+
+    if not _wait_for_http(f"{backend_origin}/"):
+        print(
+            "ERROR: FastAPI backend failed to become ready in time.",
+            file=sys.stderr,
+        )
+        _terminate_process(api_proc)
+        return 2
+
+    print(f"Starting Next.js frontend at {frontend_origin} ...")
+    npm_cmd = shutil.which("npm")
+    if npm_cmd is None:
+        _terminate_process(api_proc)
+        return 2
+
+    next_proc = subprocess.Popen(
+        [npm_cmd, "run", "dev", "--", "--port", str(next_port)],
+        cwd=next_web_dir,
+        env=next_env,
+    )
+
+    exit_code = 0
+    try:
+        next_exit = next_proc.wait()
+        if next_exit != 0:
+            exit_code = next_exit
+    except KeyboardInterrupt:
+        exit_code = 0
+    finally:
+        _terminate_process(next_proc)
+        _terminate_process(api_proc)
+
+    return exit_code
+
+
 # Mode dispatch table. New modes register here -- no additional
 # entrypoints required.
 _MODES: Dict[str, Callable[..., int]] = {
+    "web": _run_web,
     "gui": _run_gui,
     "api": _run_api,
 }
@@ -121,7 +289,7 @@ def list_modes() -> Dict[str, Callable[..., int]]:
     return dict(_MODES)
 
 
-def main(mode: str = "gui", **kwargs) -> int:
+def main(mode: str = "web", **kwargs) -> int:
     """Dispatch to the requested runtime mode.
 
     Parameters

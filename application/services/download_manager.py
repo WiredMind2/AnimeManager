@@ -292,6 +292,16 @@ class DownloadManager(BaseComponent):
         if tm is None:
             return empty
 
+        ensure = getattr(tm, "ensure_restored", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception as exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"LibTorrent restore wait failed: {exc}",
+                )
+
         try:
             rows = tm.list() or []
         except Exception as exc:
@@ -628,7 +638,8 @@ class DownloadManager(BaseComponent):
                 if isinstance(size_hint, (int, float)) and size_hint > 0:
                     task.size = int(size_hint)
 
-            self._save_torrent(task.anime_id, torrent)
+            folder_path = self._get_anime_folder(task.anime_id)
+            self._save_torrent(task.anime_id, torrent, save_path=folder_path)
 
             if task.user_id:
                 self._set_user_tag(task.anime_id, task.user_id)
@@ -715,13 +726,19 @@ class DownloadManager(BaseComponent):
 
         return None
 
-    def _save_torrent(self, anime_id: int, torrent: Torrent) -> None:
+    def _save_torrent(
+        self,
+        anime_id: int,
+        torrent: Torrent,
+        *,
+        save_path: Optional[str] = None,
+    ) -> None:
         """Persist torrent metadata through the injected DatabaseManager."""
         db_manager = self._database_manager
         if db_manager is None:
             return
         try:
-            db_manager.save_torrent(anime_id, torrent)
+            db_manager.save_torrent(anime_id, torrent, save_path=save_path)
         except Exception as exc:
             self.log("DOWNLOAD_MANAGER", f"Error saving torrent: {exc}")
 
@@ -887,11 +904,26 @@ class DownloadManager(BaseComponent):
             if hasattr(torrents, "__iter__"):
                 torrent_hashes = []
                 for t in torrents:
-                    if hasattr(t, "hash"):
-                        torrent_hashes.append(t.hash)
+                    h = None
+                    if isinstance(t, dict):
+                        h = t.get("hash")
+                    elif hasattr(t, "hash"):
+                        h = getattr(t, "hash", None)
+                    if h:
+                        torrent_hashes.append(h)
 
                 if torrent_hashes and self._torrent_manager:
                     self._torrent_manager.move(path=folder_path, hashes=torrent_hashes)
+                db_manager = self._database_manager
+                if db_manager is not None:
+                    for h in torrent_hashes:
+                        try:
+                            db_manager.update_torrent_save_path(str(h), folder_path)
+                        except Exception as exc:
+                            self.log(
+                                "DOWNLOAD_MANAGER",
+                                f"Could not persist save_path for {h}: {exc}",
+                            )
         except Exception as e:
             self.log("DOWNLOAD_MANAGER", f"Error moving torrents: {e}")
 

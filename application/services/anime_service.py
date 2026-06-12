@@ -243,6 +243,30 @@ class AnimeApplicationService:
             raise ValidationError("Search term cannot be empty.")
         return self._anime_repository.remove_search_term(anime_id, clean)
 
+    def get_disabled_search_titles(self, anime_id: int) -> list[str]:
+        getter = getattr(self._anime_repository, "get_disabled_search_titles", None)
+        if not callable(getter):
+            return []
+        return list(getter(anime_id) or [])
+
+    def disable_search_title(self, anime_id: int, title: str) -> bool:
+        clean = title.strip()
+        if not clean:
+            raise ValidationError("Title cannot be empty.")
+        disable = getattr(self._anime_repository, "disable_search_title", None)
+        if not callable(disable):
+            return False
+        return bool(disable(anime_id, clean))
+
+    def enable_search_title(self, anime_id: int, title: str) -> bool:
+        clean = title.strip()
+        if not clean:
+            raise ValidationError("Title cannot be empty.")
+        enable = getattr(self._anime_repository, "enable_search_title", None)
+        if not callable(enable):
+            return False
+        return bool(enable(anime_id, clean))
+
     def get_settings(self) -> dict:
         return self._anime_repository.get_settings()
 
@@ -332,6 +356,7 @@ class AnimeApplicationService:
                     subtitle_tracks=list(row.subtitle_tracks or []),
                     watch_status=st,
                     position_seconds=pos,
+                    duration_seconds=row.duration_seconds,
                 )
             )
         self._sync_watching_tag_from_library(anime_id, user_id)
@@ -383,6 +408,10 @@ class AnimeApplicationService:
                 start_time_seconds=start_time_seconds,
             )
         )
+
+    def get_playback_session(self, session_id: str) -> PlaybackSessionDTO | None:
+        media = self._require_media_streaming()
+        return media.get_session(session_id)
 
     def heartbeat_playback_session(self, session_id: str) -> PlaybackSessionDTO:
         media = self._require_media_streaming()

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -93,6 +94,7 @@ class FFmpegTranscoderAdapter:
         subtitle_track: int | None = None,
         start_segment_index: int = 0,
         segment_seconds: int | None = None,
+        duration_seconds: float | None = None,
     ) -> dict[str, str]:
         ffmpeg_cmd = shutil.which(self._ffmpeg_bin) or self._ffmpeg_bin
         seg_secs = (
@@ -102,6 +104,15 @@ class FFmpegTranscoderAdapter:
         )
         seg_secs = max(2, seg_secs)
         start_index = max(0, int(start_segment_index))
+        probed_duration = 0.0
+        if duration_seconds is not None:
+            try:
+                probed_duration = max(0.0, float(duration_seconds))
+            except (TypeError, ValueError):
+                probed_duration = 0.0
+        if probed_duration > 0:
+            max_start = max(0, math.ceil(probed_duration / seg_secs) - 1)
+            start_index = min(start_index, max_start)
         manifest_path = str(Path(output_dir) / "index.m3u8")
         ffmpeg_playlist = str(Path(output_dir) / self._FFMPEG_PLAYLIST_NAME)
         # When the application layer has pre-written ``index.m3u8`` we
@@ -155,10 +166,11 @@ class FFmpegTranscoderAdapter:
                     purge_segments = True
                 self._terminate(existing.process)
                 self._active.pop(session_id, None)
-            if len(self._active) >= self._max_active_sessions:
-                raise InfrastructureError(
-                    "Media server is busy: too many active transcoding sessions."
-                )
+            while len(self._active) >= self._max_active_sessions:
+                if not self._evict_oldest_locked(excluding=session_id):
+                    raise InfrastructureError(
+                        "Media server is busy: too many active transcoding sessions."
+                    )
 
             os.makedirs(output_dir, exist_ok=True)
             if purge_segments:
@@ -183,6 +195,7 @@ class FFmpegTranscoderAdapter:
                 subtitle_track=subtitle_track,
                 start_segment_index=start_index,
                 segment_seconds=seg_secs,
+                duration_seconds=probed_duration,
             )
             _LOG.info(
                 "ffmpeg_spawn source=%s start_seg=%s audio=%s subtitle=%s cmd=%s",
@@ -192,6 +205,7 @@ class FFmpegTranscoderAdapter:
                 subtitle_track,
                 " ".join(command),
             )
+            self._write_spawn_record(log_path, command)
             process = self._spawn_ffmpeg(command, log_path)
             self._active[session_id] = _ActiveTranscode(
                 session_id=session_id,
@@ -243,6 +257,12 @@ class FFmpegTranscoderAdapter:
             return
         self._terminate(active.process)
         _LOG.info("transcode_stopped session=%s", session_id)
+
+    def is_hls_session_running(self, session_id: str) -> bool:
+        with self._lock:
+            self._reap_finished_locked()
+            active = self._active.get(session_id)
+            return active is not None and active.process.poll() is None
 
     def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
         ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
@@ -346,7 +366,54 @@ class FFmpegTranscoderAdapter:
     def _reap_finished_locked(self) -> None:
         for session_id, active in list(self._active.items()):
             if active.process.poll() is not None:
+                code = active.process.returncode
+                _LOG.warning(
+                    "transcode_exited session=%s code=%s start_seg=%s source=%s",
+                    session_id,
+                    code,
+                    active.start_segment_index,
+                    active.source_path,
+                )
+                self._log_exit_footer(active.output_dir, code)
                 self._active.pop(session_id, None)
+
+    def _evict_oldest_locked(self, *, excluding: str) -> bool:
+        """Stop the least-recently-started session to make room for a new encode.
+
+        Called with ``self._lock`` held. Returns ``False`` when every active
+        session is ``excluding`` (should not happen in practice).
+        """
+        candidates = [
+            (sid, active)
+            for sid, active in self._active.items()
+            if sid != excluding
+        ]
+        if not candidates:
+            return False
+        victim_id, victim = min(candidates, key=lambda item: item[1].started_at)
+        _LOG.warning(
+            "transcode_evicted victim=%s for incoming=%s active=%s",
+            victim_id,
+            excluding,
+            len(self._active),
+        )
+        self._terminate(victim.process)
+        self._active.pop(victim_id, None)
+        return True
+
+    @staticmethod
+    def _log_exit_footer(output_dir: str, exit_code: int | None) -> None:
+        log_path = Path(output_dir) / FFmpegTranscoderAdapter._FFMPEG_LOG_NAME
+        try:
+            with open(log_path, "ab") as fh:
+                fh.write(
+                    f"\n[AnimeManager] ffmpeg exited with code {exit_code}\n".encode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
+        except OSError:
+            pass
 
     def _build_command(
         self,
@@ -359,6 +426,7 @@ class FFmpegTranscoderAdapter:
         subtitle_track: int | None,
         start_segment_index: int,
         segment_seconds: int,
+        duration_seconds: float = 0.0,
     ) -> list[str]:
         segment_pattern = str(Path(output_dir) / "segment_%05d.ts")
         # Input-seek to N*seg_secs so that ffmpeg's first emitted segment
@@ -367,7 +435,19 @@ class FFmpegTranscoderAdapter:
         # the player can splice from any previous segment to the new
         # ones without an ``#EXT-X-DISCONTINUITY`` marker.
         seek_seconds = start_segment_index * segment_seconds
-        command: list[str] = [ffmpeg_cmd, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if duration_seconds > 0:
+            # Avoid landing past EOF when ffprobe over-estimates duration.
+            seek_seconds = min(seek_seconds, max(0.0, duration_seconds - segment_seconds))
+        command: list[str] = [
+            ffmpeg_cmd,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-fflags",
+            "+genpts",
+        ]
         if seek_seconds > 0:
             # When the user has selected a burnt-in subtitle track we
             # can't input-seek straight to the target — the
@@ -378,7 +458,12 @@ class FFmpegTranscoderAdapter:
             # and let the output-side seek discard the warmup frames so
             # the playlist position stays exact.
             command.extend(["-ss", f"{seek_seconds}", "-copyts"])
-        command.extend(["-i", source_path])
+        command.extend(["-i", source_path, "-avoid_negative_ts", "make_zero"])
+        keyframe_expr = (
+            f"expr:gte(t,{seek_seconds}+n_forced*{segment_seconds})"
+            if seek_seconds > 0
+            else f"expr:gte(t,n_forced*{segment_seconds})"
+        )
         command.extend(["-map", "0:v:0"])
         if audio_track is None:
             command.extend(["-map", "0:a:0?"])
@@ -406,11 +491,17 @@ class FFmpegTranscoderAdapter:
                 "-crf",
                 "23",
                 "-force_key_frames",
-                f"expr:gte(t,n_forced*{segment_seconds})",
+                keyframe_expr,
                 "-c:a",
                 "aac",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
                 "-b:a",
                 "160k",
+                "-max_muxing_queue_size",
+                "1024",
                 "-f",
                 "hls",
                 "-hls_time",
@@ -555,6 +646,20 @@ class FFmpegTranscoderAdapter:
                     row["ass_filename"] = ass_name
             out.append(row)
         return out
+
+    @staticmethod
+    def _write_spawn_record(log_path: str, command: list[str]) -> None:
+        try:
+            with open(log_path, "ab") as fh:
+                stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                fh.write(
+                    f"\n[AnimeManager] ffmpeg spawn {stamp}\n{' '.join(command)}\n".encode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
+        except OSError:
+            pass
 
     def _spawn_ffmpeg(
         self,

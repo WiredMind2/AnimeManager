@@ -254,6 +254,72 @@ class LegacyAnimeRepositoryAdapter:
                 f"Failed to remove search term: {exc}"
             ) from exc
 
+    def _ensure_disabled_search_titles_table(self) -> None:
+        ddl = (
+            "CREATE TABLE IF NOT EXISTS disabled_search_titles ("
+            "anime_id INTEGER NOT NULL, "
+            "value TEXT NOT NULL, "
+            "PRIMARY KEY (anime_id, value))"
+        )
+        try:
+            with self._runtime.database.get_lock():
+                self._runtime.database.sql(ddl, (), save=True)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to ensure disabled_search_titles schema: {exc}"
+            ) from exc
+
+    def get_disabled_search_titles(self, anime_id: int) -> list[str]:
+        self._ensure_disabled_search_titles_table()
+        try:
+            rows = self._runtime.database.sql(
+                "SELECT value FROM disabled_search_titles WHERE anime_id=?",
+                (anime_id,),
+            )
+        except Exception:
+            return []
+        return [str(row[0]).strip() for row in rows if row and row[0]]
+
+    def disable_search_title(self, anime_id: int, title: str) -> bool:
+        self._ensure_disabled_search_titles_table()
+        try:
+            with self._runtime.database.get_lock():
+                exists = self._runtime.database.sql(
+                    "SELECT EXISTS("
+                    "SELECT 1 FROM disabled_search_titles "
+                    "WHERE anime_id=? AND value=?)",
+                    (anime_id, title),
+                )
+                if bool(exists[0][0]):
+                    return False
+                self._runtime.database.sql(
+                    "INSERT INTO disabled_search_titles(anime_id, value) "
+                    "VALUES (?, ?)",
+                    (anime_id, title),
+                    save=True,
+                )
+                return True
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to disable search title: {exc}"
+            ) from exc
+
+    def enable_search_title(self, anime_id: int, title: str) -> bool:
+        self._ensure_disabled_search_titles_table()
+        try:
+            with self._runtime.database.get_lock():
+                self._runtime.database.sql(
+                    "DELETE FROM disabled_search_titles "
+                    "WHERE anime_id=? AND value=?",
+                    (anime_id, title),
+                    save=True,
+                )
+                return True
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to enable search title: {exc}"
+            ) from exc
+
     def get_settings(self) -> dict:
         settings = getattr(self._runtime, "settings", None)
         if isinstance(settings, dict):
@@ -448,6 +514,45 @@ class LegacyDownloadAdapter:
             self._download_manager.set_database_manager(
                 repository._db_manager
             )
+        self._wire_libtorrent_restore(repository)
+
+    def _wire_libtorrent_restore(
+        self, repository: "LegacyAnimeRepositoryAdapter | None"
+    ) -> None:
+        tm = self._runtime.tm
+        if tm is None or getattr(tm, "name", None) != "LibTorrent":
+            return
+        setter = getattr(tm, "set_restore_callback", None)
+        if not callable(setter):
+            return
+        db_manager = (
+            repository._db_manager if repository is not None else None
+        )
+
+        def _rows() -> list[dict]:
+            if db_manager is None:
+                return []
+            lister = getattr(db_manager, "list_torrents_for_restore", None)
+            if not callable(lister):
+                return []
+            return lister()
+
+        setter(_rows)
+
+    def close(self) -> None:
+        """Release download workers and flush embedded LibTorrent state."""
+        try:
+            self._download_manager.close()
+        except Exception:
+            pass
+        tm = self._runtime.tm
+        if tm is not None:
+            closer = getattr(tm, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
 
     def _promote_watching_on_download_start(self, anime_id: int, user_id: int) -> None:
         """When a download is queued with a user, treat the title as actively watched."""

@@ -1,8 +1,9 @@
+import glob
 import os
 import tempfile
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:
     # Provide symbols for type checkers/static analysis when libtorrent is present
@@ -31,7 +32,14 @@ except ImportError:  # pragma: no cover - packaged install fallback
     )
     from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
 
-import json
+_RESUME_DIR_NAME = ".libtorrent_resume"
+_RESUME_SUFFIX = ".resume"
+# Fastresume produced by write_resume_data_buf is typically multi-kB; older
+# builds mistakenly stored a tiny bencoded dict (~50 bytes) which cannot reload.
+_MIN_RESUME_FILE_BYTES = 200
+_PERIODIC_SAVE_INTERVAL_S = 300.0
+_SHUTDOWN_SAVE_TIMEOUT_S = 5.0
+_SESSION_READY_TIMEOUT_S = 30.0
 
 
 class LibTorrent(BaseTorrentManager):
@@ -43,33 +51,74 @@ class LibTorrent(BaseTorrentManager):
                 "LibTorrent is not available. Please install a compatible python-libtorrent build for your Python version and platform."
             )
         self.session = None
-        self.handles = {}  # Maps hash to torrent_handle
+        self.handles: Dict[str, Any] = {}
         self._running = False
         self._thread = None
-        # Provide a sensible default download_path before calling BaseTorrentManager.__init__
-        # BaseTorrentManager.__init__ may call login_dialog() when update=True, and
-        # login_dialog expects `self.download_path` to exist.
+        self._session_ready = threading.Event()
+        self._shutting_down = False
+        self._pending_resume_saves = 0
+        self._resume_lock = threading.Lock()
+        self._last_periodic_save = 0.0
+        self._last_handle_save: Dict[str, float] = {}
+        self._restore_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None
+        self._restored = False
         try:
             self.download_path = os.path.join(
                 tempfile.gettempdir(), "libtorrent_downloads"
             )
         except Exception:
-            # Fallback to empty string if tempfile or os behave unexpectedly
             self.download_path = ""
         super().__init__(*args, **kwargs)
+
+    def set_restore_callback(
+        self, callback: Optional[Callable[[], List[Dict[str, Any]]]]
+    ) -> None:
+        """Optional DB rows for magnet+save_path fallback after fast-resume load."""
+        self._restore_callback = callback
+
+    def ensure_restored(self) -> None:
+        """Block until the background connect thread finished session restore."""
+        if not self._session_ready.wait(timeout=_SESSION_READY_TIMEOUT_S):
+            raise TorrentException("LibTorrent session restore timed out")
+
+    @staticmethod
+    def _normalise_hash(info_hash: Any) -> str:
+        if isinstance(info_hash, (bytes, bytearray)):
+            return bytes(info_hash).hex()
+        return str(info_hash).strip().lower()
+
+    def _resolve_data_path(self) -> str:
+        if isinstance(self.settings, dict):
+            dp = self.settings.get("dataPath")
+            if dp:
+                return str(dp).strip()
+        if self.download_path:
+            base = os.path.dirname(os.path.normpath(self.download_path))
+            if base and os.path.basename(self.download_path).lower() == "downloads":
+                return base
+            return self.download_path
+        return tempfile.gettempdir()
+
+    def _resume_dir(self) -> str:
+        path = os.path.join(self._resolve_data_path(), _RESUME_DIR_NAME)
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError:
+            pass
+        return path
+
+    def _resume_file_path(self, info_hash: str) -> str:
+        return os.path.join(
+            self._resume_dir(), f"{self._normalise_hash(info_hash)}{_RESUME_SUFFIX}"
+        )
 
     def initialize(self):
         if lt is None:
             raise ImportError(
                 "libtorrent library is not available. Please install python-libtorrent."
             )
-        # Prefer explicit manager setting first, then a dataPath provided by the app
-        # `Getters.getTorrentManager()` should inject the appropriate value into
-        # self.settings (either 'download_path' or 'dataPath'). If neither is
-        # present, fall back to a temp dir.
         default_download = os.path.join(tempfile.gettempdir(), "libtorrent_downloads")
 
-        # Accept both 'download_path' (explicit) or 'dataPath' (app file manager root)
         download = (
             self.settings.get("download_path")
             if isinstance(self.settings, dict)
@@ -82,7 +131,6 @@ class LibTorrent(BaseTorrentManager):
         if download:
             self.download_path = download
         elif data_path:
-            # Use Downloads subfolder inside the application's dataPath
             try:
                 self.download_path = os.path.join(data_path, "Downloads")
             except Exception:
@@ -90,76 +138,276 @@ class LibTorrent(BaseTorrentManager):
         else:
             self.download_path = default_download
 
+        # Keep dataPath on the manager settings so resume files always
+        # land under the library root even after settings are persisted.
+        if isinstance(self.settings, dict) and data_path:
+            self.settings["dataPath"] = data_path
+
         self.listen_port = (
             self.settings.get("listen_port", 6881)
             if isinstance(self.settings, dict)
             else 6881
         )
 
-        # Ensure download directory exists
         try:
             os.makedirs(self.download_path, exist_ok=True)
         except Exception:
-            # If we couldn't create the dir, fall back to temp
             self.download_path = default_download
 
         if not self.download_path:
             return self.login_dialog()
 
+        self._session_ready.clear()
         self.connect()
 
     def connect(self, thread=True):
         if thread is True:
-            # Use a different thread to avoid blocking
             threading.Thread(target=self.connect, args=(False,), daemon=True).start()
             return
 
         try:
-            # Create libtorrent session
             self.session = lt.session()
-
-            # Configure session settings
             settings = {
                 "listen_interfaces": f"0.0.0.0:{self.listen_port}",
                 "enable_dht": True,
-                "enable_lsd": True,  # Local Service Discovery
+                "enable_lsd": True,
                 "enable_upnp": True,
                 "enable_natpmp": True,
             }
-
             self.session.apply_settings(settings)
-
-            # Start DHT
+            try:
+                self.session.apply_settings(
+                    {
+                        "alert_mask": lt.alert.category_t.all_categories,
+                    }
+                )
+            except Exception:
+                pass
             self.session.add_dht_router("router.bittorrent.com", 6881)
             self.session.add_dht_router("router.utorrent.com", 6881)
             self.session.add_dht_router("dht.transmissionbt.com", 6881)
 
             self._running = True
+            self._restore_from_resume_files()
+            self._restore_from_database_fallback()
+            self._restored = True
+
             self._thread = threading.Thread(target=self._session_thread, daemon=True)
             self._thread.start()
-
+            self._session_ready.set()
         except Exception as e:
+            self._session_ready.set()
             print(f"Couldn't connect to LibTorrent: {str(e)}")  # TODO - use logger
             raise TorrentException(f"Failed to initialize LibTorrent session: {str(e)}")
 
+    def _restore_from_resume_files(self) -> None:
+        if self.session is None or lt is None:
+            return
+        resume_dir = self._resume_dir()
+        for path in sorted(glob.glob(os.path.join(resume_dir, f"*{_RESUME_SUFFIX}"))):
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                if not data or len(data) < _MIN_RESUME_FILE_BYTES:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    continue
+                params = lt.read_resume_data(data)
+                handle = self.session.add_torrent(params)
+                info_hash = self._normalise_hash(handle.info_hash())
+                if info_hash in self.handles:
+                    continue
+                self.handles[info_hash] = handle
+            except Exception as exc:
+                print(f"Failed to restore torrent from {path}: {exc}")  # TODO - logger
+
+    def _restore_from_database_fallback(self) -> None:
+        callback = self._restore_callback
+        if callback is None or self.session is None:
+            return
+        try:
+            rows = callback() or []
+        except Exception as exc:
+            print(f"Torrent DB restore callback failed: {exc}")  # TODO - logger
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw_hash = row.get("hash")
+            if not raw_hash:
+                continue
+            info_hash = self._normalise_hash(raw_hash)
+            if info_hash in self.handles:
+                continue
+            save_path = row.get("save_path")
+            if not save_path or not os.path.isdir(str(save_path)):
+                continue
+            magnet = self._magnet_from_restore_row(row)
+            if not magnet:
+                continue
+            try:
+                params = {"url": magnet, "save_path": str(save_path)}
+                handle = self.session.add_torrent(params)
+                self.handles[info_hash] = handle
+            except Exception as exc:
+                print(
+                    f"Failed DB fallback restore for {info_hash}: {exc}"
+                )  # TODO - logger
+
+    @staticmethod
+    def _magnet_from_restore_row(row: Dict[str, Any]) -> Optional[str]:
+        try:
+            from adapters.legacy.legacy_classes import Torrent
+        except ImportError:
+            from AnimeManager.adapters.legacy.legacy_classes import Torrent  # type: ignore
+
+        raw_hash = row.get("hash")
+        if not raw_hash:
+            return None
+        name = row.get("name")
+        trackers = row.get("trackers")
+        if isinstance(trackers, str):
+            import json as _json
+
+            try:
+                trackers = _json.loads(trackers)
+            except Exception:
+                trackers = []
+        if not isinstance(trackers, (list, tuple)):
+            trackers = []
+        try:
+            torrent = Torrent(hash=str(raw_hash), name=name, trackers=list(trackers))
+            return torrent.to_magnet()
+        except Exception:
+            return f"magnet:?xt=urn:btih:{raw_hash}"
+
+    def _process_alert(self, alert: Any) -> None:
+        if lt is None:
+            return
+        save_alert = getattr(lt, "save_resume_data_alert", None)
+        failed_alert = getattr(lt, "save_resume_data_failed_alert", None)
+        state_alert = getattr(lt, "state_update_alert", None)
+
+        if save_alert is not None and isinstance(alert, save_alert):
+            self._write_resume_alert(alert)
+            return
+        if failed_alert is not None and isinstance(alert, failed_alert):
+            msg = getattr(alert, "message", None) or getattr(alert, "error", "")
+            print(f"Resume save failed: {msg}")  # TODO - logger
+            with self._resume_lock:
+                if self._pending_resume_saves > 0:
+                    self._pending_resume_saves -= 1
+            return
+        if isinstance(alert, lt.torrent_added_alert):
+            h = alert.handle
+            info_hash = self._normalise_hash(h.info_hash())
+            self.handles[info_hash] = h
+            return
+        if isinstance(alert, lt.torrent_removed_alert):
+            info_hash = self._normalise_hash(alert.info_hash)
+            self.handles.pop(info_hash, None)
+            return
+        if isinstance(alert, lt.torrent_error_alert):
+            print(f"Torrent error: {alert.message}")  # TODO - use logger
+            return
+        if state_alert is not None and isinstance(alert, state_alert):
+            try:
+                status = alert.status
+                state = getattr(status, "state", None)
+                finished = getattr(lt.torrent_status, "finished", None)
+                seeding = getattr(lt.torrent_status, "seeding", None)
+                if state in (finished, seeding):
+                    handle = alert.handle
+                    if handle.is_valid():
+                        handle.save_resume_data()
+            except Exception:
+                pass
+
+    def _serialize_resume_alert(self, alert: Any) -> Optional[bytes]:
+        """Encode a save_resume_data_alert to on-disk fastresume bytes."""
+        if lt is None:
+            return None
+        params = getattr(alert, "params", None)
+        if params is not None:
+            try:
+                writer = getattr(lt, "write_resume_data_buf", None)
+                if callable(writer):
+                    return bytes(writer(params))
+            except Exception:
+                pass
+            try:
+                writer = getattr(lt, "write_resume_data", None)
+                if callable(writer):
+                    entry = writer(params)
+                    return bytes(lt.bencode(entry))
+            except Exception:
+                pass
+        legacy = getattr(alert, "resume_data", None)
+        if isinstance(legacy, (bytes, bytearray)):
+            return bytes(legacy)
+        if isinstance(legacy, dict):
+            try:
+                return bytes(lt.bencode(legacy))
+            except Exception:
+                return None
+        return None
+
+    def _write_resume_alert(self, alert: Any) -> None:
+        resume_bytes = self._serialize_resume_alert(alert)
+        if not resume_bytes:
+            with self._resume_lock:
+                if self._pending_resume_saves > 0:
+                    self._pending_resume_saves -= 1
+            return
+        try:
+            handle = alert.handle
+            info_hash = self._normalise_hash(handle.info_hash())
+        except Exception:
+            info_hash = ""
+        if info_hash:
+            path = self._resume_file_path(info_hash)
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                tmp = f"{path}.tmp"
+                with open(tmp, "wb") as fh:
+                    fh.write(resume_bytes)
+                os.replace(tmp, path)
+            except Exception as exc:
+                print(f"Failed to write resume file {path}: {exc}")  # TODO - logger
+        with self._resume_lock:
+            if self._pending_resume_saves > 0:
+                self._pending_resume_saves -= 1
+
+    def _maybe_periodic_save(self) -> None:
+        now = time.time()
+        if now - self._last_periodic_save < _PERIODIC_SAVE_INTERVAL_S:
+            return
+        self._last_periodic_save = now
+        for info_hash, handle in list(self.handles.items()):
+            if not handle.is_valid():
+                continue
+            last = self._last_handle_save.get(info_hash, 0.0)
+            if now - last < _PERIODIC_SAVE_INTERVAL_S:
+                continue
+            try:
+                handle.save_resume_data()
+                self._last_handle_save[info_hash] = now
+                with self._resume_lock:
+                    self._pending_resume_saves += 1
+            except Exception:
+                pass
+
     def _session_thread(self):
-        """Background thread to handle session alerts and updates"""
+        """Background thread to handle session alerts and updates."""
         while self._running and self.session:
             try:
                 alerts = self.session.pop_alerts()
                 for alert in alerts:
-                    if isinstance(alert, lt.torrent_added_alert):
-                        h = alert.handle
-                        info_hash = str(h.info_hash())
-                        self.handles[info_hash] = h
-                    elif isinstance(alert, lt.torrent_removed_alert):
-                        info_hash = str(alert.info_hash)
-                        if info_hash in self.handles:
-                            del self.handles[info_hash]
-                    elif isinstance(alert, lt.torrent_error_alert):
-                        print(f"Torrent error: {alert.message}")  # TODO - use logger
-
-                time.sleep(0.1)  # Small delay to prevent busy waiting
+                    self._process_alert(alert)
+                self._maybe_periodic_save()
+                time.sleep(0.1)
             except Exception as e:
                 print(f"Error in session thread: {str(e)}")  # TODO - use logger
                 break
@@ -182,7 +430,6 @@ class LibTorrent(BaseTorrentManager):
         data = dialog.results
 
         if data is None:
-            # Dialog was cancelled or closed; raise to indicate configuration aborted
             raise TorrentException("LibTorrent configuration cancelled by user")
 
         settings = {}
@@ -205,35 +452,21 @@ class LibTorrent(BaseTorrentManager):
     @staticmethod
     def wait_connection(func):
         def wrapper(self, *args, **kwargs):
+            if not self._session_ready.wait(timeout=_SESSION_READY_TIMEOUT_S):
+                raise TorrentException("LibTorrent session not ready")
             if self.session is None or not self._running:
                 raise TorrentException("LibTorrent session not available")
-
             return BaseTorrentManager.error_wrapper(func)(self, *args, **kwargs)
 
         return wrapper
 
     @wait_connection
     def add(self, hashes, path=None, **kwargs):
-        """Add torrents from magnet links or torrent files.
-
-        Backwards-compatible: accepts a single string or iterable of magnets/files.
-        Also accepts an optional ``path`` argument (positional or kw) to override
-        the manager's configured download path.
-
-        Returns a list of plain dicts (one per torrent) so callers (and the
-        application-level ``DownloadManager``) can iterate the results and
-        keep the task visible in the UI. Previously this method returned
-        ``None`` on success, which the DownloadManager interpreted as a
-        failure and immediately evicted the task from the active-downloads
-        panel even though the torrent was downloading in the background.
-        """
-        # Accept both a single string or an iterable of strings
         if isinstance(hashes, str):
             items = [hashes]
         else:
             items = list(hashes or [])
 
-        # Determine save path: explicit argument > manager setting > default
         save_path = (
             path or self.settings.get("download_path", None)
             if isinstance(self.settings, dict)
@@ -242,14 +475,10 @@ class LibTorrent(BaseTorrentManager):
         if not save_path:
             save_path = self.download_path
 
-        # Make sure the destination exists; libtorrent will fail silently
-        # otherwise and the user sees an empty folder.
         if save_path:
             try:
                 os.makedirs(save_path, exist_ok=True)
             except OSError:
-                # If we can't create the chosen folder, fall back to the
-                # default download_path which we know is writable.
                 save_path = self.download_path
                 try:
                     os.makedirs(save_path, exist_ok=True)
@@ -274,13 +503,7 @@ class LibTorrent(BaseTorrentManager):
                         f"Torrent file not found or invalid magnet: {item}"
                     )
 
-                # ``add_torrent`` returns the handle synchronously even
-                # though metadata download is asynchronous. The info_hash
-                # is available immediately for magnets, so we register
-                # the handle here instead of waiting for the alert loop
-                # (which would race with anyone calling .list() in the
-                # next millisecond).
-                info_hash = str(handle.info_hash())
+                info_hash = self._normalise_hash(handle.info_hash())
                 self.handles[info_hash] = handle
 
                 name: Optional[str] = None
@@ -293,10 +516,17 @@ class LibTorrent(BaseTorrentManager):
                     from urllib.parse import parse_qs
 
                     try:
-                        qs = parse_qs(item[len("magnet:?"):])
+                        qs = parse_qs(item[len("magnet:?") :])
                         name = (qs.get("dn") or [None])[0]
                     except Exception:
                         name = None
+
+                try:
+                    handle.save_resume_data()
+                    with self._resume_lock:
+                        self._pending_resume_saves += 1
+                except Exception:
+                    pass
 
                 added.append(
                     {
@@ -314,26 +544,25 @@ class LibTorrent(BaseTorrentManager):
 
     @wait_connection
     def list(self, filter=None, hashes=None):
-        """List torrents with optional filtering"""
         torrents = []
+        hash_filter = None
+        if hashes is not None and len(hashes) > 0:
+            hash_filter = {self._normalise_hash(h) for h in hashes if h}
 
         for info_hash, handle in self.handles.items():
-            if hashes is not None and len(hashes) > 0 and info_hash not in hashes:
+            if hash_filter is not None and info_hash not in hash_filter:
                 continue
 
             try:
                 status = handle.status()
-
-                # Apply filter
                 if filter == TorrentListFilter.COMPLETED and not status.is_seeding:
                     continue
                 elif filter == TorrentListFilter.DOWNLOADING and status.is_seeding:
                     continue
-                # TorrentListFilter.ALL includes everything
 
                 torrent_data = self._convert_handle_to_torrent_data(handle, status)
-                torrents.append(torrent_data)
-
+                if torrent_data:
+                    torrents.append(torrent_data)
             except Exception as e:
                 print(
                     f"Error getting status for torrent {info_hash}: {str(e)}"
@@ -344,12 +573,6 @@ class LibTorrent(BaseTorrentManager):
 
     @wait_connection
     def move(self, hashes=None, paths=None, *, path=None, **kwargs):
-        """Move torrents to a new location.
-
-        Accepts both the legacy ``paths`` positional argument and the
-        ``path`` keyword used by :class:`DownloadManager`. ``hashes`` may
-        be a single string or an iterable.
-        """
         if isinstance(hashes, str):
             hashes = [hashes]
         if not hashes:
@@ -367,41 +590,49 @@ class LibTorrent(BaseTorrentManager):
                 pass
 
         for hash_str in hashes:
-            if hash_str in self.handles:
+            key = self._normalise_hash(hash_str)
+            if key in self.handles:
                 try:
-                    handle = self.handles[hash_str]
+                    handle = self.handles[key]
                     handle.move_storage(dest)
+                    try:
+                        handle.save_resume_data()
+                        with self._resume_lock:
+                            self._pending_resume_saves += 1
+                    except Exception:
+                        pass
                 except Exception as e:
-                    raise TorrentException(
-                        f"Failed to move torrent {hash_str}: {str(e)}"
-                    )
+                    raise TorrentException(f"Failed to move torrent {hash_str}: {str(e)}")
 
     @wait_connection
     def delete(self, hashes):
-        """Delete torrents and their files"""
         if isinstance(hashes, str):
             hashes = [hashes]
 
         for hash_str in hashes:
-            if hash_str in self.handles:
+            key = self._normalise_hash(hash_str)
+            if key in self.handles:
                 try:
-                    handle = self.handles[hash_str]
+                    handle = self.handles[key]
                     if self.session is None or lt is None:
                         raise TorrentException(
                             "LibTorrent session or library not available"
                         )
                     self.session.remove_torrent(handle, lt.options_t.delete_files)
+                    self.handles.pop(key, None)
                 except Exception as e:
-                    raise TorrentException(
-                        f"Failed to delete torrent {hash_str}: {str(e)}"
-                    )
+                    raise TorrentException(f"Failed to delete torrent {hash_str}: {str(e)}")
+            resume_path = self._resume_file_path(key)
+            try:
+                if os.path.isfile(resume_path):
+                    os.remove(resume_path)
+            except OSError:
+                pass
 
     def _convert_handle_to_torrent_data(self, handle, status):
-        """Convert libtorrent handle and status to the application's torrent data format"""
         try:
-            info_hash = str(handle.info_hash())
+            info_hash = self._normalise_hash(handle.info_hash())
 
-            # Get torrent info if available
             if handle.has_metadata():
                 torrent_info = handle.get_torrent_info()
                 name = torrent_info.name()
@@ -410,23 +641,19 @@ class LibTorrent(BaseTorrentManager):
                 name = status.name or info_hash
                 total_size = status.total_wanted
 
-            # Get trackers
             trackers = []
             for tracker in handle.trackers():
                 trackers.append(tracker["url"])
 
-            # Calculate progress
             progress = status.progress
             downloaded = (
                 int(total_size * progress) if total_size > 0 else status.total_download
             )
 
-            # libtorrent reports rates as bytes/sec. ``download_rate`` is
-            # the wire rate including protocol overhead; the UI labels the
-            # field "DL speed" which matches that semantic. ETA is derived
-            # because libtorrent itself doesn't expose one.
             dl_speed = int(getattr(status, "download_rate", 0) or 0)
-            remaining = total_size - downloaded if total_size and downloaded is not None else 0
+            remaining = (
+                total_size - downloaded if total_size and downloaded is not None else 0
+            )
             eta: Optional[int]
             if dl_speed > 0 and remaining > 0:
                 eta = int(remaining / dl_speed)
@@ -442,7 +669,7 @@ class LibTorrent(BaseTorrentManager):
                 "size": total_size,
                 "path": status.save_path,
                 "downloaded": downloaded,
-                "link": None,  # We don't store the original magnet/file link
+                "link": None,
                 "progress": progress,
                 "state": self._get_torrent_state(status),
                 "dl_speed": dl_speed,
@@ -456,7 +683,6 @@ class LibTorrent(BaseTorrentManager):
             return None
 
     def _get_torrent_state(self, status):
-        """Get human-readable torrent state"""
         state_map = {
             lt.torrent_status.queued_for_checking: "queued",
             lt.torrent_status.checking_files: "checking",
@@ -469,36 +695,80 @@ class LibTorrent(BaseTorrentManager):
         }
         return state_map.get(status.state, "unknown")
 
+    def _drain_resume_saves(self) -> None:
+        if self.session is None:
+            return
+        with self._resume_lock:
+            pending = self._pending_resume_saves
+        if pending <= 0:
+            for handle in list(self.handles.values()):
+                if handle.is_valid():
+                    try:
+                        handle.save_resume_data()
+                        with self._resume_lock:
+                            self._pending_resume_saves += 1
+                    except Exception:
+                        pass
+        deadline = time.time() + _SHUTDOWN_SAVE_TIMEOUT_S
+        while time.time() < deadline:
+            with self._resume_lock:
+                pending = self._pending_resume_saves
+            if pending <= 0:
+                break
+            try:
+                for alert in self.session.pop_alerts():
+                    self._process_alert(alert)
+            except Exception:
+                break
+            time.sleep(0.05)
+
     def close(self):
-        """Clean shutdown of the LibTorrent session"""
+        """Clean shutdown: flush fast-resume files then tear down the session."""
+        self._shutting_down = True
+        if self.session:
+            try:
+                with self._resume_lock:
+                    for handle in list(self.handles.values()):
+                        if handle.is_valid():
+                            try:
+                                handle.save_resume_data()
+                                self._pending_resume_saves += 1
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        # Stop the alert thread before draining so it does not steal alerts.
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
 
         if self.session:
             try:
+                self._drain_resume_saves()
+            except Exception as e:
+                print(f"Error saving resume data: {e}")  # TODO - use logger
+
+        if self.session:
+            try:
                 self.session.pause()
-                # Save resume data for all torrents
-                for handle in self.handles.values():
-                    if handle.is_valid():
-                        handle.save_resume_data()
-
-                # Wait a bit for resume data to be saved
-                time.sleep(1)
-
             except Exception as e:
                 print(f"Error during session cleanup: {str(e)}")  # TODO - use logger
             finally:
                 self.session = None
                 self.handles.clear()
 
+        self._session_ready.clear()
+        self._shutting_down = False
+
     def __del__(self):
-        """Destructor to ensure clean shutdown"""
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    # Test the LibTorrent manager
     settings = {
         "download_path": os.path.join(tempfile.gettempdir(), "test_libtorrent"),
         "listen_port": 6881,
@@ -506,7 +776,6 @@ if __name__ == "__main__":
 
     manager = LibTorrent(settings)
 
-    # Test with Big Buck Bunny magnet (legal, open-source movie)
     test_magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337"
 
     try:

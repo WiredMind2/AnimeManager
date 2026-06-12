@@ -243,10 +243,13 @@ class _FakeDB:
         self.torrent_data: Dict[str, Any] = {}
         self.raise_save = False
 
-    def save_torrent(self, anime_id, torrent):
+    def save_torrent(self, anime_id, torrent, **kwargs):
         if self.raise_save:
             raise RuntimeError("DB exploded")
-        self.saved.append((anime_id, torrent))
+        self.saved.append((anime_id, torrent, kwargs))
+
+    def update_torrent_save_path(self, hash_value, save_path):
+        self.saved.append(("save_path", hash_value, save_path))
 
     def get_torrent_data(self, hash_value):
         return self.torrent_data.get(hash_value)
@@ -283,7 +286,9 @@ class TestPortInteractions:
         try:
             torrent = MagicMock()
             mgr._save_torrent(99, torrent)
-            assert db.saved == [(99, torrent)]
+            assert len(db.saved) == 1
+            assert db.saved[0][0] == 99
+            assert db.saved[0][1] is torrent
         finally:
             mgr.close()
 

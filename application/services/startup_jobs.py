@@ -212,8 +212,36 @@ class StartupJobsService:
 
     def _jobs(self) -> Iterable[StartupJob]:
         yield StartupJob("repair_date_from", self._job_repair_date_from)
+        yield StartupJob(
+            "repair_duplicate_anime", self._job_repair_duplicate_anime
+        )
         yield StartupJob("fetch_latest_anime", self._job_fetch_latest)
         yield StartupJob("update_status", self._job_update_status)
+        yield StartupJob(
+            "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
+        )
+
+    def _job_restore_libtorrent_sessions(self) -> str:
+        """Ensure embedded LibTorrent finished restore (idempotent)."""
+        tm = getattr(self._runtime, "tm", None)
+        if tm is None or getattr(tm, "name", None) != "LibTorrent":
+            return "skipped (not LibTorrent)"
+        ensure = getattr(tm, "ensure_restored", None)
+        if not callable(ensure):
+            return "skipped (no ensure_restored)"
+        try:
+            ensure()
+        except Exception as exc:
+            return f"restore failed: {exc}"
+        count = len(getattr(tm, "handles", {}) or {})
+        return f"session ready ({count} torrent(s))"
+
+    def _job_repair_duplicate_anime(self) -> str:
+        """Collapse duplicate ``indexList`` / ``anime`` rows left from pre-merge ingest."""
+        merged = self._database_manager.repair_duplicate_anime_entries()
+        if merged == 0:
+            return "no duplicate rows to repair"
+        return f"merged {merged} duplicate row(s)"
 
     # Any ``date_from`` / ``date_to`` value smaller than this threshold
     # is treated as a legacy ``datetime.toordinal()`` value (days since

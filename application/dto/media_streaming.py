@@ -17,6 +17,7 @@ class EpisodeFileDTO:
     subtitle_tracks: list[dict[str, object]] = field(default_factory=list)
     watch_status: str = "UNSEEN"
     position_seconds: float | None = None
+    duration_seconds: float | None = None
 
 
 @dataclass(slots=True)
@@ -46,6 +47,13 @@ class PlaybackSessionDTO:
     duration_seconds: float = 0.0
     segment_seconds: int = 0
     total_segments: int = 0
+    # First segment index the session intentionally encodes from (resume
+    # hint). Requests below this index are rejected without restarting
+    # ffmpeg so Shaka's prefetch of segment 0 cannot clobber a mid-file
+    # anchor.
+    hls_anchor_segment: int = 0
+    # Updated whenever seek-on-demand relaunches ffmpeg.
+    transcode_start_segment: int = 0
     extra: dict[str, str] = field(default_factory=dict)
 
 

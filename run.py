@@ -1,11 +1,12 @@
 """AnimeManager single root startup script (ADR 0006).
 
 Usage:
-    python run.py [MODE] [--host HOST] [--port PORT]
+    python run.py [MODE] [--host HOST] [--port PORT] [--next-port PORT]
 
 Modes:
-    gui  Launch the embedded Tk client adapter (default).
-    api  Launch the FastAPI HTTP client adapter via uvicorn.
+    web  Launch FastAPI + Next.js frontend (default).
+    gui  Launch the embedded Tk client adapter.
+    api  Launch the FastAPI HTTP client adapter via uvicorn only.
 
 All other startup logic lives inside the ``animemanager`` package
 (``bootstrap.py``). This script intentionally contains no business
@@ -28,19 +29,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "mode",
         nargs="?",
-        default="gui",
-        help="Runtime mode (gui, api). Default: gui.",
+        default="web",
+        help="Runtime mode (web, gui, api). Default: web.",
     )
     parser.add_argument(
         "--host",
         default="0.0.0.0",
-        help="Host interface for 'api' mode (default: 0.0.0.0).",
+        help="Host interface for 'web' and 'api' modes (default: 0.0.0.0).",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=8081,
-        help="TCP port for 'api' mode (default: 8081).",
+        help="TCP port for the FastAPI backend (default: 8081).",
+    )
+    parser.add_argument(
+        "--next-port",
+        type=int,
+        default=3000,
+        help="TCP port for the Next.js frontend in 'web' mode (default: 3000).",
     )
     return parser
 
@@ -72,8 +79,10 @@ def main(argv=None) -> int:
         from AnimeManager.bootstrap import main as bootstrap_main  # type: ignore
 
     kwargs = {}
-    if args.mode == "api":
+    if args.mode in ("api", "web"):
         kwargs.update({"host": args.host, "port": args.port})
+    if args.mode == "web":
+        kwargs.update({"next_port": args.next_port})
 
     return bootstrap_main(mode=args.mode, **kwargs)
 

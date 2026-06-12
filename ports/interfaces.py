@@ -7,9 +7,40 @@ re-exports from here.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol
+from typing import Any, Dict, Mapping, Optional, Protocol
 
 from domain.entities import AnimeEntity
+from shared.contracts import RepairStrategy
+
+
+class CatalogIndexPort(Protocol):
+    """Lookup and allocation of internal ids in ``indexList``."""
+
+    def find_by_external(self, provider_key: str, external_id: int) -> Optional[int]:
+        ...
+
+    def get_external_ids(self, internal_id: int) -> Dict[str, int]:
+        ...
+
+    def backfill_external_ids(
+        self, internal_id: int, external_ids: Mapping[str, int]
+    ) -> None:
+        ...
+
+    def allocate(self, external_ids: Mapping[str, int]) -> int:
+        ...
+
+
+class CatalogMergePort(Protocol):
+    """Consolidate duplicate catalogue rows across satellite tables."""
+
+    def merge(self, duplicate_id: int, canonical_id: int) -> int:
+        ...
+
+    def repair_duplicates(
+        self, *, strategy: RepairStrategy = RepairStrategy.PROVIDER_ID
+    ) -> int:
+        ...
 
 
 class AnimeRepositoryPort(Protocol):
@@ -36,6 +67,15 @@ class AnimeRepositoryPort(Protocol):
         ...
 
     def remove_search_term(self, anime_id: int, term: str) -> bool:
+        ...
+
+    def get_disabled_search_titles(self, anime_id: int) -> list[str]:
+        ...
+
+    def disable_search_title(self, anime_id: int, title: str) -> bool:
+        ...
+
+    def enable_search_title(self, anime_id: int, title: str) -> bool:
         ...
 
     def get_settings(self) -> dict:
@@ -172,6 +212,7 @@ class MediaTranscoderPort(Protocol):
         subtitle_track: int | None = None,
         start_segment_index: int = 0,
         segment_seconds: int | None = None,
+        duration_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Start (or reuse) a transcoding session and return artifact metadata.
 
@@ -205,6 +246,8 @@ class MediaTranscoderPort(Protocol):
 
 
 __all__ = [
+    "CatalogIndexPort",
+    "CatalogMergePort",
     "AnimeRepositoryPort",
     "MetadataProviderPort",
     "DownloadPort",

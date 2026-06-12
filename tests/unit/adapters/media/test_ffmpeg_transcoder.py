@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
-from adapters.media.ffmpeg_transcoder import FFmpegTranscoderAdapter
+from adapters.media.ffmpeg_transcoder import FFmpegTranscoderAdapter, _ActiveTranscode
 
 
 def _build(
@@ -77,6 +79,18 @@ def test_seek_without_subtitles_uses_input_seek():
     assert "-copyts" in command
 
 
+def test_seek_keyframe_expression_is_offset_from_seek_point():
+    command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
+    idx = command.index("-force_key_frames")
+    assert command[idx + 1] == "expr:gte(t,40+n_forced*4)"
+
+
+def test_start_keyframe_expression_starts_at_zero():
+    command = _build(subtitle_track=None, start_segment_index=0, segment_seconds=4)
+    idx = command.index("-force_key_frames")
+    assert command[idx + 1] == "expr:gte(t,n_forced*4)"
+
+
 def test_command_forces_browser_compatible_h264_output():
     command = _build(subtitle_track=None, start_segment_index=0)
     assert "-pix_fmt" in command
@@ -120,3 +134,57 @@ def test_materialize_subtitle_tracks_extracts_vtt(monkeypatch, tmp_path: Path):
     assert rows[0].get("ass_filename") is None
     assert rows[1].get("codec") == "ass"
     assert rows[1].get("ass_filename") == "subtitle_001.ass"
+
+
+def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
+    """A third concurrent session must not fail with 'server busy'."""
+    adapter = FFmpegTranscoderAdapter(max_active_sessions=2)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def fake_spawn(command, log_path):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr(adapter, "_spawn_ffmpeg", fake_spawn)
+    monkeypatch.setattr(adapter, "_write_spawn_record", lambda *_a, **_k: None)
+
+    now = time.time()
+    adapter._active["old"] = _ActiveTranscode(
+        session_id="old",
+        output_dir=str(out),
+        manifest_path=str(out / "index.m3u8"),
+        process=fake_spawn([], ""),
+        started_at=now - 10,
+        start_segment_index=0,
+        segment_seconds=4,
+        source_path=str(tmp_path / "a.mkv"),
+        audio_track=None,
+        subtitle_track=None,
+    )
+    adapter._active["mid"] = _ActiveTranscode(
+        session_id="mid",
+        output_dir=str(out),
+        manifest_path=str(out / "index.m3u8"),
+        process=fake_spawn([], ""),
+        started_at=now - 5,
+        start_segment_index=0,
+        segment_seconds=4,
+        source_path=str(tmp_path / "b.mkv"),
+        audio_track=None,
+        subtitle_track=None,
+    )
+    (out / "index.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    source = tmp_path / "c.mkv"
+    source.write_bytes(b"x")
+
+    adapter.ensure_hls_session(
+        session_id="new",
+        source_path=str(source),
+        output_dir=str(out),
+    )
+
+    assert "old" not in adapter._active
+    assert "new" in adapter._active
+    assert adapter._active["new"].process.poll() is None

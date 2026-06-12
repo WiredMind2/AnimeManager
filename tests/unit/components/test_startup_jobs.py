@@ -113,10 +113,12 @@ def test_fetch_latest_persists_deduped_batch():
         service._api_coordinator.close()
 
     assert isinstance(report, StartupJobReport)
-    # ``repair_date_from`` + ``fetch_latest_anime`` + ``update_status``.
-    # The two non-fetch jobs short-circuit cleanly here because
-    # ``_RecordingDBManager.get_database()`` returns ``None``.
-    assert report.total == 3
+    # ``repair_date_from`` + ``repair_duplicate_anime`` +
+    # ``fetch_latest_anime`` + ``update_status`` +
+    # ``restore_libtorrent_sessions``. Non-fetch repair jobs short-circuit
+    # cleanly here because ``_RecordingDBManager.get_database()`` returns
+    # ``None``.
+    assert report.total == 5
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
