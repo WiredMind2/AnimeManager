@@ -109,6 +109,7 @@ export function usePlayback(
   } | null>(null);
   const lastBufferingDiagnosticAtRef = useRef(0);
   const startupStallReportedRef = useRef(false);
+  const shakaAttachInProgressRef = useRef(false);
   const progressReporterRef = useRef(createProgressReporter(animeId));
 
   const anchorProgressOpts = useCallback(
@@ -480,7 +481,12 @@ export function usePlayback(
         }
 
         markLoadPhase("shaka_attach_start", { generation });
-        await player.attach(video);
+        shakaAttachInProgressRef.current = true;
+        try {
+          await player.attach(video);
+        } finally {
+          shakaAttachInProgressRef.current = false;
+        }
         playerLoggerRef.current?.log("info", "shaka_attached");
         markLoadPhase("shaka_attached", { generation });
         if (abortIfStale("after_attach")) return;
@@ -697,7 +703,12 @@ export function usePlayback(
       const hasExplicitError = Boolean(explicitError);
       const waitingAtZero = Number(video.currentTime || 0) <= 0.05;
 
-      if (!hasExplicitError && waitingAtZero && isStartupPhase(phase)) {
+      if (
+        !hasExplicitError &&
+        waitingAtZero &&
+        isStartupPhase(phase) &&
+        !shakaAttachInProgressRef.current
+      ) {
         reportStartupStall(phase, video);
         return;
       }
