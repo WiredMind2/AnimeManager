@@ -14,9 +14,9 @@ import {
   type PlayerLogger,
 } from "@/lib/player-log";
 import {
-  clampPlaybackSeconds,
   createProgressReporter,
   saveLocalPosition,
+  toAbsoluteSourceSeconds,
 } from "@/lib/playback/progress";
 import {
   createSession,
@@ -80,6 +80,9 @@ export function usePlayback(
   const [playbackStartSeconds, setPlaybackStartSeconds] = useState(0);
 
   const streamDurationRef = useRef<number | null>(null);
+  const playbackStartSecondsRef = useRef(0);
+  const hlsAnchorSegmentRef = useRef(0);
+  const segmentSecondsRef = useRef(4);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const shakaPlayerRef = useRef<any>(null);
@@ -107,6 +110,23 @@ export function usePlayback(
   const lastBufferingDiagnosticAtRef = useRef(0);
   const startupStallReportedRef = useRef(false);
   const progressReporterRef = useRef(createProgressReporter(animeId));
+
+  const anchorProgressOpts = useCallback(
+    () => ({
+      hlsAnchorSegment: hlsAnchorSegmentRef.current,
+      segmentSeconds: segmentSecondsRef.current,
+    }),
+    [],
+  );
+
+  const videoTimeToSourceSeconds = useCallback(
+    (videoSeconds: number) =>
+      toAbsoluteSourceSeconds(videoSeconds, {
+        ...anchorProgressOpts(),
+        maxSeconds: streamDurationRef.current,
+      }),
+    [anchorProgressOpts],
+  );
 
   const isStartupPhase = useCallback((phase: string) => {
     return (
@@ -181,8 +201,9 @@ export function usePlayback(
       fileId,
       video.currentTime,
       streamDurationRef.current,
+      anchorProgressOpts(),
     );
-  }, [animeId, videoRef]);
+  }, [animeId, anchorProgressOpts, videoRef]);
 
   const postEpisodeProgress = useCallback(
     (watchStatus: string, positionSeconds?: number | null) => {
@@ -201,13 +222,10 @@ export function usePlayback(
   const maybePostProgressThrottled = useCallback(() => {
     const video = videoRef.current;
     if (!currentFileIdRef.current || !video || video.paused) return;
-    const t = clampPlaybackSeconds(
-      Number(video.currentTime || 0),
-      streamDurationRef.current,
-    );
+    const t = videoTimeToSourceSeconds(Number(video.currentTime || 0));
     if (!Number.isFinite(t) || t < 5) return;
     postEpisodeProgress("IN_PROGRESS", t);
-  }, [postEpisodeProgress, videoRef]);
+  }, [postEpisodeProgress, videoRef, videoTimeToSourceSeconds]);
 
   const destroyPlayer = useCallback(async () => {
     AmPlaybackSubtitles.disposeOctopus(subtitleStateRef.current.libassInst);
@@ -301,7 +319,7 @@ export function usePlayback(
         })),
       );
       setAudioTrackId(audios[0]?.id != null ? String(audios[0].id) : "");
-      setSubtitleTrackId("");
+      setSubtitleTrackId(subtitles[0]?.id != null ? String(subtitles[0].id) : "");
     },
     [trackMap],
   );
@@ -337,6 +355,9 @@ export function usePlayback(
       setStreamDurationSeconds(null);
       streamDurationRef.current = null;
       setPlaybackStartSeconds(0);
+      playbackStartSecondsRef.current = 0;
+      hlsAnchorSegmentRef.current = 0;
+      segmentSecondsRef.current = 4;
       playerLoggerRef.current?.setFileId(fileId);
       playerLoggerRef.current?.log("info", "playback_requested", {
         file_id: fileId,
@@ -391,6 +412,8 @@ export function usePlayback(
 
       const manifestUrl = resolveBackendUrl(payload.manifest_url);
       const playbackStartSeconds = Number(payload.playback_start_seconds ?? 0);
+      const hlsAnchorSegment = Math.max(0, Number(payload.hls_anchor_segment ?? 0));
+      const segmentSeconds = Math.max(1, Number(payload.segment_seconds ?? 4));
       const loadStartTime = loadStartTimeFromPayload(payload);
       sessionIdRef.current = payload.session_id || "";
       sessionGenerationRef.current = generation;
@@ -411,6 +434,9 @@ export function usePlayback(
         streamDurationRef.current = knownDuration;
       }
       setPlaybackStartSeconds(playbackStartSeconds);
+      playbackStartSecondsRef.current = playbackStartSeconds;
+      hlsAnchorSegmentRef.current = hlsAnchorSegment;
+      segmentSecondsRef.current = segmentSeconds;
 
       try {
         const { player, shaka } = await createShakaPlayer(panelRef.current);
@@ -458,10 +484,6 @@ export function usePlayback(
         playerLoggerRef.current?.log("info", "shaka_attached");
         markLoadPhase("shaka_attached", { generation });
         if (abortIfStale("after_attach")) return;
-
-        // #region agent log
-        fetch('http://127.0.0.1:7716/ingest/9f2988e2-a135-426b-bd73-5dcc8ea63ea6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5dee15'},body:JSON.stringify({sessionId:'5dee15',location:'use-playback.ts:load',message:'before_player_load',data:{manifestUrl,loadStartTime:loadStartTime??null,knownDuration,playbackStartSeconds,hypothesisId:'H1'},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
 
         player.addEventListener("buffering", (evt: unknown) => {
           const buffering = (evt as { buffering?: boolean }).buffering;
@@ -538,7 +560,26 @@ export function usePlayback(
           assById,
           libassInst: subtitleStateRef.current.libassInst,
         };
-        applySubtitles();
+        const payloadSubs = payload.subtitle_tracks ?? [];
+        const activeSubId =
+          subtitleTrackId ||
+          (payloadSubs[0]?.id != null ? String(payloadSubs[0].id) : "");
+        if (activeSubId && activeSubId !== subtitleTrackId) {
+          setSubtitleTrackId(activeSubId);
+        }
+        if (activeSubId && shakaPlayerRef.current && video) {
+          void applySubtitleSelection({
+            shakaPlayer: player,
+            video,
+            panel: panelRef.current,
+            subtitleTrackId: activeSubId,
+            state: subtitleStateRef.current,
+            onError: setError,
+            onClearError: () => setError(""),
+          });
+        } else {
+          applySubtitles();
+        }
         markLoadPhase("startup_ready", { generation });
         setStatus("Ready · press play");
         if (playbackStartSeconds > 0) {
@@ -571,9 +612,6 @@ export function usePlayback(
           code: shakaPlain?.codeName ?? errObj?.code ?? "UNKNOWN",
         };
         markLoadPhase("startup_failed", { generation, error_message: message });
-        // #region agent log
-        fetch('http://127.0.0.1:7716/ingest/9f2988e2-a135-426b-bd73-5dcc8ea63ea6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5dee15'},body:JSON.stringify({sessionId:'5dee15',location:'use-playback.ts:catch',message:'load_or_play_failed_detail',data:{error:message,shakaCode:shakaPlain?.codeName??errObj?.code??null,loadStartTime:loadStartTime??null,knownDuration,hypothesisId:'H1'},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         playerLoggerRef.current?.log("error", "load_or_play_failed", {
           ...playerFaultFields("playback_runtime_error", "startup_failed", false),
           error: message,
@@ -642,19 +680,13 @@ export function usePlayback(
     };
     const onEnded = () => {
       savePosition();
-      const t = clampPlaybackSeconds(
-        Number(video.currentTime || 0),
-        streamDurationRef.current,
-      );
+      const t = videoTimeToSourceSeconds(Number(video.currentTime || 0));
       postEpisodeProgress("SEEN", t);
       playerLoggerRef.current?.log("info", "playback_completed");
     };
     const onPause = () => {
       savePosition();
-      const t = clampPlaybackSeconds(
-        Number(video.currentTime || 0),
-        streamDurationRef.current,
-      );
+      const t = videoTimeToSourceSeconds(Number(video.currentTime || 0));
       if (t > 5) postEpisodeProgress("IN_PROGRESS", t);
       playerLoggerRef.current?.log("info", "playback_paused");
     };
@@ -727,6 +759,7 @@ export function usePlayback(
     savePosition,
     setStatus,
     videoRef,
+    videoTimeToSourceSeconds,
   ]);
 
   useEffect(() => {

@@ -65,42 +65,6 @@ function supportsLibass(): boolean {
   );
 }
 
-function _dbgLog(message: string, data?: Record<string, unknown>) {
-  // #region agent log
-  try {
-    fetch("http://127.0.0.1:7716/ingest/9f2988e2-a135-426b-bd73-5dcc8ea63ea6", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "5dee15" },
-      body: JSON.stringify({
-        sessionId: "5dee15",
-        location: "SubtitleBridge.tsx:startLibassOctopus",
-        message,
-        data: data || {},
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  } catch {
-    /* ignore */
-  }
-  // #endregion
-}
-
-function _parseAssCueTimes(content: string): number[] {
-  const times: number[] = [];
-  for (const line of content.split(/\r?\n/)) {
-    if (!line.startsWith("Dialogue:")) continue;
-    const parts = line.split(",");
-    if (parts.length < 3) continue;
-    const start = parts[1];
-    const m = /^(\d+):(\d+):(\d+(?:\.\d+)?)$/.exec(start.trim());
-    if (!m) continue;
-    times.push(
-      Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]),
-    );
-  }
-  return times;
-}
-
 type LibassOctopusInstance = {
   dispose?: () => void;
   canvasParent?: HTMLElement;
@@ -153,11 +117,6 @@ async function startLibassOctopus(
         throw new Error("ASS fetch returned empty content");
       }
     } catch (fetchErr) {
-      _dbgLog("ass_prefetch_failed", {
-        hypothesisId: "H2",
-        assUrl: absoluteAssUrl,
-        error: String(fetchErr),
-      });
       onError?.(fetchErr);
       return null;
     }
@@ -170,12 +129,6 @@ async function startLibassOctopus(
       fallbackFont: libassAsset("default.woff2"),
       onReady: () => {
         syncOctopusAfterReady(inst as LibassOctopusInstance, video);
-        _dbgLog("octopus_ready", {
-          hypothesisId: "H3",
-          videoCurrentTime: Number(video.currentTime || 0),
-          canvasW: (inst as LibassOctopusInstance).canvas?.width || 0,
-          canvasH: (inst as LibassOctopusInstance).canvas?.height || 0,
-        });
       },
       onError:
         onError ||
@@ -183,84 +136,6 @@ async function startLibassOctopus(
           console.error("[AnimeManager libass]", err);
         }),
     }) as LibassOctopusInstance;
-    // #region agent log
-    _dbgLog("octopus_created", {
-      hypothesisId: "H1",
-      assUrl: absoluteAssUrl,
-      subContentLen: subContent.length,
-      videoCurrentTime: Number(video.currentTime || 0),
-      videoDuration: Number(video.duration || 0),
-      timeOffset: Number(inst.timeOffset || 0),
-    });
-    const times = _parseAssCueTimes(subContent);
-    const t = Number(video.currentTime || 0);
-    _dbgLog("ass_cue_times", {
-      hypothesisId: "H1",
-      cueCount: times.length,
-      first5: times.slice(0, 5),
-      nearCurrentTime: times.filter((x) => Math.abs(x - t) < 30).slice(0, 6),
-      videoCurrentTime: t,
-      contentLen: subContent.length,
-    });
-    // Wrap setCurrentTime to log the time the worker receives (throttled)
-    const origSetCurrentTime = inst.setCurrentTime?.bind(inst);
-    let lastLoggedSetTime = -999;
-    let lastLoggedAt = 0;
-    if (origSetCurrentTime) {
-      inst.setCurrentTime = (t: number) => {
-        const now = Date.now();
-        if (Math.abs(t - lastLoggedSetTime) > 1.5 || now - lastLoggedAt > 2000) {
-          lastLoggedSetTime = t;
-          lastLoggedAt = now;
-          _dbgLog("setCurrentTime", {
-            hypothesisId: "H1",
-            time: Number(t.toFixed(3)),
-            videoCurrentTime: Number(video.currentTime || 0),
-          });
-        }
-        return origSetCurrentTime(t);
-      };
-    } else {
-      _dbgLog("setCurrentTime_missing", { hypothesisId: "H3" });
-    }
-    // Periodic sampler: video.currentTime, octopus lastRenderTime, canvas pixels
-    const sampleInterval = window.setInterval(() => {
-      if (!inst || !(inst as unknown as { video?: HTMLVideoElement }).video) {
-        window.clearInterval(sampleInterval);
-        return;
-      }
-      const canvas = (inst as unknown as { canvas?: HTMLCanvasElement }).canvas;
-      let nonZeroPixels = -1;
-      if (canvas) {
-        try {
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            const img = ctx.getImageData(
-              Math.floor(canvas.width / 2) - 50,
-              canvas.height - 80,
-              100,
-              40,
-            );
-            let nz = 0;
-            for (let i = 3; i < img.data.length; i += 4) {
-              if (img.data[i] > 0) nz++;
-            }
-            nonZeroPixels = nz;
-          }
-        } catch {
-          nonZeroPixels = -2;
-        }
-      }
-      _dbgLog("sample", {
-        hypothesisId: "H1",
-        videoCurrentTime: Number(video.currentTime || 0),
-        lastRenderTime: Number((inst as unknown as { lastRenderTime?: number }).lastRenderTime || 0),
-        canvasW: canvas?.width || 0,
-        canvasH: canvas?.height || 0,
-        nonZeroPixels,
-      });
-    }, 2000);
-    // #endregion
     return inst as unknown as { dispose: () => void; canvasParent?: HTMLElement };
   } catch (e) {
     onError?.(e);

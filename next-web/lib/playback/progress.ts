@@ -12,15 +12,41 @@ export function clampPlaybackSeconds(seconds: number, maxSeconds?: number | null
   return seconds;
 }
 
+/** Map ``video.currentTime`` to absolute source seconds for anchored HLS windows. */
+export function toAbsoluteSourceSeconds(
+  videoSeconds: number,
+  opts: {
+    hlsAnchorSegment?: number;
+    segmentSeconds?: number;
+    maxSeconds?: number | null;
+  },
+): number {
+  const anchor = Math.max(0, Number(opts.hlsAnchorSegment ?? 0));
+  const segSecs = Math.max(1, Number(opts.segmentSeconds ?? 4));
+  const t = Number(videoSeconds || 0);
+  if (!Number.isFinite(t) || t < 0) return 0;
+  if (anchor <= 0) {
+    return clampPlaybackSeconds(t, opts.maxSeconds);
+  }
+  const anchorSource = anchor * segSecs;
+  const absolute = t >= anchorSource - 1 ? t : anchorSource + t;
+  return clampPlaybackSeconds(absolute, opts.maxSeconds);
+}
+
 export function saveLocalPosition(
   animeId: number,
   fileId: string,
   seconds: number,
   maxSeconds?: number | null,
+  anchorOpts?: { hlsAnchorSegment?: number; segmentSeconds?: number },
 ): void {
   const key = positionKey(animeId, fileId);
   if (!key || seconds <= 0) return;
-  const clamped = clampPlaybackSeconds(seconds, maxSeconds);
+  const absolute =
+    anchorOpts != null
+      ? toAbsoluteSourceSeconds(seconds, { ...anchorOpts, maxSeconds })
+      : clampPlaybackSeconds(seconds, maxSeconds);
+  const clamped = absolute;
   if (clamped <= 0) return;
   try {
     window.localStorage.setItem(key, String(clamped));
