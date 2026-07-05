@@ -899,6 +899,87 @@ async def web_library_search_ws(websocket: WebSocket) -> None:
             pass
 
 
+@router.get("/ui/library/stream", name="web_library_search_stream")
+def web_library_search_stream(
+    request: Request,
+    q: str = "",
+    limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+) -> StreamingResponse:
+    """Server-Sent Events feed for library search (Next.js proxy compatible).
+
+    Pushes one ``event: card`` per anime (JSON payload) as
+    :meth:`ClientSDK.stream_search_anime` yields results — local catalog
+    first, then remote providers — then ``event: done`` with the total
+    count. Works through the Next.js ``/backend`` HTTP proxy unlike the
+    legacy WebSocket at :func:`web_library_search_ws`.
+    """
+    _ = request  # reserved for future absolute-URL helpers
+    query = (q or "").strip()
+    limit = _safe_int(limit, _LIBRARY_STREAM_MAX_RESULTS)
+    if limit <= 0 or limit > 200:
+        limit = _LIBRARY_STREAM_MAX_RESULTS
+
+    def event_stream() -> Iterable[bytes]:
+        if not query:
+            yield _sse_event("error", "Missing search query")
+            yield _sse_event("done", "0")
+            return
+
+        try:
+            from domain.policies import normalize_search_query
+
+            normalized = normalize_search_query(query)
+            if len(normalized) < 3:
+                yield _sse_event(
+                    "error",
+                    "Search query must contain at least 3 characters.",
+                )
+                yield _sse_event("done", "0")
+                return
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+            yield _sse_event("done", "0")
+            return
+        except Exception:  # noqa: BLE001 - never block on validation
+            pass
+
+        yield b": stream-open\n\n"
+
+        sdk = get_sdk()
+        emitted = 0
+        seen_ids: set[Any] = set()
+        try:
+            for item in sdk.stream_search_anime(query, limit=limit):
+                anime_id = item.get("id") if isinstance(item, dict) else None
+                if anime_id is not None:
+                    if anime_id in seen_ids:
+                        continue
+                    seen_ids.add(anime_id)
+                yield _sse_event("card", json.dumps(item))
+                emitted += 1
+                if emitted >= limit:
+                    break
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("library search stream failed: %s", exc)
+            yield _sse_event(
+                "error",
+                "Search failed; check the metadata provider configuration.",
+            )
+        yield _sse_event("done", str(emitted))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.get("/ui/anime/{anime_id}", name="web_anime_detail")
 def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
     sdk = get_sdk()

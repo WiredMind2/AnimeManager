@@ -164,9 +164,9 @@ class TestSearchAnimeEdges:
     def test_repo_results_short_circuit_provider(self, service):
         repo, prov, _, _ = service._fakes
         repo.items = [AnimeEntity(id=1, title="Local")]
-        prov.responses = [AnimeEntity(id=2, title="Should not appear")]
+        prov.responses = [AnimeEntity(id=2, title="Remote")]
         result = service.search_anime(SearchRequest(query="something"))
-        assert [r.id for r in result] == [1]
+        assert [r.id for r in result] == [1, 2]
 
     def test_limit_forwarded_to_repo(self, service):
         repo, _, _, _ = service._fakes

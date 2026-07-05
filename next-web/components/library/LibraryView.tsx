@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { wsBackendUrl } from "@/lib/config";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type AnimeItem } from "@/lib/api";
+import { backendPath } from "@/lib/config";
+import AnimeCard from "./AnimeCard";
 
 type StreamState = "connecting" | "streaming" | "done" | "error" | "closed";
 
@@ -13,30 +15,59 @@ type StreamUpdate = {
 
 type LibraryViewProps = {
   query: string;
-  wsPath?: string;
+  streamPath?: string;
   limit?: number;
   onStreamUpdate?: (update: StreamUpdate) => void;
 };
 
 export default function LibraryView({
   query,
-  wsPath = "/ui/library/ws",
+  streamPath = "/ui/library/stream",
   limit = 50,
   onStreamUpdate,
 }: LibraryViewProps) {
-  const gridRef = useRef<HTMLElement>(null);
+  const [items, setItems] = useState<AnimeItem[]>([]);
+  const [emptyVisible, setEmptyVisible] = useState(false);
   const onStreamUpdateRef = useRef(onStreamUpdate);
   onStreamUpdateRef.current = onStreamUpdate;
-  const [emptyVisible, setEmptyVisible] = useState(false);
+
+  const runHttpFallback = useCallback(
+    async (
+      seen: Set<number>,
+      emit: (streamState: StreamState, streamLabel: string, nextCount?: number) => void,
+      setCount: (n: number) => void,
+    ) => {
+      try {
+        const results = await api.searchAnime(query, limit);
+        let count = 0;
+        const next: AnimeItem[] = [];
+        for (const item of results) {
+          if (item.id != null) {
+            if (seen.has(item.id)) continue;
+            seen.add(item.id);
+          }
+          next.push(item);
+          count += 1;
+        }
+        setItems(next);
+        setCount(count);
+        emit("done", count > 0 ? `Done · ${count}` : "No results", count);
+        setEmptyVisible(count === 0);
+      } catch {
+        emit("error", "Search failed");
+        setEmptyVisible(true);
+      }
+    },
+    [query, limit],
+  );
 
   useEffect(() => {
-    const grid = gridRef.current;
-    if (!grid || !query) return;
+    if (!query) return;
 
-    grid.innerHTML = "";
+    setItems([]);
     setEmptyVisible(false);
 
-    const seen = new Set<string>();
+    const seen = new Set<number>();
     let count = 0;
     let closed = false;
 
@@ -48,100 +79,110 @@ export default function LibraryView({
       emit(streamState, label);
     };
 
-    const url = `${wsBackendUrl(wsPath)}?q=${encodeURIComponent(query)}&limit=${limit}`;
-    let socket: WebSocket;
+    const appendItem = (item: AnimeItem) => {
+      if (item.id != null) {
+        if (seen.has(item.id)) return;
+        seen.add(item.id);
+      }
+      count += 1;
+      setItems((prev) => [...prev, item]);
+      emit("streaming", "Streaming…", count);
+      setEmptyVisible(false);
+    };
 
+    const finish = (finalCount: number, label: string) => {
+      closed = true;
+      setState("done", label);
+      setEmptyVisible(finalCount === 0);
+    };
+
+    const streamUrl = `${backendPath(streamPath)}?q=${encodeURIComponent(query)}&limit=${limit}`;
+
+    if (typeof EventSource === "undefined") {
+      void runHttpFallback(seen, emit, (n) => {
+        count = n;
+      });
+      return;
+    }
+
+    let source: EventSource;
     try {
-      socket = new WebSocket(url);
+      source = new EventSource(streamUrl);
     } catch {
-      setState("error", "Connection failed");
-      setEmptyVisible(true);
+      void runHttpFallback(seen, emit, (n) => {
+        count = n;
+      });
       return;
     }
 
     setState("connecting", "Connecting…");
 
-    socket.addEventListener("open", () => {
+    source.addEventListener("open", () => {
       setState("streaming", "Streaming…");
     });
 
-    socket.addEventListener("message", (ev) => {
-      let payload: { type?: string; html?: string; id?: number | string; count?: number; message?: string };
+    source.addEventListener("card", (ev) => {
       try {
-        payload = JSON.parse(String(ev.data));
+        appendItem(JSON.parse(ev.data) as AnimeItem);
       } catch {
+        /* ignore malformed card */
+      }
+    });
+
+    source.addEventListener("done", (ev) => {
+      const parsed = Number.parseInt(ev.data, 10);
+      const finalCount = Number.isFinite(parsed) ? parsed : count;
+      finish(finalCount, finalCount > 0 ? `Done · ${finalCount}` : "No results");
+      source.close();
+    });
+
+    source.addEventListener("error", (ev) => {
+      if (typeof ev.data === "string" && ev.data) {
+        closed = true;
+        setState("error", ev.data);
+        setEmptyVisible(count === 0);
+        source.close();
+      }
+    });
+
+    source.onerror = () => {
+      if (closed || count > 0) {
+        if (!closed) {
+          setState("closed", count > 0 ? `Closed · ${count}` : "Closed");
+          if (count === 0) setEmptyVisible(true);
+        }
+        source.close();
         return;
       }
-      if (!payload || typeof payload !== "object") return;
-
-      if (payload.type === "card" && typeof payload.html === "string") {
-        if (payload.id != null) {
-          const key = String(payload.id);
-          if (seen.has(key)) return;
-          seen.add(key);
-        }
-        const wrapper = document.createElement("div");
-        wrapper.innerHTML = payload.html;
-        const card = wrapper.firstElementChild;
-        if (card) {
-          if (card instanceof HTMLAnchorElement) {
-            const href = card.getAttribute("href");
-            if (href?.startsWith("/ui/anime/")) {
-              card.setAttribute("href", href.replace("/ui/anime/", "/anime/"));
-            }
-          }
-          grid.appendChild(card);
-          count += 1;
-          emit("streaming", "Streaming…", count);
-          setEmptyVisible(false);
-        }
-      } else if (payload.type === "done") {
-        closed = true;
-        const finalCount = typeof payload.count === "number" ? payload.count : count;
-        setState("done", finalCount > 0 ? `Done · ${finalCount}` : "No results");
-        setEmptyVisible(finalCount === 0);
-        try {
-          socket.close();
-        } catch {
-          /* ignore */
-        }
-      } else if (payload.type === "error") {
-        closed = true;
-        setState("error", payload.message || "Search failed");
-        setEmptyVisible(count === 0);
-      }
-    });
-
-    socket.addEventListener("close", () => {
-      if (!closed) {
-        setState("closed", count > 0 ? `Closed · ${count}` : "Closed");
-      }
-      if (count === 0) setEmptyVisible(true);
-    });
-
-    socket.addEventListener("error", () => {
-      setState("error", "Connection error");
-    });
+      closed = true;
+      source.close();
+      void runHttpFallback(seen, emit, (n) => {
+        count = n;
+      });
+    };
 
     return () => {
       closed = true;
       try {
-        socket.close();
+        source.close();
       } catch {
         /* ignore */
       }
     };
-  }, [query, wsPath, limit]);
+  }, [query, streamPath, limit, runHttpFallback]);
 
   return (
     <>
       <section
-        ref={gridRef}
         className="grid"
         data-library-stream
-        data-library-stream-path={wsPath}
+        data-library-stream-path={streamPath}
         data-library-stream-query={query}
-      />
+      >
+        {items.map((item) => (
+          <AnimeCard key={item.id} item={item} />
+        ))}
+      </section>
 
       <p className="page-head__subtitle" data-library-stream-empty hidden={!emptyVisible}>
         No results yet. Local catalog returned nothing and remote providers either failed or are still

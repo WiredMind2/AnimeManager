@@ -56,11 +56,27 @@ class AnimeApplicationService:
                 "Search query must contain at least 3 characters."
             )
 
-        local_results = self._anime_repository.search(query, request.limit)
-        if local_results:
-            return local_results
+        seen_ids: set[int] = set()
+        merged: list[AnimeEntity] = []
+        limit = request.limit
 
-        return self._metadata_provider.search(query, request.limit)
+        for entity in self._anime_repository.search(query, limit):
+            if entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            merged.append(entity)
+            if len(merged) >= limit:
+                return merged
+
+        for entity in self._metadata_provider.search(query, limit):
+            if entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            merged.append(entity)
+            if len(merged) >= limit:
+                break
+
+        return merged
 
     def stream_search_anime(self, request: SearchRequest):
         """Yield :class:`AnimeEntity` results progressively.

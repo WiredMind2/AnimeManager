@@ -115,6 +115,11 @@ class FakeSDK:
         self._record("search_anime", query, limit)
         return [{"id": 2, "title": query.title(), "picture": None, "status": "AIRING"}]
 
+    def stream_search_anime(self, query: str, limit: int = 50):
+        self._record("stream_search_anime", query, limit)
+        yield {"id": 2, "title": query.title(), "picture": None, "status": "AIRING"}
+        yield {"id": 3, "title": f"{query.title()} II", "picture": None, "status": "FINISHED"}
+
     def get_anime(self, anime_id: int):
         self._record("get_anime", anime_id)
         if anime_id == 404:
@@ -394,6 +399,27 @@ def test_library_search_uses_sdk(client):
     # first paint no longer embeds ``search_anime`` results inline.
     assert "data-library-stream-path" in resp.text
     assert "/ui/library/ws" in resp.text
+
+
+def test_library_search_stream_returns_sse_cards(client):
+    resp = client.get("/ui/library/stream", params={"q": "naruto"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert body.count("event: card") == 2
+    assert "Naruto" in body
+    assert "Naruto II" in body
+    assert "event: done" in body
+    last_call = [c for c in client.fake.calls if c[0] == "stream_search_anime"][-1]
+    assert last_call[1] == ("naruto", 50)
+
+
+def test_library_search_stream_rejects_short_query(client):
+    resp = client.get("/ui/library/stream", params={"q": "ab"})
+    assert resp.status_code == 200
+    assert "event: error" in resp.text
+    assert "at least 3 characters" in resp.text
+    assert not any(c[0] == "stream_search_anime" for c in client.fake.calls)
 
 
 def test_library_filter_chip_marked_active(client):

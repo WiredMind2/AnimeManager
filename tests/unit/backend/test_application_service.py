@@ -46,6 +46,8 @@ class FakeProvider:
         _ = limit
         if query == "naruto":
             return [AnimeEntity(id=2, title="Naruto", status="FINISHED")]
+        if "cowboy" in query.lower():
+            return [AnimeEntity(id=99, title="Remote Cowboy", status="FINISHED")]
         return []
 
 
@@ -112,8 +114,9 @@ def _service():
 
 def test_search_prefers_repository():
     result = _service().search_anime(SearchRequest(query="cowboy"))
-    assert len(result) == 1
+    assert len(result) == 2
     assert result[0].title == "Cowboy Bebop"
+    assert result[1].title == "Remote Cowboy"
 
 
 def test_search_falls_back_to_provider():
