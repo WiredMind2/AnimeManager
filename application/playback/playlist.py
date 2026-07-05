@@ -35,6 +35,15 @@ def render_manifest(session: PlaybackSessionDTO) -> str:
     total = max(1, session.total_segments)
     seg_secs = max(1, session.segment_seconds)
     duration = max(0.0, session.duration_seconds)
+    # Only advertise segments from the transcode anchor onward. Segments
+    # before ``hls_anchor_segment`` are never generated for a resume
+    # session, so listing them makes Shaka request non-existent files
+    # (e.g. segment_00108 when ffmpeg started at segment_00212) and abort
+    # with LOAD_FAILED. ``#EXT-X-MEDIA-SEQUENCE`` keeps the timeline
+    # aligned so a ``loadStartTime`` of 857s still maps to segment 214.
+    anchor = max(0, int(getattr(session, "hls_anchor_segment", 0) or 0))
+    if anchor >= total:
+        anchor = 0
     last_seg_seconds = duration - (total - 1) * seg_secs
     if last_seg_seconds <= 0 or last_seg_seconds > seg_secs:
         last_seg_seconds = float(seg_secs)
@@ -48,10 +57,10 @@ def render_manifest(session: PlaybackSessionDTO) -> str:
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         f"#EXT-X-TARGETDURATION:{seg_secs}",
-        "#EXT-X-MEDIA-SEQUENCE:0",
+        f"#EXT-X-MEDIA-SEQUENCE:{anchor}",
         "#EXT-X-PLAYLIST-TYPE:VOD" if complete else "#EXT-X-PLAYLIST-TYPE:EVENT",
     ]
-    for index in range(total):
+    for index in range(anchor, total):
         seg_dur = last_seg_seconds if index == total - 1 else float(seg_secs)
         lines.append(f"#EXTINF:{seg_dur:.3f},")
         lines.append(f"segment_{index:05d}.ts")

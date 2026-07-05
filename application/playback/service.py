@@ -33,7 +33,7 @@ from application.playback.playlist import (
 )
 from application.playback.resume import (
     anchor_segment,
-    normalize_resume_seconds,
+    clamp_resume_seconds,
     resume_segment_index,
     wait_for_file,
 )
@@ -150,7 +150,10 @@ class PlaybackService:
         manifest_path = str(output_dir / "index.m3u8")
         seg_secs = self._segment_seconds
 
-        playback_start = normalize_resume_seconds(command.start_time_seconds)
+        playback_start = clamp_resume_seconds(
+            command.start_time_seconds,
+            max_duration=duration if duration > 0 else None,
+        )
         total_segments = 0
         if duration > 0:
             total_segments = write_initial_playlist(
@@ -397,7 +400,16 @@ class PlaybackService:
 
         if in_prefetch:
             if not self._transcode.is_running(session.session_id):
-                self._restart_at(session, session.hls_anchor_segment)
+                # Restart at the requested segment, not the anchor: the
+                # output dir may already contain later segments from a
+                # previous seek-on-demand run (e.g. a Shaka probe at 110
+                # fills 110-217), so ``latest`` can be far ahead of the
+                # requested segment. Restarting at ``latest+1`` would
+                # skip the requested segment entirely; restarting at the
+                # anchor re-encodes existing segments and underruns the
+                # buffer. Seeking to ``segment_index`` emits the missing
+                # segment in ~2s and fills forward from there.
+                self._restart_at(session, segment_index)
             if wait_for_file(target, wait_secs):
                 return
 
@@ -405,10 +417,7 @@ class PlaybackService:
         with lock:
             if target.is_file():
                 return
-            restart_index = segment_index
-            if not self._transcode.is_running(session.session_id) and in_prefetch:
-                restart_index = session.hls_anchor_segment
-            self._restart_at(session, restart_index)
+            self._restart_at(session, segment_index)
             if not wait_for_file(target, wait_secs):
                 _LOG.warning(
                     "media_segment_unavailable session=%s seg=%s latest=%s",

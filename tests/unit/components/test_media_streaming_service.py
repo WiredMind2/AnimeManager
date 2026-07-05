@@ -503,7 +503,7 @@ def test_resolve_playhead_segment_served_after_resume_create(tmp_path: Path):
 
 
 def test_resolve_playhead_waits_when_encoder_dead(tmp_path: Path):
-    """Dead encoder with missing playhead segment must restart at anchor, not playhead."""
+    """Dead encoder with missing playhead segment must restart at the playhead."""
     transcoder = _DeadEncoderResumeFake(duration=1400.0)
     svc = PlaybackService(
         media_library=_FakeLibrary(tmp_path),
@@ -539,7 +539,7 @@ def test_resolve_playhead_waits_when_encoder_dead(tmp_path: Path):
     assert Path(path).is_file()
     restart_calls = transcoder.calls[initial_calls:]
     assert restart_calls, "encoder restart expected when playhead segment missing"
-    assert restart_calls[0]["start_segment_index"] == session.hls_anchor_segment
+    assert restart_calls[0]["start_segment_index"] == 177
 
 
 # --- Cycle 3: stop preserves segment files ---
@@ -626,7 +626,7 @@ def test_resume_segment_index_from_playback_start():
 
 
 def test_create_session_resume_manifest_no_ext_x_start(tmp_path: Path):
-    """Resume keeps the full timeline; seek is client-side via loadStartTime."""
+    """Resume manifest lists segments from the anchor with matching MEDIA-SEQUENCE."""
     svc, _ = _seekable_service(tmp_path, duration=600.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -638,9 +638,9 @@ def test_create_session_resume_manifest_no_ext_x_start(tmp_path: Path):
         )
     )
     manifest_text = Path(session.manifest_path).read_text(encoding="utf-8")
-    assert "#EXT-X-MEDIA-SEQUENCE:0" in manifest_text
+    assert "#EXT-X-MEDIA-SEQUENCE:18" in manifest_text
     assert "#EXT-X-START" not in manifest_text
-    assert "segment_00000.ts" in manifest_text
+    assert "segment_00000.ts" not in manifest_text
     assert "segment_00018.ts" in manifest_text
     assert "segment_00149.ts" in manifest_text
     assert session.hls_anchor_segment == 18
