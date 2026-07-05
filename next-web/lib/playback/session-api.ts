@@ -7,6 +7,20 @@ export function resolveBackendUrl(path: string): string {
   return backendPath(path);
 }
 
+/** Same-origin absolute URL for workers and libass (browser only). */
+export function resolveAbsoluteBackendUrl(path: string): string {
+  const resolved = resolveBackendUrl(path);
+  if (
+    typeof window !== "undefined" &&
+    resolved &&
+    !resolved.startsWith("http://") &&
+    !resolved.startsWith("https://")
+  ) {
+    return new URL(resolved, window.location.origin).href;
+  }
+  return resolved;
+}
+
 export async function createSession(
   animeId: number,
   form: FormData,

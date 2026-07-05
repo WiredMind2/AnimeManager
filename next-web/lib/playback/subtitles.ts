@@ -1,7 +1,7 @@
 import {
   AmPlaybackSubtitles,
 } from "@/components/player/SubtitleBridge";
-import { resolveBackendUrl } from "@/lib/playback/session-api";
+import { resolveAbsoluteBackendUrl, resolveBackendUrl } from "@/lib/playback/session-api";
 import type { PlaybackSessionPayload } from "@/lib/playback/types";
 import type { SubtitleTrackRef } from "@/types/player";
 
@@ -31,7 +31,7 @@ export async function attachSubtitleTracks(
     const trackId = String(track.id ?? "");
     if (!trackId) continue;
     if (track.ass_url) {
-      assById[trackId] = resolveBackendUrl(String(track.ass_url));
+      assById[trackId] = resolveAbsoluteBackendUrl(String(track.ass_url));
     }
     if (track.url == null) continue;
     try {
@@ -50,7 +50,7 @@ export async function attachSubtitleTracks(
   return { trackRefs, assById };
 }
 
-export function applySubtitleSelection(opts: {
+export async function applySubtitleSelection(opts: {
   shakaPlayer: {
     selectTextTrack: (track: unknown) => void;
     setTextTrackVisibility: (visible: boolean) => void;
@@ -61,7 +61,7 @@ export function applySubtitleSelection(opts: {
   state: SubtitleState;
   onError: (message: string) => void;
   onClearError: () => void;
-}): void {
+}): Promise<void> {
   const { shakaPlayer, video, panel, subtitleTrackId, state, onError, onClearError } = opts;
   const chosen = subtitleTrackId;
   const bridge = (video as HTMLVideoElement & {
@@ -95,7 +95,7 @@ export function applySubtitleSelection(opts: {
   const assUrl = state.assById[chosen] || "";
   if (assUrl && AmPlaybackSubtitles.supportsLibass()) {
     disposeAss();
-    const inst = AmPlaybackSubtitles.startLibassOctopus(video, assUrl, () => {
+    const inst = await AmPlaybackSubtitles.startLibassOctopus(video, assUrl, () => {
       onError("Advanced subtitles failed to load; falling back to plain text.");
       disposeAss();
       bridge?.setAssBridgeActive?.(false);

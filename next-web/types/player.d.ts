@@ -82,6 +82,9 @@ declare global {
     SubtitlesOctopus?: new (opts: Record<string, unknown>) => {
       dispose: () => void;
       canvasParent?: HTMLElement;
+      canvas?: HTMLCanvasElement;
+      setCurrentTime?: (t: number) => void;
+      resize?: () => void;
     };
     AmPlaybackSubtitles?: {
       libassBaseUrl: () => string;
@@ -90,7 +93,7 @@ declare global {
         video: HTMLVideoElement,
         assUrl: string,
         onError?: (err: unknown) => void,
-      ) => { dispose: () => void; canvasParent?: HTMLElement } | null;
+      ) => Promise<{ dispose: () => void; canvasParent?: HTMLElement } | null>;
       disposeOctopus: (inst: { dispose?: () => void } | null) => void;
       createShakaTextDisplayFactory: () => unknown;
     };

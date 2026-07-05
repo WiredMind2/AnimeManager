@@ -310,7 +310,7 @@ export function usePlayback(
     const shakaPlayer = shakaPlayerRef.current;
     const video = videoRef.current;
     if (!shakaPlayer || !video) return;
-    applySubtitleSelection({
+    void applySubtitleSelection({
       shakaPlayer,
       video,
       panel: panelRef.current,
@@ -419,7 +419,11 @@ export function usePlayback(
 
         const resumePlayback = loadStartTime !== undefined && loadStartTime > 0;
         markLoadPhase("shaka_configuring", { generation });
-        player.configure(buildShakaConfig(resumePlayback));
+        const shakaConfig = buildShakaConfig(resumePlayback) as Record<string, unknown>;
+        if (typeof AmPlaybackSubtitles.createShakaTextDisplayFactory === "function") {
+          shakaConfig.textDisplayFactory = AmPlaybackSubtitles.createShakaTextDisplayFactory();
+        }
+        player.configure(shakaConfig);
         markLoadPhase("shaka_configured", { generation });
 
         try {
@@ -454,6 +458,10 @@ export function usePlayback(
         playerLoggerRef.current?.log("info", "shaka_attached");
         markLoadPhase("shaka_attached", { generation });
         if (abortIfStale("after_attach")) return;
+
+        // #region agent log
+        fetch('http://127.0.0.1:7716/ingest/9f2988e2-a135-426b-bd73-5dcc8ea63ea6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5dee15'},body:JSON.stringify({sessionId:'5dee15',location:'use-playback.ts:load',message:'before_player_load',data:{manifestUrl,loadStartTime:loadStartTime??null,knownDuration,playbackStartSeconds,hypothesisId:'H1'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
         player.addEventListener("buffering", (evt: unknown) => {
           const buffering = (evt as { buffering?: boolean }).buffering;
@@ -501,16 +509,22 @@ export function usePlayback(
         if (knownDuration > 0) {
           const dur = video.duration;
           const t = video.currentTime;
-          const absurd =
-            (Number.isFinite(dur) && dur > knownDuration * 1.2) ||
-            (Number.isFinite(t) && t > knownDuration * 1.2);
-          if (absurd) {
-            await player.seek(expectedStart);
+          const durationAbsurd =
+            Number.isFinite(dur) && dur > knownDuration * 1.2;
+          const timeAbsurd =
+            Number.isFinite(t) && t > knownDuration * 1.2;
+          const wrongEndWhenStartingFromZero =
+            expectedStart <= 0.05 &&
+            Number.isFinite(t) &&
+            t > knownDuration * 0.85;
+          if (durationAbsurd || timeAbsurd || wrongEndWhenStartingFromZero) {
+            video.currentTime = expectedStart;
             playerLoggerRef.current?.log("warn", "timeline_sanity_seek", {
               reported_duration: dur,
               reported_current_time: t,
               expected_start: expectedStart,
               known_duration: knownDuration,
+              wrong_end: wrongEndWhenStartingFromZero,
             });
           }
         }
@@ -557,6 +571,9 @@ export function usePlayback(
           code: shakaPlain?.codeName ?? errObj?.code ?? "UNKNOWN",
         };
         markLoadPhase("startup_failed", { generation, error_message: message });
+        // #region agent log
+        fetch('http://127.0.0.1:7716/ingest/9f2988e2-a135-426b-bd73-5dcc8ea63ea6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5dee15'},body:JSON.stringify({sessionId:'5dee15',location:'use-playback.ts:catch',message:'load_or_play_failed_detail',data:{error:message,shakaCode:shakaPlain?.codeName??errObj?.code??null,loadStartTime:loadStartTime??null,knownDuration,hypothesisId:'H1'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         playerLoggerRef.current?.log("error", "load_or_play_failed", {
           ...playerFaultFields("playback_runtime_error", "startup_failed", false),
           error: message,
