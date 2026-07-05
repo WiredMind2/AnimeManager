@@ -99,6 +99,10 @@ export default function DownloadedEpisodesTable({
                         <span className="badge badge--good">{state}</span>
                       ) : state === "DOWNLOADING" ? (
                         <span className="badge badge--accent">{state}</span>
+                      ) : state === "DELETED" ? (
+                        <span className="badge" style={{ opacity: 0.75 }}>
+                          {state}
+                        </span>
                       ) : (
                         <span className="badge">{state}</span>
                       )}

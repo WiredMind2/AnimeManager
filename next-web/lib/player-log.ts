@@ -2,6 +2,25 @@ import { backendPath } from "@/lib/config";
 
 export type PlayerLogLevel = "debug" | "info" | "warn" | "error";
 
+/** Classifies player faults for console and server logs. */
+export type PlayerFaultClass =
+  | "startup_config_warning"
+  | "startup_stall"
+  | "playback_runtime_error"
+  | "rebuffering";
+
+export function playerFaultFields(
+  faultClass: PlayerFaultClass,
+  faultStage: string,
+  recoverable: boolean,
+): Record<string, unknown> {
+  return {
+    fault_class: faultClass,
+    fault_stage: faultStage,
+    recoverable,
+  };
+}
+
 export type PlayerLogEvent = {
   ts: string;
   event: string;
@@ -217,7 +236,7 @@ export function createPlayerLogger(opts: PlayerLoggerOptions): PlayerLogger {
       ...baseContext(),
       ...(data || {}),
     };
-    const line = `[AnimeManager player] ${event}`;
+    const line = `[AnimeManager player][${level.toUpperCase()}] ${event}`;
     try {
       if (level === "error") {
         console.error(line, payload);

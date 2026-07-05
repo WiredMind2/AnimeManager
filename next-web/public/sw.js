@@ -91,8 +91,16 @@ self.addEventListener("fetch", (event) => {
             }
             return res;
           })
-          .catch(() => cached);
-        return cached || networkFetch;
+          .catch(
+            () =>
+              cached ??
+              new Response("", {
+                status: 503,
+                headers: { "Content-Type": "text/plain" },
+              }),
+          );
+        // cached may be undefined on a cache miss; fall through to networkFetch
+        return cached ?? networkFetch;
       }),
     );
     return;

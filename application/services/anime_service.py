@@ -14,7 +14,7 @@ from application.commands import (
 )
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
-from application.services.media_streaming_service import MediaStreamingService
+from application.playback import PlaybackService
 from domain.dto import (
     AnimeListRequest,
     AnimeListResponse,
@@ -41,7 +41,7 @@ class AnimeApplicationService:
         metadata_provider: MetadataProviderPort,
         download_port: DownloadPort,
         user_actions_port: UserActionsPort,
-        media_streaming_service: MediaStreamingService | None = None,
+        media_streaming_service: PlaybackService | None = None,
     ) -> None:
         self._anime_repository = anime_repository
         self._metadata_provider = metadata_provider
@@ -292,7 +292,11 @@ class AnimeApplicationService:
         for row in self.get_anime_torrents(anime_id):
             if not isinstance(row, dict):
                 continue
+            if str(row.get("status") or "").lower() == "deleted":
+                continue
             state = str(row.get("state") or "").upper()
+            if state == "DELETED":
+                continue
             if state == "COMPLETE":
                 return True
             try:
@@ -442,7 +446,7 @@ class AnimeApplicationService:
             return
         self._media_streaming.cleanup_stale_sessions()
 
-    def _require_media_streaming(self) -> MediaStreamingService:
+    def _require_media_streaming(self) -> PlaybackService:
         if self._media_streaming is None:
             raise ValidationError("Media streaming is not configured.")
         return self._media_streaming

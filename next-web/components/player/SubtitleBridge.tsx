@@ -12,7 +12,10 @@ export type AmPlaybackSubtitlesApi = {
     onError?: (err: unknown) => void,
   ) => { dispose: () => void; canvasParent?: HTMLElement } | null;
   disposeOctopus: (inst: { dispose?: () => void } | null) => void;
-  createShakaTextDisplayFactory: () => (player: ShakaPlayerForTextDisplay) => unknown;
+  createShakaTextDisplayFactory: () => (
+    arg1: ShakaPlayerForTextDisplay | HTMLVideoElement,
+    arg2?: HTMLElement,
+  ) => unknown;
 };
 
 /** Minimal Shaka player surface used by the text-display factory (4.10+). */
@@ -105,14 +108,33 @@ function resolveVideoContainer(
 }
 
 function createShakaTextDisplayFactory() {
-  return function amTextDisplayFactory(player: ShakaPlayerForTextDisplay) {
+  return function amTextDisplayFactory(
+    arg1: ShakaPlayerForTextDisplay | HTMLVideoElement,
+    arg2?: HTMLElement,
+  ) {
     const shaka = window.shaka;
     if (!shaka?.text?.UITextDisplayer) {
       return null;
     }
-    const inner = new shaka.text.UITextDisplayer(player);
-    const video = player.getMediaElement?.() ?? null;
-    const videoContainer = resolveVideoContainer(player, video);
+    let inner: InstanceType<typeof shaka.text.UITextDisplayer>;
+    let video: HTMLVideoElement | null;
+    let videoContainer: HTMLElement | null;
+    if (arg2 != null) {
+      // Shaka 4.10.x calls the factory with (video, videoContainer).
+      video = arg1 as HTMLVideoElement;
+      videoContainer = arg2;
+      inner = new shaka.text.UITextDisplayer(video, videoContainer);
+    } else {
+      const player = arg1 as ShakaPlayerForTextDisplay;
+      video = player.getMediaElement?.() ?? null;
+      videoContainer = resolveVideoContainer(player, video);
+      try {
+        inner = new shaka.text.UITextDisplayer(player);
+      } catch {
+        if (!video || !videoContainer) return null;
+        inner = new shaka.text.UITextDisplayer(video, videoContainer);
+      }
+    }
     const bridge: ShakaTextBridge = {
       _assBridgeActive: false,
       _userWantsTextVisible: false,
@@ -132,7 +154,7 @@ function createShakaTextDisplayFactory() {
         bridge._userWantsTextVisible = !!on;
         if (bridge._assBridgeActive) {
           inner.setTextVisibility(false);
-          const panel = video.closest?.("[data-player-panel]");
+          const panel = video?.closest?.("[data-player-panel]");
           const inst = (panel as HTMLElement & { __amLibassOctopus?: { canvasParent?: HTMLElement } })
             ?.__amLibassOctopus;
           const parent = inst?.canvasParent;

@@ -6,6 +6,7 @@ Skipped when the SubsPlease Classroom Elite S4E11 file is absent.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -61,6 +62,36 @@ def test_ffmpeg_running_after_session_create(sdk, transcoder):
         sdk.stop_playback_session(sid)
 
 
+def test_resume_playhead_segment_available_after_create(sdk):
+    """After ``/play`` with a resume hint, the playhead segment must exist."""
+    session = sdk.create_playback_session(
+        ANIME_ID,
+        file_id=FILE_ID,
+        client_host="127.0.0.1",
+        start_time_seconds=80.0,
+    )
+    sid = session["session_id"]
+    token = session["token"]
+    try:
+        playhead = 20  # 80s // 4s
+        seg_name = f"segment_{playhead:05d}.ts"
+        _session, seg_path = sdk.resolve_playback_media_path(
+            session_id=sid,
+            token=token,
+            segment_name=seg_name,
+        )
+        assert os.path.getsize(seg_path) > 10_000, f"{seg_name} too small"
+        manifest = sdk.resolve_playback_media_path(
+            session_id=sid,
+            token=token,
+            segment_name=None,
+        )[1]
+        manifest_text = Path(manifest).read_text(encoding="utf-8")
+        assert "#EXT-X-START" not in manifest_text
+    finally:
+        sdk.stop_playback_session(sid)
+
+
 def test_resume_anchor_segment_materializes(sdk):
     session = sdk.create_playback_session(
         ANIME_ID,
@@ -71,7 +102,7 @@ def test_resume_anchor_segment_materializes(sdk):
     sid = session["session_id"]
     token = session["token"]
     try:
-        anchor = 19  # 76s // 4s with scrub-back headroom
+        anchor = 15  # (80s - 20s headroom) // 4s
         seg_name = f"segment_{anchor:05d}.ts"
         t0 = time.monotonic()
         _session, seg_path = sdk.resolve_playback_media_path(
@@ -164,7 +195,7 @@ def test_play_endpoint_waits_for_first_segment_under_30s(sdk):
     t0 = time.monotonic()
     play = client.post(
         f"/ui/anime/{ANIME_ID}/play",
-        data={"file_id": FILE_ID, "start_time": "78"},
+        data={"file_id": FILE_ID},
     )
     elapsed = time.monotonic() - t0
     assert play.status_code == 200, play.text
@@ -172,8 +203,66 @@ def test_play_endpoint_waits_for_first_segment_under_30s(sdk):
     sid = payload["session_id"]
     try:
         assert elapsed < 35.0, f"/play took {elapsed:.1f}s (ffmpeg may be slow or stuck)"
-        seg = client.get(f"/ui/stream/{sid}/segment_00019.ts")
+        seg = client.get(f"/ui/stream/{sid}/segment_00000.ts")
         assert seg.status_code == 200, seg.text[:200]
         assert len(seg.content) > 10_000
+        manifest = client.get(
+            f"/ui/stream/{sid}/index.m3u8",
+            params={"token": payload["token"]},
+        )
+        assert manifest.status_code == 200, manifest.text[:200]
+        assert "#EXT-X-START" not in manifest.text
+    finally:
+        client.post(f"/ui/stream/{sid}/stop")
+
+
+def test_fresh_play_parallel_prefetch_segments_served(sdk, transcoder):
+    """Simulate Shaka prefetching segment 1 and 2 in parallel on fresh start."""
+    from fastapi.testclient import TestClient
+
+    from clients.http.app import app
+
+    client = TestClient(app)
+    play = client.post(
+        f"/ui/anime/{ANIME_ID}/play",
+        data={"file_id": FILE_ID},
+    )
+    assert play.status_code == 200, play.text
+    payload = play.json()
+    sid = payload["session_id"]
+    try:
+        assert transcoder.is_hls_session_running(sid)
+        seg0 = client.get(f"/ui/stream/{sid}/segment_00000.ts")
+        assert seg0.status_code == 200, seg0.text[:200]
+        assert len(seg0.content) > 10_000
+
+        results: list[tuple[str, int, int]] = []
+        errors: list[str] = []
+
+        def _fetch(name: str) -> None:
+            try:
+                t0 = time.monotonic()
+                resp = client.get(f"/ui/stream/{sid}/{name}")
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                results.append((name, resp.status_code, len(resp.content)))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+
+        threads = [
+            threading.Thread(target=_fetch, args=("segment_00001.ts",)),
+            threading.Thread(target=_fetch, args=("segment_00002.ts",)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30.0)
+            assert not t.is_alive(), "parallel segment fetch hung"
+
+        assert not errors, errors
+        assert len(results) == 2
+        for name, status, size in results:
+            assert status == 200, f"{name} returned HTTP {status}"
+            assert size > 10_000, f"{name} body too small"
+        assert transcoder.is_hls_session_running(sid)
     finally:
         client.post(f"/ui/stream/{sid}/stop")

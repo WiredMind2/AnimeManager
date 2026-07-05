@@ -17,6 +17,10 @@ export type PlaybackSessionPayload = {
     ass_url?: string;
     codec?: string;
   }[];
+  hls_anchor_segment?: number;
+  playback_start_seconds?: number;
+  segment_seconds?: number;
+  duration_seconds?: number;
   resume_seconds?: number;
 };
 
@@ -32,6 +36,7 @@ declare global {
         attach: (video: HTMLVideoElement) => Promise<void>;
         destroy: () => Promise<void>;
         load: (url: string, startTime?: number) => Promise<void>;
+        seek: (time: number) => Promise<void>;
         configure: (cfg: unknown) => void;
         setVideoContainer?: (container: HTMLElement) => void;
         getMediaElement?: () => HTMLVideoElement | null;

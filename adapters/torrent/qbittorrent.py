@@ -265,11 +265,11 @@ class qBittorrent(BaseTorrentManager):
         self.qb.torrents_set_location(location=dest, torrent_hashes=hashes)
 
     @wait_connection
-    def delete(self, hashes):
+    def delete(self, hashes, delete_files=True):
         if self.qb is None:
             raise TorrentException("Couldn't connect to qBittorrent")
 
-        self.qb.torrents_delete(delete_files=True, torrent_hashes=hashes)
+        self.qb.torrents_delete(delete_files=delete_files, torrent_hashes=hashes)
 
     def convert(self, data):
         # Convert qbittorrentapi torrent representation to our Torrent

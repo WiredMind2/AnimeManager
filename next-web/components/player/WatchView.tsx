@@ -3,7 +3,7 @@
 import { useRef } from "react";
 import EpisodePicker from "./EpisodePicker";
 import VideoPlayer from "./VideoPlayer";
-import { usePlaybackSession } from "@/hooks/usePlaybackSession";
+import { usePlayback } from "@/lib/playback/use-playback";
 import type { EpisodeFile, WatchTrackMap } from "@/lib/api";
 
 export type WatchViewProps = {
@@ -31,10 +31,9 @@ export default function WatchView({
   const videoRef = useRef<HTMLVideoElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const session = usePlaybackSession(videoRef, panelRef, {
+  const session = usePlayback(videoRef, panelRef, {
     animeId,
     trackMap,
-    episodeResumeMap,
     initialFileId: selectedFileId,
     initialFileTitle: selectedFileTitle,
     initialAudioTracks: selectedAudioTracks,

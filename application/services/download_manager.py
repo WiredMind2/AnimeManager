@@ -119,6 +119,8 @@ class DownloadManager(BaseComponent):
             self.log("DOWNLOAD_MANAGER", "[ERROR] - No URL or hash provided")
             return None
 
+        self._clear_deleted_status_for_redownload(hash_value)
+
         task = DownloadTask(anime_id, url, hash_value, user_id)
         self._download_queue.put(task)
 
@@ -410,6 +412,7 @@ class DownloadManager(BaseComponent):
                 "eta": int(eta) if isinstance(eta, (int, float)) and eta >= 0 else None,
                 "path": str(path) if path else None,
             }
+            self._maybe_mark_torrent_complete(h_lower, state_raw, progress)
             out[category].append(row)
 
         # Also surface tasks that are queued/preparing but haven't been
@@ -585,6 +588,181 @@ class DownloadManager(BaseComponent):
             task.dl_speed = float(dl_speed)
         if isinstance(eta, (int, float)) and eta >= 0:
             task.eta = int(eta)
+        self._maybe_mark_torrent_complete(
+            str(task.hash_value).lower() if task.hash_value else None,
+            state,
+            task.progress,
+        )
+
+    def _clear_deleted_status_for_redownload(self, hash_value: Optional[str]) -> None:
+        """Allow a manual re-download to proceed after a DELETED torrent."""
+        if not hash_value:
+            return
+        db_manager = self._database_manager
+        if db_manager is None:
+            return
+        getter = getattr(db_manager, "get_torrent_status", None)
+        updater = getattr(db_manager, "update_torrent_status", None)
+        if not callable(getter) or not callable(updater):
+            return
+        try:
+            if str(getter(hash_value) or "").lower() == "deleted":
+                updater(hash_value, None)
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Could not clear deleted status for {hash_value}: {exc}",
+            )
+
+    def _maybe_mark_torrent_complete(
+        self,
+        hash_value: Optional[str],
+        state: Any,
+        progress: Optional[float],
+    ) -> None:
+        """Persist ``complete`` when the torrent client reports a finished download."""
+        if not hash_value:
+            return
+        if not self._is_live_complete(state, progress):
+            return
+        db_manager = self._database_manager
+        if db_manager is None:
+            return
+        updater = getattr(db_manager, "update_torrent_status", None)
+        getter = getattr(db_manager, "get_torrent_status", None)
+        if not callable(updater) or not callable(getter):
+            return
+        try:
+            current = str(getter(hash_value) or "").lower()
+            if current in ("complete", "deleted"):
+                return
+            updater(hash_value, "complete")
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Could not mark torrent complete for {hash_value}: {exc}",
+            )
+
+    @classmethod
+    def _is_live_complete(cls, state: Any, progress: Optional[float]) -> bool:
+        token = str(state or "").strip().lower().replace(" ", "_")
+        if token in cls._COMPLETED_STATES or token in cls._SEEDING_STATES:
+            return True
+        return isinstance(progress, (int, float)) and float(progress) >= 0.999
+
+    def _remove_torrent_from_client(
+        self, hash_value: str, *, delete_files: bool = False
+    ) -> None:
+        tm = self._torrent_manager
+        if tm is None or not hash_value:
+            return
+        deleter = getattr(tm, "delete", None)
+        if not callable(deleter):
+            return
+        try:
+            deleter(hash_value, delete_files=delete_files)
+        except TypeError:
+            try:
+                deleter(hash_value)
+            except Exception as exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Failed to remove torrent {hash_value}: {exc}",
+                )
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Failed to remove torrent {hash_value}: {exc}",
+            )
+
+    def _lookup_live_torrent(self, hash_value: str) -> Optional[Dict[str, Any]]:
+        tm = self._torrent_manager
+        if tm is None or not hash_value:
+            return None
+        try:
+            rows = tm.list(hashes=[hash_value])
+        except TypeError:
+            try:
+                rows = [
+                    row
+                    for row in (tm.list() or [])
+                    if str(self._extract_torrent_field(row, "hash") or "").lower()
+                    == str(hash_value).lower()
+                ]
+            except Exception:
+                return None
+        except Exception:
+            return None
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "state": self._extract_torrent_field(row, "state"),
+            "progress": self._extract_torrent_field(row, "progress"),
+            "path": self._extract_torrent_field(row, "path"),
+        }
+
+    def reconcile_deleted_torrents(
+        self,
+        folder_resolver: Callable[[int], Optional[str]],
+    ) -> int:
+        """Mark completed torrents with missing files as deleted and stop restore."""
+        from application.services.torrent_file_presence import (
+            paths_have_video_files,
+            should_mark_deleted,
+        )
+
+        db_manager = self._database_manager
+        if db_manager is None:
+            return 0
+        lister = getattr(db_manager, "list_torrents_for_reconcile", None)
+        updater = getattr(db_manager, "update_torrent_status", None)
+        if not callable(lister) or not callable(updater):
+            return 0
+
+        marked = 0
+        for row in lister() or []:
+            if not isinstance(row, dict):
+                continue
+            hash_val = str(row.get("hash") or "").strip()
+            if not hash_val:
+                continue
+            status = row.get("status")
+            if str(status or "").lower() == "deleted":
+                self._remove_torrent_from_client(hash_val, delete_files=False)
+                continue
+
+            anime_id = row.get("anime_id")
+            anime_folder: Optional[str] = None
+            if anime_id is not None:
+                try:
+                    anime_folder = folder_resolver(int(anime_id))
+                except Exception:
+                    anime_folder = None
+
+            save_path = row.get("save_path")
+            live = self._lookup_live_torrent(hash_val)
+            if live and self._is_live_complete(live.get("state"), live.get("progress")):
+                updater(hash_val, "complete")
+                status = "complete"
+                if live.get("path") and not save_path:
+                    save_path = str(live.get("path"))
+
+            if should_mark_deleted(
+                status=status,
+                save_path=save_path,
+                anime_folder=anime_folder,
+            ):
+                updater(hash_val, "deleted")
+                self._remove_torrent_from_client(hash_val, delete_files=False)
+                marked += 1
+
+        if marked:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Marked {marked} torrent(s) as deleted (missing files)",
+            )
+        return marked
 
     def _process_download_queue(self) -> None:
         """Drain the download queue until :meth:`close` is invoked."""

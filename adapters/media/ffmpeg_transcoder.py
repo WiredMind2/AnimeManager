@@ -13,9 +13,9 @@ To make user seeks land instantly, the application layer can call
 :meth:`ensure_hls_session` again with ``start_segment_index=N``. We
 then terminate the current ffmpeg process and spawn a new one that
 input-seeks to ``N * segment_seconds`` and resumes segment numbering at
-``N``. ``-copyts`` keeps PTS continuous with the canonical playlist so
-the player can splice from any previous segment to the new ones
-without an ``#EXT-X-DISCONTINUITY`` marker.
+``N``. ``-output_ts_offset`` stamps muxed packets on the canonical
+playlist clock so the player can splice from any previous segment to
+the new ones without an ``#EXT-X-DISCONTINUITY`` marker.
 """
 
 from __future__ import annotations
@@ -430,10 +430,10 @@ class FFmpegTranscoderAdapter:
     ) -> list[str]:
         segment_pattern = str(Path(output_dir) / "segment_%05d.ts")
         # Input-seek to N*seg_secs so that ffmpeg's first emitted segment
-        # corresponds to the requested playlist position. ``-copyts``
-        # keeps PTS values aligned with the canonical playlist time so
-        # the player can splice from any previous segment to the new
-        # ones without an ``#EXT-X-DISCONTINUITY`` marker.
+        # corresponds to the requested playlist position. ``-output_ts_offset``
+        # stamps muxed MPEG-TS packets on the canonical playlist clock
+        # without ``-copyts``, which preserved raw source timestamps and
+        # made browsers report UINT32-scale ``video.duration`` values.
         seek_seconds = start_segment_index * segment_seconds
         if duration_seconds > 0:
             # Avoid landing past EOF when ffprobe over-estimates duration.
@@ -449,16 +449,10 @@ class FFmpegTranscoderAdapter:
             "+genpts",
         ]
         if seek_seconds > 0:
-            # When the user has selected a burnt-in subtitle track we
-            # can't input-seek straight to the target — the
-            # ``subtitles`` filter would render nothing because libass
-            # needs to observe at least a brief window of frames with
-            # PTS leading up to the seek point before it starts
-            # emitting glyphs. Land the input demuxer slightly earlier
-            # and let the output-side seek discard the warmup frames so
-            # the playlist position stays exact.
-            command.extend(["-ss", f"{seek_seconds}", "-copyts"])
+            command.extend(["-ss", f"{seek_seconds}"])
         command.extend(["-i", source_path, "-avoid_negative_ts", "make_zero"])
+        if seek_seconds > 0:
+            command.extend(["-output_ts_offset", f"{seek_seconds:g}"])
         keyframe_expr = (
             f"expr:gte(t,{seek_seconds}+n_forced*{segment_seconds})"
             if seek_seconds > 0
@@ -472,8 +466,7 @@ class FFmpegTranscoderAdapter:
         # ``-force_key_frames`` guarantees a key-frame at every segment
         # boundary so the resulting .ts files are independently
         # decodable, which HLS requires for arbitrary seeking.
-        command.extend(
-            [
+        output_args: list[str] = [
                 "-c:v",
                 "libx264",
                 # Keep H.264 output inside the broadest browser-decoder
@@ -524,9 +517,11 @@ class FFmpegTranscoderAdapter:
                 segment_pattern,
                 "-start_number",
                 str(start_segment_index),
-                playlist_output,
-            ]
-        )
+        ]
+        if seek_seconds <= 0:
+            output_args.extend(["-reset_timestamps", "1"])
+        output_args.append(playlist_output)
+        command.extend(output_args)
         return command
 
     def _wait_for_initial_manifest(
@@ -703,8 +698,8 @@ class FFmpegTranscoderAdapter:
         process starts from a known-clean state. We deliberately do
         *not* touch ``index.m3u8`` (that's the canonical playlist the
         application layer owns) or the produced ``segment_NNNNN.ts``
-        files (those remain valid across restarts because PTS values
-        are kept aligned with the playlist by ``-copyts``)."""
+        files (those remain valid across restarts when
+        ``-output_ts_offset`` keeps each encode on the playlist clock)."""
         try:
             os.remove(ffmpeg_playlist)
         except FileNotFoundError:

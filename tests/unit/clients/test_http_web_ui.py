@@ -1302,6 +1302,35 @@ def test_anime_detail_downloaded_episodes_empty_when_none(client, monkeypatch):
     assert "Nothing downloaded yet" in resp.text
 
 
+def test_normalize_anime_torrent_row_deleted_status():
+    row = http_web._normalize_anime_torrent_row(
+        {
+            "hash": "abc",
+            "name": "Show.mkv",
+            "status": "deleted",
+        }
+    )
+    assert row["state"] == "DELETED"
+
+
+def test_anime_detail_downloaded_episodes_shows_deleted(client, monkeypatch):
+    monkeypatch.setattr(
+        client.fake,
+        "get_anime_torrents",
+        lambda anime_id: [
+            {
+                "hash": "deadbeef",
+                "name": "[SubsPlease] Removed Show.mkv",
+                "status": "deleted",
+            }
+        ],
+    )
+    monkeypatch.setattr(client.fake, "get_active_downloads", lambda: [])
+    resp = client.get("/ui/anime/1")
+    assert resp.status_code == 200
+    assert "DELETED" in resp.text
+
+
 def test_anime_detail_renders_episode_player_links(client):
     resp = client.get("/ui/anime/1")
     assert resp.status_code == 200
@@ -1406,4 +1435,93 @@ def test_stream_player_log_ingest(client):
     log_path = client.fake._play_root / "_player.log"  # type: ignore[attr-defined]
     assert log_path.is_file()
     assert "buffering_started" in log_path.read_text(encoding="utf-8")
-    
+
+
+# ---------------------------------------------------------------------------
+# /play endpoint: server-authoritative resume position (Bug fix regression)
+# ---------------------------------------------------------------------------
+
+class _FakeSDKWithProgress(FakeSDK):
+    """FakeSDK variant where the episode file carries a stored position_seconds
+    so we can test the server-authoritative resume logic in web_action_play."""
+
+    def __init__(self, stored_position: float) -> None:
+        super().__init__()
+        self._stored_position = stored_position
+        # Track what start_time the web layer ultimately passed to create_playback_session.
+        self.captured_start_time: float | None = None
+
+    def list_episode_files(self, anime_id: int, user_id: int | None = None):
+        rows = super().list_episode_files(anime_id, user_id=user_id)
+        # Inject position_seconds into each episode row.
+        for row in rows:
+            row["position_seconds"] = self._stored_position
+        return rows
+
+    def create_playback_session(self, anime_id: int, file_id: str, **kwargs):
+        self.captured_start_time = kwargs.get("start_time_seconds")
+        return super().create_playback_session(anime_id, file_id, **kwargs)
+
+
+@pytest.fixture
+def client_with_progress(monkeypatch):
+    """TestClient with a FakeSDK that has stored episode progress of 1420s."""
+    fake = _FakeSDKWithProgress(stored_position=1420.0)
+    monkeypatch.setattr(http_app, "get_sdk", lambda: fake)
+    with TestClient(http_app.app, follow_redirects=False) as c:
+        c.fake = fake  # type: ignore[attr-defined]
+        yield c
+
+
+def test_play_ignores_client_start_time_hint(client_with_progress):
+    """Client start_time is ignored; resume comes from server DB only."""
+    resp = client_with_progress.post(
+        "/ui/anime/1/play",
+        data={"file_id": "ep-001", "start_time": "708"},
+    )
+    assert resp.status_code == 200
+    fake = client_with_progress.fake
+    assert fake.captured_start_time == pytest.approx(1420.0), (
+        f"Expected start_time=1420.0 (server DB) but got {fake.captured_start_time}"
+    )
+
+
+def test_play_ignores_client_start_time_even_when_higher(client_with_progress):
+    """Client cannot override server resume with a higher start_time."""
+    resp = client_with_progress.post(
+        "/ui/anime/1/play",
+        data={"file_id": "ep-001", "start_time": "1800"},
+    )
+    assert resp.status_code == 200
+    fake = client_with_progress.fake
+    assert fake.captured_start_time == pytest.approx(1420.0), (
+        f"Expected start_time=1420.0 (server DB) but got {fake.captured_start_time}"
+    )
+
+
+def test_play_uses_server_stored_position_when_client_sends_no_hint(client_with_progress):
+    """If the client sends no start_time (fresh page load, empty localStorage),
+    the server's stored 1420s progress must be used."""
+    resp = client_with_progress.post(
+        "/ui/anime/1/play",
+        data={"file_id": "ep-001"},  # no start_time
+    )
+    assert resp.status_code == 200
+    fake = client_with_progress.fake
+    assert fake.captured_start_time == pytest.approx(1420.0), (
+        f"Expected start_time=1420.0 (from server DB) but got {fake.captured_start_time}"
+    )
+
+
+def test_play_ignores_stored_position_below_threshold(monkeypatch):
+    """Stored positions below 10s (e.g. 0s or 5s) are not treated as a resume
+    point — the episode should start from the beginning."""
+    fake = _FakeSDKWithProgress(stored_position=5.0)
+    monkeypatch.setattr(http_app, "get_sdk", lambda: fake)
+    with TestClient(http_app.app, follow_redirects=False) as c:
+        resp = c.post("/ui/anime/1/play", data={"file_id": "ep-001"})
+        assert resp.status_code == 200
+        # No start_time should be passed — episode starts at 0.
+        assert fake.captured_start_time is None, (
+            f"Expected no start_time for sub-threshold stored position, got {fake.captured_start_time}"
+        )

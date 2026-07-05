@@ -61,6 +61,7 @@ class LibTorrent(BaseTorrentManager):
         self._last_periodic_save = 0.0
         self._last_handle_save: Dict[str, float] = {}
         self._restore_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None
+        self._torrent_status_callback: Optional[Callable[[str], Optional[str]]] = None
         self._restored = False
         try:
             self.download_path = os.path.join(
@@ -75,6 +76,21 @@ class LibTorrent(BaseTorrentManager):
     ) -> None:
         """Optional DB rows for magnet+save_path fallback after fast-resume load."""
         self._restore_callback = callback
+
+    def set_torrent_status_callback(
+        self, callback: Optional[Callable[[str], Optional[str]]]
+    ) -> None:
+        """Optional lookup of persisted torrent status by hash."""
+        self._torrent_status_callback = callback
+
+    def _torrent_status(self, info_hash: str) -> Optional[str]:
+        callback = self._torrent_status_callback
+        if callback is None:
+            return None
+        try:
+            return callback(info_hash)
+        except Exception:
+            return None
 
     def ensure_restored(self) -> None:
         """Block until the background connect thread finished session restore."""
@@ -206,6 +222,18 @@ class LibTorrent(BaseTorrentManager):
         resume_dir = self._resume_dir()
         for path in sorted(glob.glob(os.path.join(resume_dir, f"*{_RESUME_SUFFIX}"))):
             try:
+                basename = os.path.basename(path)
+                if not basename.endswith(_RESUME_SUFFIX):
+                    continue
+                info_hash = self._normalise_hash(
+                    basename[: -len(_RESUME_SUFFIX)]
+                )
+                if self._torrent_status(info_hash) == "deleted":
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    continue
                 with open(path, "rb") as fh:
                     data = fh.read()
                 if not data or len(data) < _MIN_RESUME_FILE_BYTES:
@@ -240,6 +268,8 @@ class LibTorrent(BaseTorrentManager):
                 continue
             info_hash = self._normalise_hash(raw_hash)
             if info_hash in self.handles:
+                continue
+            if self._torrent_status(info_hash) == "deleted":
                 continue
             save_path = row.get("save_path")
             if not save_path or not os.path.isdir(str(save_path)):
@@ -605,7 +635,7 @@ class LibTorrent(BaseTorrentManager):
                     raise TorrentException(f"Failed to move torrent {hash_str}: {str(e)}")
 
     @wait_connection
-    def delete(self, hashes):
+    def delete(self, hashes, delete_files=True):
         if isinstance(hashes, str):
             hashes = [hashes]
 
@@ -618,7 +648,10 @@ class LibTorrent(BaseTorrentManager):
                         raise TorrentException(
                             "LibTorrent session or library not available"
                         )
-                    self.session.remove_torrent(handle, lt.options_t.delete_files)
+                    options = (
+                        lt.options_t.delete_files if delete_files else 0
+                    )
+                    self.session.remove_torrent(handle, options)
                     self.handles.pop(key, None)
                 except Exception as e:
                     raise TorrentException(f"Failed to delete torrent {hash_str}: {str(e)}")

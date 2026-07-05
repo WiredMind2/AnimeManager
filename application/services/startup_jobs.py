@@ -96,11 +96,13 @@ class StartupJobsService:
         api_coordinator: APICoordinator,
         database_manager: DatabaseManager,
         runtime: Any,
+        download_adapter: Any = None,
         schedule_limit: int = 50,
     ) -> None:
         self._api_coordinator = api_coordinator
         self._database_manager = database_manager
         self._runtime = runtime
+        self._download_adapter = download_adapter
         self._schedule_limit = max(1, int(schedule_limit))
         self._telemetry = get_telemetry()
         self._lock = threading.Lock()
@@ -220,6 +222,24 @@ class StartupJobsService:
         yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
         )
+        yield StartupJob(
+            "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
+        )
+
+    def _job_reconcile_deleted_torrents(self) -> str:
+        adapter = self._download_adapter
+        if adapter is None:
+            return "skipped (no download adapter)"
+        reconcile = getattr(adapter, "reconcile_deleted_torrents", None)
+        if not callable(reconcile):
+            return "skipped (no reconcile_deleted_torrents)"
+        try:
+            count = int(reconcile())
+        except Exception as exc:
+            return f"reconcile failed: {exc}"
+        if count == 0:
+            return "no torrents marked deleted"
+        return f"marked {count} torrent(s) deleted"
 
     def _job_restore_libtorrent_sessions(self) -> str:
         """Ensure embedded LibTorrent finished restore (idempotent)."""

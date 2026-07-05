@@ -263,6 +263,8 @@ def _collect_anime_torrents(sdk: ClientSDK, anime_id: int) -> list[dict[str, Any
         if active.get("hash") and active["hash"] in seen_hashes:
             for row in saved:
                 if row.get("hash") == active["hash"]:
+                    if str(row.get("state") or "").upper() == "DELETED":
+                        break
                     row.update({k: v for k, v in active.items() if v is not None})
                     break
             continue
@@ -285,6 +287,10 @@ def _normalize_anime_torrent_row(row: Any) -> dict[str, Any]:
             "path": getattr(row, "path", None),
         }
     data["size_human"] = _humanize_size(data.get("size"))
+    persisted_status = str(data.get("status") or "").lower()
+    if persisted_status == "deleted":
+        data["state"] = "DELETED"
+        return data
     state = (data.get("state") or "").upper() or None
     size = data.get("size") or 0
     downloaded = data.get("downloaded") or 0
@@ -1328,7 +1334,6 @@ def web_action_play(
     file_id: str = Form(""),
     audio_track: str = Form(""),
     subtitle_track: str = Form(""),
-    start_time: str = Form(""),
 ) -> JSONResponse:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
@@ -1347,15 +1352,24 @@ def web_action_play(
             subtitle_idx = max(0, int(subtitle_track))
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid subtitle track selection.")
-    if str(start_time).strip() != "":
-        try:
-            parsed_start = float(start_time)
-        except ValueError:
-            # Don't fail the whole request over a malformed hint —
-            # just ignore it and start from the beginning.
-            parsed_start = 0.0
-        if parsed_start > 0 and parsed_start == parsed_start:  # NaN guard
-            start_time_seconds = parsed_start
+
+    # Resume position comes from the server DB only — not from the browser.
+    try:
+        ep_files = list(sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or [])
+        for ep in ep_files:
+            if str(ep.get("file_id") or "") == file_id.strip():
+                pos_raw = ep.get("position_seconds")
+                if pos_raw is not None:
+                    try:
+                        server_pos = float(pos_raw)
+                    except (TypeError, ValueError):
+                        server_pos = 0.0
+                    if server_pos >= 10.0:
+                        start_time_seconds = server_pos
+                break
+    except Exception:  # noqa: BLE001
+        pass
+
     _LOG.info(
         "play_request anime_id=%s file_id=%s audio_track=%s subtitle_track=%s start_time=%s",
         anime_id,
@@ -1426,6 +1440,10 @@ def web_action_play(
             "stop_url": f"/ui/stream/{session_id}/stop",
             "expires_at": session.get("expires_at"),
             "file_title": session.get("file_title"),
+            "hls_anchor_segment": session.get("hls_anchor_segment"),
+            "playback_start_seconds": session.get("playback_start_seconds"),
+            "segment_seconds": session.get("segment_seconds"),
+            "duration_seconds": session.get("duration_seconds"),
             "subtitle_requested": subtitle_idx,
             "subtitle_applied": session.get("subtitle_track"),
             "subtitle_tracks": subtitle_tracks_payload,

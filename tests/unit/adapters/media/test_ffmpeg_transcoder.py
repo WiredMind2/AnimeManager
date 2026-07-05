@@ -56,6 +56,13 @@ def test_segment_zero_uses_no_seek_at_all():
     command = _build(subtitle_track=None, start_segment_index=0)
     assert "-ss" not in command
     assert "-copyts" not in command
+    assert "-reset_timestamps" in command
+    assert command[command.index("-reset_timestamps") + 1] == "1"
+
+
+def test_seek_restart_does_not_reset_timestamps():
+    command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
+    assert "-reset_timestamps" not in command
 
 
 def test_seek_with_subtitle_selection_does_not_inject_video_filter():
@@ -72,11 +79,19 @@ def test_seek_with_or_without_subtitle_selection_uses_same_input_seek():
     assert _output_seek_value(with_sub_choice) is None
 
 
-def test_seek_without_subtitles_uses_input_seek():
+def _output_ts_offset_value(command: list[str]) -> str | None:
+    if "-output_ts_offset" not in command:
+        return None
+    idx = command.index("-output_ts_offset")
+    return command[idx + 1]
+
+
+def test_seek_without_subtitles_uses_input_seek_and_output_ts_offset():
     command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
     assert _input_seek_value(command) == "40"
     assert _output_seek_value(command) is None
-    assert "-copyts" in command
+    assert "-copyts" not in command
+    assert _output_ts_offset_value(command) == "40"
 
 
 def test_seek_keyframe_expression_is_offset_from_seek_point():
@@ -188,3 +203,37 @@ def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
     assert "old" not in adapter._active
     assert "new" in adapter._active
     assert adapter._active["new"].process.poll() is None
+
+
+def test_forward_restart_does_not_purge_segments(monkeypatch, tmp_path: Path):
+    """Forward seek restart must not delete anchor-encoded segments."""
+    adapter = FFmpegTranscoderAdapter()
+    out = tmp_path / "streams" / "sess1"
+    out.mkdir(parents=True)
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x")
+    (out / "index.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+
+    purge_spy = MagicMock()
+    monkeypatch.setattr(adapter, "_purge_ts_segments", purge_spy)
+
+    def fake_spawn(command, log_path):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr(adapter, "_spawn_ffmpeg", fake_spawn)
+    monkeypatch.setattr(adapter, "_write_spawn_record", lambda *_a, **_k: None)
+    monkeypatch.setattr(adapter, "_terminate", lambda _proc: None)
+
+    common = {
+        "session_id": "sess1",
+        "source_path": str(source),
+        "output_dir": str(out),
+        "audio_track": None,
+        "segment_seconds": 4,
+    }
+    adapter.ensure_hls_session(**common, start_segment_index=175)
+    adapter.ensure_hls_session(**common, start_segment_index=177)
+
+    purge_spy.assert_not_called()

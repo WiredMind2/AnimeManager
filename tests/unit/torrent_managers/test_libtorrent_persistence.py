@@ -217,3 +217,23 @@ def test_update_torrent_save_path():
 
     updates = [c for c in fake.calls if "UPDATE" in c[0].upper()]
     assert updates
+
+
+def test_restore_from_resume_skips_deleted_status(libtorrent_manager, tmp_path, monkeypatch):
+    manager = libtorrent_manager
+    resume_dir = tmp_path / ".libtorrent_resume"
+    resume_dir.mkdir()
+    deleted_hash = "a" * 40
+    resume_path = resume_dir / f"{deleted_hash}.resume"
+    resume_path.write_bytes(b"x" * 250)
+
+    monkeypatch.setattr(manager, "_resume_dir", lambda: str(resume_dir))
+    manager._torrent_status_callback = lambda h: "deleted" if h == deleted_hash else None
+    manager.session = MagicMock()
+    manager.handles = {}
+
+    manager._restore_from_resume_files()
+
+    assert deleted_hash not in manager.handles
+    assert not resume_path.exists()
+    manager.session.add_torrent.assert_not_called()

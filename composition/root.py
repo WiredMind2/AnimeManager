@@ -22,7 +22,7 @@ from adapters.legacy.runtime import (
 )
 from adapters.media import FFmpegTranscoderAdapter
 from application.services.anime_service import AnimeApplicationService
-from application.services.media_streaming_service import MediaStreamingService
+from application.playback import PlaybackService
 from application.services.startup_jobs import StartupJobsService
 from composition.facade import EmbeddedClientFacade
 
@@ -45,7 +45,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         max_active_sessions=2,
         segment_seconds=_SEGMENT_SECONDS,
     )
-    media_streaming = MediaStreamingService(
+    media_streaming = PlaybackService(
         media_library=media_library,
         transcoder=media_transcoder,
         segment_seconds=_SEGMENT_SECONDS,
@@ -66,6 +66,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         api_coordinator=metadata._api_coordinator,
         database_manager=repository._db_manager,
         runtime=runtime,
+        download_adapter=download,
     )
 
     return EmbeddedClientFacade(service, startup_jobs=startup_jobs)

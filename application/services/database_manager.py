@@ -245,20 +245,32 @@ class DatabaseManager(BaseComponent):
         return query.to_args()
 
     def _ensure_torrent_columns(self, db) -> None:
-        """Add ``save_path`` to ``torrents`` when missing (SQLite / MariaDB)."""
+        """Add optional ``torrents`` columns when missing (SQLite / MariaDB)."""
+        names: set[str] = set()
         try:
             info = db.sql("PRAGMA table_info(torrents)")
             if info:
                 names = {str(row[1]) for row in info if row and len(row) > 1}
-                if "save_path" in names:
-                    return
         except Exception:
             pass
-        try:
-            db.sql("ALTER TABLE torrents ADD COLUMN save_path TEXT", (), save=False)
-            db.save()
-        except Exception:
-            pass
+        changed = False
+        if "save_path" not in names:
+            try:
+                db.sql("ALTER TABLE torrents ADD COLUMN save_path TEXT", (), save=False)
+                changed = True
+            except Exception:
+                pass
+        if "status" not in names:
+            try:
+                db.sql("ALTER TABLE torrents ADD COLUMN status TEXT", (), save=False)
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            try:
+                db.save()
+            except Exception:
+                pass
 
     def save_torrent(
         self,
@@ -347,6 +359,92 @@ class DatabaseManager(BaseComponent):
         except Exception as e:
             self.log("DB_ERROR", f"Failed to update torrent save_path: {e}")
 
+    def update_torrent_status(self, hash_value: str, status: Optional[str]) -> None:
+        """Persist lifecycle status for a torrent (``complete``, ``deleted``, or cleared)."""
+        if not hash_value:
+            return
+        normalized = None if status is None or str(status).strip() == "" else str(status).strip().lower()
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                exists = db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)",
+                    (hash_value,),
+                )
+                if not exists or not exists[0][0]:
+                    return
+                db.sql(
+                    "UPDATE torrents SET status=? WHERE hash=?",
+                    (normalized, hash_value),
+                    save=False,
+                )
+                db.save()
+        except Exception as e:
+            self.log("DB_ERROR", f"Failed to update torrent status: {e}")
+
+    def get_torrent_status(self, hash_value: str) -> Optional[str]:
+        """Return persisted status for ``hash_value``, or ``None``."""
+        if not hash_value:
+            return None
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                rows = db.sql(
+                    "SELECT status FROM torrents WHERE hash=? LIMIT 1",
+                    (hash_value,),
+                )
+                if not rows or not rows[0]:
+                    return None
+                raw = rows[0][0]
+                return str(raw).strip().lower() if raw is not None else None
+        except Exception as e:
+            self.log("DB_ERROR", f"Failed to get torrent status: {e}")
+            return None
+
+    def list_torrents_for_reconcile(self) -> List[Dict[str, Any]]:
+        """All indexed torrents with status and paths for missing-file reconciliation."""
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                rows = db.sql(
+                    (
+                        "SELECT t.hash, t.save_path, t.status, i.id "
+                        "FROM torrents AS t "
+                        "INNER JOIN torrentsIndex AS i "
+                        "ON LOWER(i.value) = LOWER(t.hash)"
+                    ),
+                )
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to list torrents for reconcile: {exc}")
+            return []
+        out: List[Dict[str, Any]] = []
+        seen_hashes: set[str] = set()
+        for row in rows or []:
+            if not row or len(row) < 4:
+                continue
+            try:
+                hash_val = str(row[0]).strip()
+                hash_key = hash_val.lower()
+            except (TypeError, ValueError):
+                continue
+            if not hash_val or hash_key in seen_hashes:
+                continue
+            seen_hashes.add(hash_key)
+            save_path = row[1]
+            status = row[2]
+            anime_id = row[3]
+            out.append(
+                {
+                    "hash": hash_val,
+                    "save_path": str(save_path).strip() if save_path else None,
+                    "status": (
+                        str(status).strip().lower() if status is not None else None
+                    ),
+                    "anime_id": anime_id,
+                }
+            )
+        return out
+
     def list_torrents_for_restore(self) -> List[Dict[str, Any]]:
         """Rows for LibTorrent fallback restore (hash, name, trackers, save_path, anime_id)."""
         try:
@@ -354,7 +452,7 @@ class DatabaseManager(BaseComponent):
                 self._ensure_torrent_columns(db)
                 rows = db.sql(
                     (
-                        "SELECT t.hash, t.name, t.trackers, t.save_path, i.id "
+                        "SELECT t.hash, t.name, t.trackers, t.save_path, i.id, t.status "
                         "FROM torrents AS t "
                         "INNER JOIN torrentsIndex AS i "
                         "ON LOWER(i.value) = LOWER(t.hash)"
@@ -374,6 +472,9 @@ class DatabaseManager(BaseComponent):
             except (TypeError, ValueError):
                 continue
             if not hash_val or hash_key in seen_hashes:
+                continue
+            status = row[5] if len(row) > 5 else None
+            if str(status or "").lower() == "deleted":
                 continue
             seen_hashes.add(hash_key)
             save_path = row[3]

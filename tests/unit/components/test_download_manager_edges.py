@@ -1066,3 +1066,58 @@ class TestTorrentsOverview:
             assert actives[0]["name"] == "queued.mkv"
         finally:
             mgr.close()
+
+
+class TestTorrentDeletedStatus:
+    def _make_db(self, *, status: str = "deleted"):
+        db = MagicMock()
+        db.get_torrent_status.return_value = status
+        return db
+
+    def test_clear_deleted_status_on_redownload(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = self._make_db(status="deleted")
+        mgr.set_database_manager(db)
+        try:
+            mgr.download_file(1, hash_value="deadbeef")
+            db.update_torrent_status.assert_called_once_with("deadbeef", None)
+        finally:
+            mgr.close()
+
+    def test_reconcile_marks_complete_torrent_without_files(self, DownloadManager, tmp_path):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        folder = tmp_path / "Show - 1"
+        folder.mkdir()
+        db = MagicMock()
+        db.list_torrents_for_reconcile.return_value = [
+            {
+                "hash": "abc123",
+                "save_path": str(folder),
+                "status": "complete",
+                "anime_id": 7,
+            }
+        ]
+        tm = MagicMock()
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            count = mgr.reconcile_deleted_torrents(lambda _aid: str(folder))
+            assert count == 1
+            db.update_torrent_status.assert_called_with("abc123", "deleted")
+            tm.delete.assert_called_once_with("abc123", delete_files=False)
+        finally:
+            mgr.close()
+
+    def test_maybe_mark_torrent_complete_persists_status(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.get_torrent_status.return_value = None
+        mgr.set_database_manager(db)
+        try:
+            mgr._maybe_mark_torrent_complete("abc123", "seeding", 1.0)
+            db.update_torrent_status.assert_called_once_with("abc123", "complete")
+        finally:
+            mgr.close()

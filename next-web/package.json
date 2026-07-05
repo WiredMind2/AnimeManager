@@ -6,7 +6,12 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:playback-smoke": "node scripts/playwright-watch-smoke.mjs",
+    "test:shaka-config": "node scripts/test-shaka-config.mjs",
+    "test:sw-unit": "node scripts/test-sw-unit.mjs",
+    "test": "vitest run",
+    "test:session-guard": "vitest run lib/playback/session-guard.test.ts"
   },
   "dependencies": {
     "next": "^15.3.3",
@@ -17,6 +22,7 @@
     "@types/node": "^22.15.21",
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
   }
 }

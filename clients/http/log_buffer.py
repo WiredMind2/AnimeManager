@@ -82,7 +82,7 @@ KNOWN_CATEGORIES: tuple[str, ...] = (
 # ``"NETWORK_DATA"`` would just confuse users so we don't do it there.
 _LOGGER_PREFIX_MAP: tuple[tuple[str, str], ...] = (
     ("application.services.player_session_log", "PLAYER"),
-    ("application.services.media_streaming_service", "PLAYER"),
+    ("application.playback.service", "PLAYER"),
     ("application.services.download_manager", "DOWNLOAD"),
     ("application.services.startup_jobs", "STARTUP"),
     ("application.services", "MAIN_STATE"),

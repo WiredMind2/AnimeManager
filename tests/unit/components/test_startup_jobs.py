@@ -115,10 +115,10 @@ def test_fetch_latest_persists_deduped_batch():
     assert isinstance(report, StartupJobReport)
     # ``repair_date_from`` + ``repair_duplicate_anime`` +
     # ``fetch_latest_anime`` + ``update_status`` +
-    # ``restore_libtorrent_sessions``. Non-fetch repair jobs short-circuit
-    # cleanly here because ``_RecordingDBManager.get_database()`` returns
-    # ``None``.
-    assert report.total == 5
+    # ``restore_libtorrent_sessions`` + ``reconcile_deleted_torrents``.
+    # Non-fetch repair jobs short-circuit cleanly here because
+    # ``_RecordingDBManager.get_database()`` returns ``None``.
+    assert report.total == 6
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
@@ -243,3 +243,25 @@ def test_facade_without_startup_jobs_is_safe():
     facade = EmbeddedClientFacade(service=object())
     assert facade.run_startup_jobs() is None
     assert facade.kickoff_startup_jobs() is None
+
+
+def test_reconcile_deleted_torrents_job_runs_with_adapter():
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    adapter = SimpleNamespace(reconcile_deleted_torrents=lambda: 2)
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db)
+    coord.log = lambda *a, **k: None
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db,
+        runtime=SimpleNamespace(logger=None),
+        download_adapter=adapter,
+        schedule_limit=10,
+    )
+    try:
+        detail = service._job_reconcile_deleted_torrents()
+    finally:
+        coord.close()
+    assert detail == "marked 2 torrent(s) deleted"

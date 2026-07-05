@@ -1,10 +1,10 @@
 "use client";
 
 import Script from "next/script";
-import { useCallback, type RefObject } from "react";
-import type { usePlaybackSession } from "@/hooks/usePlaybackSession";
+import { useCallback, useEffect, type RefObject } from "react";
+import type { usePlayback } from "@/lib/playback/use-playback";
 
-export type PlaybackSession = ReturnType<typeof usePlaybackSession>;
+export type PlaybackSession = ReturnType<typeof usePlayback>;
 
 export type VideoPlayerProps = {
   animeId: number;
@@ -25,7 +25,47 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
     setAudioTrackId,
     setSubtitleTrackId,
     queueReplayCurrent,
+    streamDurationSeconds,
+    playbackStartSeconds,
   } = session;
+
+  // MSE/HLS can report UINT32-scale durations when segment PTS is wrong.
+  // Pin media-chrome to the server-probed episode length when that happens.
+  useEffect(() => {
+    const video = videoRef.current;
+    const controller = panelRef.current?.querySelector("media-controller") as
+      | (HTMLElement & { mediaDuration?: number; mediaCurrentTime?: number })
+      | null;
+    if (!video || !controller || !streamDurationSeconds || streamDurationSeconds <= 0) {
+      return;
+    }
+
+    const syncTimeline = () => {
+      const reportedDuration = video.duration;
+      const reportedTime = video.currentTime;
+      const durationAbsurd =
+        Number.isFinite(reportedDuration) && reportedDuration > streamDurationSeconds * 1.2;
+      const timeAbsurd =
+        Number.isFinite(reportedTime) && reportedTime > streamDurationSeconds * 1.2;
+
+      if (durationAbsurd) {
+        controller.mediaDuration = streamDurationSeconds;
+      }
+      if (durationAbsurd || timeAbsurd) {
+        controller.mediaCurrentTime = playbackStartSeconds > 0 ? playbackStartSeconds : 0;
+      }
+    };
+
+    syncTimeline();
+    video.addEventListener("durationchange", syncTimeline);
+    video.addEventListener("loadedmetadata", syncTimeline);
+    video.addEventListener("timeupdate", syncTimeline);
+    return () => {
+      video.removeEventListener("durationchange", syncTimeline);
+      video.removeEventListener("loadedmetadata", syncTimeline);
+      video.removeEventListener("timeupdate", syncTimeline);
+    };
+  }, [panelRef, playbackStartSeconds, streamDurationSeconds, videoRef]);
 
   // Keyboard shortcuts on the player host, matching the legacy web UI:
   // Space/k play-pause, ←/→ seek ±10s, m mute, f fullscreen.
@@ -81,6 +121,7 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         type="module"
         src="https://cdn.jsdelivr.net/npm/media-chrome@4/+esm"
         strategy="afterInteractive"
+        crossOrigin="anonymous"
       />
 
       <div
@@ -92,7 +133,12 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         onKeyDown={onKeyDown}
       >
         <div className="player-panel__video-wrap watch-view__video-wrap">
-          <media-controller className="watch-view__controller">
+          <media-controller
+            className="watch-view__controller"
+            {...(streamDurationSeconds && streamDurationSeconds > 0
+              ? { defaultduration: streamDurationSeconds }
+              : {})}
+          >
             <video
               ref={videoRef}
               className="player-panel__video watch-view__video"

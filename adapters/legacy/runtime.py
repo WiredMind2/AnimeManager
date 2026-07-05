@@ -351,7 +351,7 @@ class LegacyAnimeRepositoryAdapter:
         try:
             rows = self._runtime.database.sql(
                 (
-                    "SELECT t.hash, t.name, t.trackers "
+                    "SELECT t.hash, t.name, t.trackers, t.save_path, t.status "
                     "FROM torrents AS t "
                     "JOIN torrentsIndex AS i ON i.value = t.hash "
                     "WHERE i.id=?"
@@ -368,9 +368,16 @@ class LegacyAnimeRepositoryAdapter:
                 hash_ = row[0]
                 name = row[1]
                 trackers_raw = row[2] if len(row) > 2 else None
+                save_path = row[3] if len(row) > 3 else None
+                status = row[4] if len(row) > 4 else None
             except (TypeError, IndexError):
                 continue
             entry: dict = {"hash": hash_, "name": name}
+            if save_path:
+                entry["path"] = save_path
+                entry["save_path"] = save_path
+            if status is not None:
+                entry["status"] = str(status).strip().lower()
             if isinstance(trackers_raw, str) and trackers_raw:
                 try:
                     import json as _json
@@ -461,6 +468,7 @@ class LegacyMediaLibraryAdapter:
         if fm is None or not fm.exists(folder):
             return False
         folder_norm = os.path.normcase(os.path.realpath(os.path.normpath(folder)))
+        removed = False
         for item in self.list_episode_files(anime_id):
             if str(item.get("file_id") or "") != str(file_id).strip():
                 continue
@@ -477,10 +485,50 @@ class LegacyMediaLibraryAdapter:
                 return False
             try:
                 os.remove(path)
-                return True
+                removed = True
             except OSError:
                 return False
-        return False
+            break
+        if removed:
+            self._mark_completed_torrents_deleted_if_folder_empty(anime_id, folder)
+        return removed
+
+    def _mark_completed_torrents_deleted_if_folder_empty(
+        self, anime_id: int, folder: str
+    ) -> None:
+        from application.services.torrent_file_presence import folder_has_video_files
+
+        if folder_has_video_files(folder):
+            return
+        try:
+            rows = self._runtime.database.sql(
+                (
+                    "SELECT t.hash, t.status FROM torrents AS t "
+                    "JOIN torrentsIndex AS i ON i.value = t.hash "
+                    "WHERE i.id=?"
+                ),
+                (anime_id,),
+            )
+        except Exception:
+            return
+        for row in rows or []:
+            if not row:
+                continue
+            try:
+                hash_val = row[0]
+                status = row[1] if len(row) > 1 else None
+            except (TypeError, IndexError):
+                continue
+            if str(status or "").lower() != "complete":
+                continue
+            try:
+                self._runtime.database.sql(
+                    "UPDATE torrents SET status=? WHERE hash=?",
+                    ("deleted", hash_val),
+                    save=True,
+                )
+            except Exception:
+                pass
 
     def get_stream_cache_root(self) -> str:
         fm = self._runtime.fm
@@ -538,6 +586,23 @@ class LegacyDownloadAdapter:
             return lister()
 
         setter(_rows)
+
+        status_setter = getattr(tm, "set_torrent_status_callback", None)
+        if callable(status_setter) and db_manager is not None:
+
+            def _status(hash_value: str) -> str | None:
+                getter = getattr(db_manager, "get_torrent_status", None)
+                if not callable(getter):
+                    return None
+                return getter(hash_value)
+
+            status_setter(_status)
+
+    def reconcile_deleted_torrents(self) -> int:
+        """Mark completed torrents with missing files as deleted."""
+        return self._download_manager.reconcile_deleted_torrents(
+            lambda anime_id: self._runtime.getFolder(id=anime_id)
+        )
 
     def close(self) -> None:
         """Release download workers and flush embedded LibTorrent state."""
