@@ -1,1 +1,1 @@
-﻿# Edge case tests
+# Edge case tests

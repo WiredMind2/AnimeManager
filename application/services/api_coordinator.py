@@ -31,7 +31,7 @@ from application.services.ingestion_pipeline import IngestionPipeline, ProviderS
 from application.services.catalog_identity import CatalogIdentityService
 from adapters.persistence.catalog_repository import CatalogIndexRepository
 from shared.telemetry import get_telemetry
-from adapters.legacy.legacy_classes import Anime, AnimeList
+from adapters.persistence.models import Anime, AnimeList
 
 
 class APICoordinator(BaseComponent):

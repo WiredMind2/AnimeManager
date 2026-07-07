@@ -10,7 +10,7 @@ import hashlib
 from functools import lru_cache
 
 try:
-    from adapters.legacy.legacy_classes import (
+    from adapters.persistence.models import (
         Anime,
         AnimeList,
         Character,
@@ -21,7 +21,7 @@ try:
     from shared.telemetry.logger import Logger, log
     from .base import BaseDB
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.legacy.legacy_classes import (  # type: ignore
+    from AnimeManager.adapters.persistence.models import (  # type: ignore
         Anime,
         AnimeList,
         Character,

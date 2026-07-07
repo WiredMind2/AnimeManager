@@ -22,7 +22,7 @@ import requests
 _MISSING = object()
 
 try:
-    from adapters.legacy.legacy_classes import (
+    from adapters.persistence.models import (
         Anime,
         AnimeList,
         Character,
@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover - packaged install fallback
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 
-    from AnimeManager.adapters.legacy.legacy_classes import (  # type: ignore
+    from AnimeManager.adapters.persistence.models import (  # type: ignore
         Anime,
         AnimeList,
         Character,

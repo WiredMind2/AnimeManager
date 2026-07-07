@@ -217,7 +217,7 @@ class TestDelete:
 class TestConvert:
     def test_convert_with_magnet_uri(self, qBittorrent):
         mgr = _make_mgr(qBittorrent, qb_client=MagicMock())
-        with patch("adapters.legacy.legacy_classes.Torrent.from_magnet") as fm:
+        with patch("adapters.persistence.models.Torrent.from_magnet") as fm:
             fake_torrent = SimpleNamespace(size=None, downloaded=None, path=None)
             fm.return_value = fake_torrent
             data = SimpleNamespace(
@@ -249,7 +249,7 @@ class TestConvert:
 
     def test_convert_magnet_failed_uses_fallback(self, qBittorrent):
         mgr = _make_mgr(qBittorrent, qb_client=MagicMock())
-        with patch("adapters.legacy.legacy_classes.Torrent.from_magnet", return_value=False):
+        with patch("adapters.persistence.models.Torrent.from_magnet", return_value=False):
             data = SimpleNamespace(
                 magnet_uri="magnet:?xt=urn:btih:abc",
                 hash="abc",

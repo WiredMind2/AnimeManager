@@ -21,7 +21,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
-    from adapters.legacy.legacy_classes import Torrent
+    from adapters.persistence.models import Torrent
     from adapters.torrent.base import BaseTorrentManager, TorrentListFilter
 except ImportError:
     # Create mocks if imports fail

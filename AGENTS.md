@@ -226,11 +226,11 @@ HTTP mapping in [`clients/http/app.py`](clients/http/app.py): validation→400/4
 
 `build_embedded_facade()` constructs:
 
-1. `LegacyRuntime` + legacy adapters (repository, metadata, download, user actions, media library)
+1. `bootstrap_embedded_deps()` + port adapters (repository, metadata, download, user actions, media library)
 2. `FFmpegTranscoderAdapter(max_active_sessions=2, segment_seconds=4)`
 3. `PlaybackService` (media library + transcoder)
 4. `AnimeApplicationService` (all ports)
-5. `StartupJobsService` (API coordinator, DB manager, runtime, download adapter)
+5. `StartupJobsService` (API coordinator, DB manager, config, torrent manager, logger, download adapter)
 6. Returns `EmbeddedClientFacade`
 
 ### Facade ([`composition/facade.py`](composition/facade.py))
@@ -333,7 +333,7 @@ Selected by `torrent_managers.last_tm_used`:
 - Thread-pool queue (`max_concurrent_downloads=3`)
 - Status polling throttled to 0.5s
 - Persists torrent metadata via `DatabaseManager`
-- Exposed through [`LegacyDownloadAdapter`](adapters/legacy/runtime.py)
+- Exposed through [`DownloadAdapter`](adapters/torrent/download_adapter.py)
 
 ### On-disk layout
 
@@ -562,7 +562,7 @@ npm run test:playback-smoke           # Playwright smoke script
 2. Method on [`AnimeApplicationService`](application/services/anime_service.py)
 3. Port in [`ports/interfaces.py`](ports/interfaces.py) if new boundary
 4. Adapter implementation in `adapters/`
-5. Wire in [`composition/root.py`](composition/root.py) and [`adapters/legacy/runtime.py`](adapters/legacy/runtime.py)
+5. Wire in [`composition/root.py`](composition/root.py) and [`composition/bootstrap.py`](composition/bootstrap.py)
 6. Expose in [`clients/sdk.py`](clients/sdk.py)
 7. Client surface: Next.js ([`next-web/lib/api.ts`](next-web/lib/api.ts)) and/or FastAPI route
 8. Tests: `tests/unit/application/`, `tests/unit/backend/`
@@ -606,7 +606,12 @@ npm run test:playback-smoke           # Playwright smoke script
 | Startup jobs | [`application/services/startup_jobs.py`](application/services/startup_jobs.py) |
 | Playback service | [`application/playback/service.py`](application/playback/service.py) |
 | FFmpeg adapter | [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transcoder.py) |
-| Legacy runtime bridge | [`adapters/legacy/runtime.py`](adapters/legacy/runtime.py) |
+| Composition bootstrap | [`composition/bootstrap.py`](composition/bootstrap.py) |
+| Anime repository adapter | [`adapters/persistence/anime_repository.py`](adapters/persistence/anime_repository.py) |
+| User actions adapter | [`adapters/persistence/user_actions_repository.py`](adapters/persistence/user_actions_repository.py) |
+| Media library adapter | [`adapters/file/local_media_library.py`](adapters/file/local_media_library.py) |
+| Download adapter | [`adapters/torrent/download_adapter.py`](adapters/torrent/download_adapter.py) |
+| Metadata adapter | [`adapters/metadata/api_coordinator_adapter.py`](adapters/metadata/api_coordinator_adapter.py) |
 | LibTorrent adapter | [`adapters/torrent/libtorrent.py`](adapters/torrent/libtorrent.py) |
 | Port interfaces | [`ports/interfaces.py`](ports/interfaces.py) |
 | Domain errors | [`domain/errors/__init__.py`](domain/errors/__init__.py) |

@@ -560,7 +560,7 @@ class TestPrepareTorrentDetails:
         try:
             task = DownloadTask(1, url="magnet:?xt=urn:btih:abc")
             with patch(
-                "adapters.legacy.legacy_classes.Torrent.from_magnet",
+                "adapters.persistence.models.Torrent.from_magnet",
                 return_value="MAGNET_TORRENT",
             ):
                 result = mgr._prepare_torrent(task)
@@ -675,7 +675,7 @@ class TestPrepareTorrentDetails:
             with patch("shared.security.utils.validate_url", return_value=(True, "ok")):
                 with patch("requests.get", return_value=mock_resp):
                     with patch(
-                        "adapters.legacy.legacy_classes.Torrent.from_torrent",
+                        "adapters.persistence.models.Torrent.from_torrent",
                         return_value="HTTP_TORRENT",
                     ):
                         assert mgr._prepare_torrent(task) == "HTTP_TORRENT"

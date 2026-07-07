@@ -204,12 +204,12 @@ class TestUpsertAnimeBatchAgainstRealContract:
 
 
 class TestLegacyAnimeBatch:
-    """Make sure :class:`adapters.legacy.legacy_classes.Anime` records also
+    """Make sure :class:`adapters.persistence.models.Anime` records also
     persist correctly - they are dict-subclasses with `metadata_keys`.
     """
 
     def test_legacy_anime_persists_scalar_fields_via_set(self, DatabaseManager):
-        from adapters.legacy.legacy_classes import Anime
+        from adapters.persistence.models import Anime
 
         mgr = DatabaseManager()
         mgr.log = _silent_logger

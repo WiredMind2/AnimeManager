@@ -10,8 +10,8 @@ composition root has finished wiring the dependency graph.
 
 The service is intentionally infrastructure-light: every job is a
 small callable that closes over collaborators already living in the
-composition graph (``APICoordinator``, ``DatabaseManager``, the
-``LegacyRuntime``). Each job is independent and surrounded by a
+composition graph (``APICoordinator``, ``DatabaseManager``, config,
+torrent manager, logger). Each job is independent and surrounded by a
 try/except so that a single failure (e.g. an offline provider, a
 read-only database) never prevents the rest of the pipeline from
 running.
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, List, Optional
 
-from adapters.legacy.legacy_classes import Anime
+from adapters.persistence.models import Anime
 from application.services.api_coordinator import APICoordinator
 from application.services.database_manager import DatabaseManager
 from shared.contracts import IngestionResult, IngestionStatus
@@ -95,13 +95,17 @@ class StartupJobsService:
         *,
         api_coordinator: APICoordinator,
         database_manager: DatabaseManager,
-        runtime: Any,
+        config: Any,
+        torrent_manager: Any,
+        logger: Any,
         download_adapter: Any = None,
         schedule_limit: int = 50,
     ) -> None:
         self._api_coordinator = api_coordinator
         self._database_manager = database_manager
-        self._runtime = runtime
+        self._config = config
+        self._torrent_manager = torrent_manager
+        self._logger = logger
         self._download_adapter = download_adapter
         self._schedule_limit = max(1, int(schedule_limit))
         self._telemetry = get_telemetry()
@@ -243,7 +247,7 @@ class StartupJobsService:
 
     def _job_restore_libtorrent_sessions(self) -> str:
         """Ensure embedded LibTorrent finished restore (idempotent)."""
-        tm = getattr(self._runtime, "tm", None)
+        tm = self._torrent_manager
         if tm is None or getattr(tm, "name", None) != "LibTorrent":
             return "skipped (not LibTorrent)"
         ensure = getattr(tm, "ensure_restored", None)
@@ -544,8 +548,7 @@ class StartupJobsService:
 
     def _log(self, message: str) -> None:
         text = f"{self._LOG_PREFIX} {message}"
-        logger = getattr(self._runtime, "logger", None)
-        log_fn = getattr(logger, "log", None) if logger is not None else None
+        log_fn = getattr(self._logger, "log", None)
         delivered = False
         try:
             if callable(log_fn):

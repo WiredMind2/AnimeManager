@@ -1,11 +1,11 @@
 import enum
 
 try:
-    from adapters.legacy.legacy_classes import Torrent
+    from adapters.persistence.models import Torrent
     from clients.tk.dialogs import LoginDialog
     from shared.telemetry.logger import Logger
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.legacy.legacy_classes import Torrent  # type: ignore
+    from AnimeManager.adapters.persistence.models import Torrent  # type: ignore
     from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
     from AnimeManager.shared.telemetry.logger import Logger  # type: ignore
 

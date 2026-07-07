@@ -105,11 +105,11 @@ else:
     _WinJob = None
 
 try:
-    from adapters.legacy.legacy_classes import Anime, AnimeList, Character, NoneDict
+    from adapters.persistence.models import Anime, AnimeList, Character, NoneDict
     from shared.config.constants import Constants
     from .base import BaseDB, ConnectionPool
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.legacy.legacy_classes import (  # type: ignore
+    from AnimeManager.adapters.persistence.models import (  # type: ignore
         Anime,
         AnimeList,
         Character,

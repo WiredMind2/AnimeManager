@@ -12,34 +12,40 @@ in one direction only.
 
 from __future__ import annotations
 
-from adapters.legacy.runtime import (
-    LegacyAnimeRepositoryAdapter,
-    LegacyDownloadAdapter,
-    LegacyMediaLibraryAdapter,
-    LegacyMetadataProviderAdapter,
-    LegacyRuntime,
-    LegacyUserActionsAdapter,
-)
+from adapters.file.local_media_library import LocalMediaLibraryAdapter
 from adapters.media import FFmpegTranscoderAdapter
-from application.services.anime_service import AnimeApplicationService
+from adapters.metadata.api_coordinator_adapter import ApiCoordinatorAdapter
+from adapters.persistence.anime_repository import AnimeRepositoryAdapter
+from adapters.persistence.user_actions_repository import UserActionsRepository
+from adapters.torrent.download_adapter import DownloadAdapter
 from application.playback import PlaybackService
+from application.services.anime_service import AnimeApplicationService
 from application.services.startup_jobs import StartupJobsService
+from composition.bootstrap import bootstrap_embedded_deps
 from composition.facade import EmbeddedClientFacade
 
 
 def build_embedded_facade() -> EmbeddedClientFacade:
     """Create the complete embedded backend graph."""
-    runtime = LegacyRuntime()
-    repository = LegacyAnimeRepositoryAdapter(runtime)
-    metadata = LegacyMetadataProviderAdapter(runtime, repository)
-    download = LegacyDownloadAdapter(runtime, repository=repository)
-    user_actions = LegacyUserActionsAdapter(runtime)
-    media_library = LegacyMediaLibraryAdapter(runtime)
-    # Both layers must agree on the segment cadence — the service
-    # pre-writes a VOD playlist that assumes every segment is exactly
-    # this many seconds long, and the adapter sets the matching
-    # ``-hls_time`` and force-keyframe interval so the .ts files line
-    # up with the playlist's EXTINF entries.
+    deps = bootstrap_embedded_deps()
+
+    repository = AnimeRepositoryAdapter(deps.db_manager, deps.config)
+    user_actions = UserActionsRepository(deps.database)
+    media_library = LocalMediaLibraryAdapter(
+        scanner=deps.scanner,
+        file_manager=deps.file_manager,
+        db_manager=deps.db_manager,
+    )
+    download = DownloadAdapter(
+        torrent_manager=deps.torrent_manager,
+        file_manager=deps.file_manager,
+        db_manager=deps.db_manager,
+        scanner=deps.scanner,
+        user_actions=user_actions,
+        repository=repository,
+    )
+    metadata = ApiCoordinatorAdapter(deps.api, deps.db_manager)
+
     _SEGMENT_SECONDS = 4
     media_transcoder = FFmpegTranscoderAdapter(
         max_active_sessions=2,
@@ -59,14 +65,20 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         media_streaming_service=media_streaming,
     )
 
-    # Startup jobs reuse the already-wired API coordinator / database
-    # manager from the legacy adapters so we don't end up with two
-    # parallel ingestion pipelines fighting for the executor.
+    anime_cfg = deps.config.settings.get("anime", {}) or {}
+    try:
+        schedule_limit = int(anime_cfg.get("maxTrendingAnime", 100))
+    except (TypeError, ValueError):
+        schedule_limit = 100
+
     startup_jobs = StartupJobsService(
-        api_coordinator=metadata._api_coordinator,
-        database_manager=repository._db_manager,
-        runtime=runtime,
+        api_coordinator=metadata.api_coordinator,
+        database_manager=deps.db_manager,
+        config=deps.config,
+        torrent_manager=deps.torrent_manager,
+        logger=deps.logger,
         download_adapter=download,
+        schedule_limit=max(1, schedule_limit),
     )
 
     return EmbeddedClientFacade(service, startup_jobs=startup_jobs)
