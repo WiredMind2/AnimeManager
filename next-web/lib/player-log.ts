@@ -75,6 +75,7 @@ export function shakaErrorToPlain(
     category?: number;
     severity?: number;
     data?: unknown;
+    message?: string;
     getMessage?: () => string;
   } | null
   | undefined,

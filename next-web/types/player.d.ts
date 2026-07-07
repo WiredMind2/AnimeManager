@@ -62,7 +62,10 @@ declare global {
         };
       };
       text?: {
-        UITextDisplayer: new (player: unknown) => {
+        UITextDisplayer: new (
+          playerOrVideo: unknown,
+          videoContainer?: HTMLElement,
+        ) => {
           configure: (config: unknown) => void;
           append: (cues: unknown) => void;
           remove: (start: number, end: number) => unknown;
