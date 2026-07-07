@@ -36,8 +36,9 @@ try:
 except ImportError:  # pragma: no cover - packaged install fallback
     from AnimeManager.adapters.search import SearchFacade  # type: ignore
 
-from domain.entities import AnimeEntity, from_legacy_anime
-from domain.errors import InfrastructureError
+from domain.entities import AnimeEntity, enrich_anime_entity, from_legacy_anime
+from domain.errors import InfrastructureError, NotFoundError
+from shared.utils.anime_metadata import collect_anime_enrichment
 
 
 class _LegacyRuntimeState:
@@ -204,11 +205,263 @@ class LegacyAnimeRepositoryAdapter:
 
         if not anime:
             return None
-        if isinstance(anime, Anime):
-            return from_legacy_anime(anime)
-        if isinstance(anime, dict):
-            return from_legacy_anime(anime)
-        return None
+        entity = from_legacy_anime(anime)
+        enrichment = collect_anime_enrichment(anime, self._runtime.database)
+        return enrich_anime_entity(entity, **enrichment)
+
+    def _character_row_to_dict(self, row: dict, *, role: Optional[str] = None) -> dict:
+        description = row.get("description") or row.get("desc")
+        entry = {
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "picture": row.get("picture"),
+            "description": description,
+        }
+        if role is not None:
+            entry["role"] = role
+        return entry
+
+    def get_characters(self, anime_id: int) -> list[dict]:
+        try:
+            rows = self._runtime.database.sql(
+                (
+                    "SELECT c.id, c.name, c.picture, c.description, cr.role "
+                    "FROM characterRelations AS cr "
+                    "JOIN characters AS c ON c.id = cr.id "
+                    "WHERE cr.anime_id=? "
+                    "ORDER BY c.name"
+                ),
+                (anime_id,),
+                to_dict=True,
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load characters for anime {anime_id}: {exc}"
+            ) from exc
+        return [
+            self._character_row_to_dict(row, role=row.get("role"))
+            for row in (rows or [])
+            if row and row.get("id") is not None
+        ]
+
+    def get_character(self, character_id: int) -> Optional[dict]:
+        try:
+            row = self._runtime.database.get(character_id, table="characters")
+        except Exception:
+            row = None
+        if not row:
+            return None
+
+        if hasattr(row, "items"):
+            base = dict(row)
+        else:
+            base = {
+                "id": getattr(row, "id", character_id),
+                "name": getattr(row, "name", None),
+                "picture": getattr(row, "picture", None),
+                "description": getattr(row, "desc", None)
+                or getattr(row, "description", None),
+            }
+
+        try:
+            rel_rows = self._runtime.database.sql(
+                (
+                    "SELECT cr.anime_id, cr.role, a.title "
+                    "FROM characterRelations AS cr "
+                    "LEFT JOIN anime AS a ON a.id = cr.anime_id "
+                    "WHERE cr.id=?"
+                ),
+                (character_id,),
+                to_dict=True,
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load character animeography for {character_id}: {exc}"
+            ) from exc
+
+        animeography = []
+        for rel in rel_rows or []:
+            if not rel:
+                continue
+            animeography.append(
+                {
+                    "anime_id": rel.get("anime_id"),
+                    "title": rel.get("title"),
+                    "role": rel.get("role"),
+                }
+            )
+
+        payload = self._character_row_to_dict(base)
+        payload["animeography"] = animeography
+        return payload
+
+    def get_anime_pictures(self, anime_id: int) -> list[dict]:
+        try:
+            rows = self._runtime.database.sql(
+                "SELECT url, size FROM pictures WHERE id=?",
+                (anime_id,),
+                to_dict=True,
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load pictures for anime {anime_id}: {exc}"
+            ) from exc
+        return [
+            {"url": row.get("url"), "size": row.get("size")}
+            for row in (rows or [])
+            if row and row.get("url")
+        ]
+
+    def _upsert_character(self, character: Any) -> None:
+        if character is None:
+            return
+
+        if hasattr(character, "id"):
+            char_id = getattr(character, "id", None)
+            name = getattr(character, "name", None)
+            picture = getattr(character, "picture", None)
+            description = getattr(character, "desc", None) or getattr(
+                character, "description", None
+            )
+            animeography = getattr(character, "animeography", None)
+        elif isinstance(character, dict):
+            char_id = character.get("id")
+            name = character.get("name")
+            picture = character.get("picture")
+            description = character.get("desc") or character.get("description")
+            animeography = character.get("animeography")
+        else:
+            return
+
+        if char_id is None:
+            return
+
+        if callable(animeography):
+            try:
+                animeography = animeography()
+            except Exception:
+                animeography = None
+
+        try:
+            with self._runtime.database.get_lock():
+                exists = self._runtime.database.sql(
+                    "SELECT EXISTS(SELECT 1 FROM characters WHERE id=?)",
+                    (int(char_id),),
+                )
+                if bool(exists[0][0]):
+                    self._runtime.database.sql(
+                        (
+                            "UPDATE characters "
+                            "SET name=?, picture=?, description=? "
+                            "WHERE id=?"
+                        ),
+                        (name, picture, description, int(char_id)),
+                        save=True,
+                    )
+                else:
+                    self._runtime.database.sql(
+                        (
+                            "INSERT INTO characters(id, name, picture, description) "
+                            "VALUES (?, ?, ?, ?)"
+                        ),
+                        (int(char_id), name, picture, description),
+                        save=True,
+                    )
+
+                if isinstance(animeography, dict):
+                    for anime_id, role in animeography.items():
+                        exists_rel = self._runtime.database.sql(
+                            (
+                                "SELECT EXISTS("
+                                "SELECT 1 FROM characterRelations "
+                                "WHERE id=? AND anime_id=?"
+                                ")"
+                            ),
+                            (int(char_id), int(anime_id)),
+                        )
+                        if bool(exists_rel[0][0]):
+                            self._runtime.database.sql(
+                                (
+                                    "UPDATE characterRelations "
+                                    "SET role=? WHERE id=? AND anime_id=?"
+                                ),
+                                (role, int(char_id), int(anime_id)),
+                                save=True,
+                            )
+                        else:
+                            self._runtime.database.sql(
+                                (
+                                    "INSERT INTO characterRelations(id, anime_id, role) "
+                                    "VALUES (?, ?, ?)"
+                                ),
+                                (int(char_id), int(anime_id), role),
+                                save=True,
+                            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to upsert character {char_id}: {exc}"
+            ) from exc
+
+    def refresh_anime_characters(self, anime_id: int) -> list[dict]:
+        try:
+            characters = self._runtime.api.animeCharacters(anime_id)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to refresh characters for anime {anime_id}: {exc}"
+            ) from exc
+        for character in characters or []:
+            self._upsert_character(character)
+        return self.get_characters(anime_id)
+
+    def refresh_character(self, character_id: int) -> dict:
+        try:
+            character = self._runtime.api.character(character_id)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to refresh character {character_id}: {exc}"
+            ) from exc
+        if not character:
+            raise NotFoundError(f"Character with id={character_id} not found")
+        self._upsert_character(character)
+        payload = self.get_character(character_id)
+        if payload is None:
+            raise NotFoundError(f"Character with id={character_id} not found")
+        return payload
+
+    def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
+        try:
+            pictures = self._runtime.api.animePictures(anime_id)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to refresh pictures for anime {anime_id}: {exc}"
+            ) from exc
+
+        normalized: list[dict] = []
+        for pic in pictures or []:
+            if not isinstance(pic, dict):
+                continue
+            if "url" in pic and pic.get("url"):
+                normalized.append({"url": pic["url"], "size": pic.get("size") or "medium"})
+                continue
+            jpg = pic.get("jpg") if isinstance(pic.get("jpg"), dict) else None
+            if jpg:
+                for size_key, size_label in (
+                    ("small_image_url", "small"),
+                    ("image_url", "medium"),
+                    ("large_image_url", "large"),
+                ):
+                    url = jpg.get(size_key)
+                    if url:
+                        normalized.append({"url": url, "size": size_label})
+
+        if normalized:
+            try:
+                self._runtime.api.save_pictures(anime_id, normalized)
+            except Exception as exc:
+                raise InfrastructureError(
+                    f"Failed to persist pictures for anime {anime_id}: {exc}"
+                ) from exc
+        return self.get_anime_pictures(anime_id)
 
     def get_search_terms(self, anime_id: int) -> list[str]:
         try:
@@ -806,11 +1059,21 @@ class LegacyUserActionsAdapter:
     def mark_seen(
         self, anime_id: int, file_name: str, user_id: int
     ) -> None:
-        # Preserve compatibility by tagging as SEEN. Episode bookkeeping
-        # can be extended by a dedicated adapter without changing
-        # application contracts.
-        _ = file_name
         self.set_tag(anime_id, "SEEN", user_id)
+        clean_name = str(file_name or "").strip()
+        if not clean_name:
+            return
+        try:
+            with self._runtime.database.get_lock():
+                self._runtime.database.sql(
+                    "UPDATE anime SET last_seen=? WHERE id=?",
+                    (clean_name, anime_id),
+                    save=True,
+                )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to persist last_seen for anime {anime_id}: {exc}"
+            ) from exc
 
     def get_user_state(self, anime_id: int, user_id: int) -> dict:
         db = self._runtime.database

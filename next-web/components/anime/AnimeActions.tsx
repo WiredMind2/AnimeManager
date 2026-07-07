@@ -11,11 +11,19 @@ type AnimeActionsProps = {
   animeId: number;
   trailer?: string;
   initialUserState: UserState;
+  initialLastSeen?: string;
 };
 
-export default function AnimeActions({ animeId, trailer, initialUserState }: AnimeActionsProps) {
+export default function AnimeActions({
+  animeId,
+  trailer,
+  initialUserState,
+  initialLastSeen,
+}: AnimeActionsProps) {
   const [userState, setUserState] = useState(initialUserState);
   const [trailerOpen, setTrailerOpen] = useState(false);
+  const [seenFile, setSeenFile] = useState(initialLastSeen || "");
+  const [markingSeen, setMarkingSeen] = useState(false);
   const embed = youtubeEmbedUrl(trailer);
 
   async function toggleLike() {
@@ -35,6 +43,19 @@ export default function AnimeActions({ animeId, trailer, initialUserState }: Ani
       await api.setTag(animeId, tag, DEFAULT_USER_ID);
     } catch {
       setUserState((s) => ({ ...s, tag: prev }));
+    }
+  }
+
+  async function markSeen() {
+    const fileName = seenFile.trim() || "manual";
+    setMarkingSeen(true);
+    try {
+      await api.markSeen(animeId, fileName, DEFAULT_USER_ID);
+      setUserState((s) => ({ ...s, tag: "SEEN" }));
+    } catch {
+      /* ignore */
+    } finally {
+      setMarkingSeen(false);
     }
   }
 
@@ -79,6 +100,26 @@ export default function AnimeActions({ animeId, trailer, initialUserState }: Ani
               </option>
             ))}
           </select>
+        </form>
+
+        <form
+          className="detail__seen-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void markSeen();
+          }}
+        >
+          <input
+            className="input"
+            name="seen_file"
+            placeholder="Episode filename"
+            value={seenFile}
+            onChange={(e) => setSeenFile(e.target.value)}
+            style={{ height: 36, minWidth: 180 }}
+          />
+          <button className="btn btn--ghost" type="submit" disabled={markingSeen}>
+            {markingSeen ? "Saving…" : "Mark seen"}
+          </button>
         </form>
 
         {trailer ? (

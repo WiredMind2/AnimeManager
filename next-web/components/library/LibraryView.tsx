@@ -137,9 +137,10 @@ export default function LibraryView({
     });
 
     source.addEventListener("error", (ev) => {
-      if (typeof ev.data === "string" && ev.data) {
+      const data = (ev as MessageEvent).data;
+      if (typeof data === "string" && data) {
         closed = true;
-        setState("error", ev.data);
+        setState("error", data);
         setEmptyVisible(count === 0);
         source.close();
       }

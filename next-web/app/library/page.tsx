@@ -3,30 +3,30 @@ import Link from "next/link";
 import AppShell from "@/components/shell/AppShell";
 import LibraryPageContent from "@/components/library/LibraryPageContent";
 import { api, ApiError } from "@/lib/api";
-import { DEFAULT_USER_ID, PAGE_SIZE, type FilterValue } from "@/lib/config";
+import { DEFAULT_USER_ID, type FilterValue } from "@/lib/config";
+import {
+  apiFilterForBackend,
+  filterFooterLabel,
+  libraryPageUrl,
+  readAnimePerPage,
+  readHideRatedDefault,
+  resolveHideRated,
+  resolvePageSize,
+} from "@/lib/library";
 
 type LibraryPageProps = {
   searchParams: Promise<{
     filter?: string;
     q?: string;
     page?: string;
+    size?: string;
+    hide_rated?: string;
   }>;
 };
 
 function safePage(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "1", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-}
-
-function pageUrl(pageNum: number, activeFilter: string, q: string): string {
-  const parts = [`page=${pageNum}`];
-  if (activeFilter && activeFilter !== "DEFAULT") {
-    parts.push(`filter=${activeFilter}`);
-  }
-  if (q) {
-    parts.push(`q=${encodeURIComponent(q)}`);
-  }
-  return `/library?${parts.join("&")}`;
 }
 
 export async function generateMetadata({ searchParams }: LibraryPageProps): Promise<Metadata> {
@@ -41,7 +41,21 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
   const page = safePage(params.page);
   const activeFilter = ((params.filter || "DEFAULT") as FilterValue).toUpperCase();
   const qClean = (params.q ?? "").trim();
-  const listStart = (page - 1) * PAGE_SIZE;
+
+  let settingsHideRated = false;
+  let settingsPageSize = resolvePageSize(undefined, undefined);
+  try {
+    const settings = await api.getSettings();
+    settingsHideRated = readHideRatedDefault(settings);
+    settingsPageSize = readAnimePerPage(settings);
+  } catch {
+    /* use defaults when settings are unavailable */
+  }
+
+  const pageSize = resolvePageSize(params.size, settingsPageSize);
+  const hideRated = resolveHideRated(params.hide_rated, settingsHideRated);
+  const listStart = (page - 1) * pageSize;
+  const backendFilter = apiFilterForBackend(activeFilter);
 
   let items: Awaited<ReturnType<typeof api.getAnimeList>>["items"] = [];
   let hasNext = false;
@@ -57,14 +71,15 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
   } else {
     try {
       const response = await api.getAnimeList({
-        filter: activeFilter,
+        filter: backendFilter,
         user_id: DEFAULT_USER_ID,
         list_start: listStart,
-        list_stop: listStart + PAGE_SIZE + 1,
+        list_stop: listStart + pageSize + 1,
+        hide_rated: hideRated,
       });
       const allItems = response.items ?? [];
-      hasNext = allItems.length > PAGE_SIZE || Boolean(response.has_next);
-      items = allItems.slice(0, PAGE_SIZE);
+      hasNext = allItems.length > pageSize || Boolean(response.has_next);
+      items = allItems.slice(0, pageSize);
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -76,8 +91,16 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
     }
   }
 
-  const prevUrl = page > 1 ? pageUrl(page - 1, activeFilter, qClean) : null;
-  const nextUrl = hasNext ? pageUrl(page + 1, activeFilter, qClean) : null;
+  const urlBase = {
+    filter: activeFilter,
+    q: qClean,
+    size: pageSize,
+    hideRated,
+    settingsHideRated,
+    settingsPageSize,
+  };
+  const prevUrl = page > 1 ? libraryPageUrl({ ...urlBase, page: page - 1 }) : null;
+  const nextUrl = hasNext ? libraryPageUrl({ ...urlBase, page: page + 1 }) : null;
   const pageTitle = qClean ? "Search results" : "Library";
 
   const topbarActions = (
@@ -113,6 +136,11 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
         listStart={listStart}
         prevUrl={prevUrl}
         nextUrl={nextUrl}
+        pageSize={pageSize}
+        hideRated={hideRated}
+        settingsHideRated={settingsHideRated}
+        settingsPageSize={settingsPageSize}
+        filterFooterLabel={filterFooterLabel(activeFilter)}
       />
     </AppShell>
   );

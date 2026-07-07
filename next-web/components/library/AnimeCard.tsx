@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import type { MouseEvent } from "react";
 import type { AnimeItem } from "@/lib/api";
 
 const STATUS_DOT: Record<string, string> = {
@@ -9,6 +11,8 @@ const STATUS_DOT: Record<string, string> = {
   UPCOMING: "dot--upcoming",
   UNKNOWN: "dot--unknown",
 };
+
+const LIKE_SUFFIX = " ♥";
 
 function truncateTitle(title: string, max = 28): string {
   if (title.length <= max) return title;
@@ -20,18 +24,40 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
 
+function displayTitle(item: AnimeItem): string {
+  const base = item.title ?? "";
+  return item.liked ? `${base}${LIKE_SUFFIX}` : base;
+}
+
 type AnimeCardProps = {
   item: AnimeItem;
 };
 
 export default function AnimeCard({ item }: AnimeCardProps) {
+  const router = useRouter();
   const statusLabel = (item.status || "UNKNOWN").toUpperCase();
   const statusClass = STATUS_DOT[statusLabel] ?? "dot--unknown";
   const tag = (item.tag || "NONE").toUpperCase();
-  const posterFallback = truncateTitle(item.title || "?");
+  const title = displayTitle(item);
+  const posterFallback = truncateTitle(title || "?");
+
+  function openTorrentSearch(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const params = new URLSearchParams();
+    params.set("anime_id", String(item.id));
+    const term = (item.title ?? "").trim();
+    if (term) params.set("term", term);
+    router.push(`/torrents?${params.toString()}`);
+  }
 
   return (
-    <Link href={`/anime/${item.id}`} className="card">
+    <Link
+      href={`/anime/${item.id}`}
+      className="card"
+      onContextMenu={openTorrentSearch}
+      title="Right-click to search torrents"
+    >
       <div className="card__poster">
         {item.picture ? (
           <img
@@ -56,16 +82,10 @@ export default function AnimeCard({ item }: AnimeCardProps) {
           {capitalize(statusLabel)}
         </span>
 
-        {item.liked ? (
-          <span className="card__like" aria-label="Liked">
-            ♥
-          </span>
-        ) : null}
-
         <span className="card__overlay" aria-hidden="true" />
       </div>
       <span className="card__title" data-tag={tag}>
-        {item.title}
+        {title}
       </span>
       <span className="card__meta">
         {item.episodes ? <span>{item.episodes} ep</span> : null}

@@ -1,18 +1,42 @@
-import { FILTER_OPTIONS } from "@/lib/config";
+import { FILTER_OPTIONS, type FilterValue } from "@/lib/config";
+import { libraryPageUrl, type PageSizeOption } from "@/lib/library";
+import SeasonBrowseChip from "./SeasonBrowseChip";
 
 type FilterChipsProps = {
   activeFilter: string;
   q?: string | null;
+  pageSize: PageSizeOption;
+  hideRated: boolean;
+  settingsHideRated: boolean;
+  settingsPageSize: PageSizeOption;
 };
 
-function chipHref(filterValue: string, q?: string | null): string {
-  const params = new URLSearchParams();
-  params.set("filter", filterValue);
-  if (q) params.set("q", q);
-  return `/library?${params.toString()}`;
+function chipHref(
+  filterValue: FilterValue,
+  q: string | null | undefined,
+  pageSize: PageSizeOption,
+  hideRated: boolean,
+  settingsHideRated: boolean,
+  settingsPageSize: PageSizeOption,
+): string {
+  return libraryPageUrl({
+    filter: filterValue,
+    q: q ?? undefined,
+    size: pageSize,
+    hideRated,
+    settingsHideRated,
+    settingsPageSize,
+  });
 }
 
-export default function FilterChips({ activeFilter, q }: FilterChipsProps) {
+export default function FilterChips({
+  activeFilter,
+  q,
+  pageSize,
+  hideRated,
+  settingsHideRated,
+  settingsPageSize,
+}: FilterChipsProps) {
   const normalizedActive = (activeFilter || "DEFAULT").toUpperCase();
 
   return (
@@ -23,7 +47,14 @@ export default function FilterChips({ activeFilter, q }: FilterChipsProps) {
           <a
             key={option.value}
             className={`chip${isActive ? " is-active" : ""}`}
-            href={chipHref(option.value, q)}
+            href={chipHref(
+              option.value,
+              q,
+              pageSize,
+              hideRated,
+              settingsHideRated,
+              settingsPageSize,
+            )}
             role="tab"
             aria-selected={isActive ? "true" : "false"}
           >
@@ -34,6 +65,7 @@ export default function FilterChips({ activeFilter, q }: FilterChipsProps) {
           </a>
         );
       })}
+      <SeasonBrowseChip />
     </div>
   );
 }

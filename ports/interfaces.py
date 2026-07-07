@@ -90,6 +90,24 @@ class AnimeRepositoryPort(Protocol):
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         ...
 
+    def get_characters(self, anime_id: int) -> list[dict]:
+        ...
+
+    def get_character(self, character_id: int) -> Optional[dict]:
+        ...
+
+    def get_anime_pictures(self, anime_id: int) -> list[dict]:
+        ...
+
+    def refresh_anime_characters(self, anime_id: int) -> list[dict]:
+        ...
+
+    def refresh_character(self, character_id: int) -> dict:
+        ...
+
+    def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
+        ...
+
 
 class MetadataProviderPort(Protocol):
     def search(self, query: str, limit: int = 50) -> list[AnimeEntity]:

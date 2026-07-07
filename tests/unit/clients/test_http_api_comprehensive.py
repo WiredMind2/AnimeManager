@@ -103,6 +103,56 @@ class RecordingSDK:
     def get_settings(self):
         return self._invoke("get_settings", (), {}, default=lambda: {})
 
+    def get_relations(self, anime_id: int, relation_type: str = "anime"):
+        return self._invoke(
+            "get_relations",
+            (anime_id, relation_type),
+            {},
+            default=lambda: [],
+        )
+
+    def get_characters(self, anime_id: int):
+        return self._invoke(
+            "get_characters", (anime_id,), {}, default=lambda: []
+        )
+
+    def get_character(self, character_id: int):
+        return self._invoke(
+            "get_character",
+            (character_id,),
+            {},
+            default=lambda: {"id": character_id, "name": "Char"},
+        )
+
+    def get_anime_pictures(self, anime_id: int):
+        return self._invoke(
+            "get_anime_pictures", (anime_id,), {}, default=lambda: []
+        )
+
+    def refresh_anime_characters(self, anime_id: int):
+        return self._invoke(
+            "refresh_anime_characters",
+            (anime_id,),
+            {},
+            default=lambda: [],
+        )
+
+    def refresh_character(self, character_id: int):
+        return self._invoke(
+            "refresh_character",
+            (character_id,),
+            {},
+            default=lambda: {"id": character_id, "name": "Char"},
+        )
+
+    def refresh_anime_pictures(self, anime_id: int):
+        return self._invoke(
+            "refresh_anime_pictures",
+            (anime_id,),
+            {},
+            default=lambda: [],
+        )
+
     # ---- write paths -------------------------------------------------
     def start_download(self, anime_id, url=None, hash_value=None, user_id=None):
         return self._invoke(
@@ -467,6 +517,54 @@ class TestSettings:
         sdk.overrides["update_settings"] = ValidationError("non-empty required")
         resp = client.patch("/settings", json={})
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Detail tier endpoints (characters, pictures)
+# ---------------------------------------------------------------------------
+
+
+class TestDetailTierEndpoints:
+    def test_get_characters_returns_items(self, client, sdk):
+        sdk.overrides["get_characters"] = lambda _: [
+            {"id": 1, "name": "Hero", "role": "main"}
+        ]
+        body = client.get("/anime/3/characters").json()
+        assert body == {"items": [{"id": 1, "name": "Hero", "role": "main"}]}
+        assert sdk.last_call("get_characters")[1] == (3,)
+
+    def test_refresh_characters_returns_items(self, client, sdk):
+        sdk.overrides["refresh_anime_characters"] = lambda _: [
+            {"id": 2, "name": "Rival", "role": "supporting"}
+        ]
+        body = client.post("/anime/3/characters/refresh").json()
+        assert body["items"][0]["name"] == "Rival"
+        assert sdk.last_call("refresh_anime_characters")[1] == (3,)
+
+    def test_get_character_returns_payload(self, client, sdk):
+        sdk.overrides["get_character"] = lambda cid: {
+            "id": cid,
+            "name": "Hero",
+            "animeography": [],
+        }
+        body = client.get("/characters/9").json()
+        assert body["id"] == 9
+        assert body["name"] == "Hero"
+
+    def test_refresh_character_returns_payload(self, client, sdk):
+        sdk.overrides["refresh_character"] = lambda cid: {
+            "id": cid,
+            "name": "Refreshed",
+        }
+        body = client.post("/characters/9/refresh").json()
+        assert body["name"] == "Refreshed"
+
+    def test_get_pictures_returns_items(self, client, sdk):
+        sdk.overrides["get_anime_pictures"] = lambda _: [
+            {"url": "https://example.com/p.jpg", "size": "large"}
+        ]
+        body = client.get("/anime/3/pictures").json()
+        assert body["items"][0]["size"] == "large"
 
 
 # ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ build/
 # Logs and databases
 # =========================
 *.log
-logs/
+/logs/
 allout.txt
 
 # SQLite database files
