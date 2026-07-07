@@ -12,7 +12,7 @@ from shared.base_component import BaseComponent
 from adapters.persistence.queue import PersistenceQueue
 from adapters.persistence.query_builder import ALLOWED_CRITERIA, build_anime_list_query
 from shared.telemetry import get_telemetry
-from adapters.legacy.legacy_classes import Anime, AnimeList
+from adapters.persistence.models import Anime, AnimeList
 from adapters.persistence import databases
 
 

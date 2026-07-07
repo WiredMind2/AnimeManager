@@ -3,7 +3,7 @@
 This module exists because the legacy code aggregated configuration
 state by *inheriting* from :class:`constants.Constants` (see
 ``animeAPI.AnimeAPI``, ``animeAPI.APIUtils``,
-``backend.adapters.legacy_runtime.LegacyRuntime``). The new
+``composition.bootstrap.bootstrap_embedded_deps``). The new
 composition rule (ADR 0005) is that those classes should take a
 config collaborator as a constructor argument instead.
 
@@ -92,8 +92,7 @@ class ConfigProvider:
     def update_settings(self, updates: Mapping[str, Any]) -> MutableMapping[str, Any]:
         """Merge ``updates`` into the settings file and return the new dict.
 
-        Mirrors the behavior of ``LegacyRuntime.setSettings`` without
-        requiring the caller to inherit from ``Constants``.
+        Mirrors legacy settings persistence without a runtime god-object.
         """
         settings_path = self.settings_path
         if not settings_path:

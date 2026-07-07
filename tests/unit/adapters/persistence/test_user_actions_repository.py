@@ -1,18 +1,4 @@
-"""Regression tests for :class:`LegacyUserActionsAdapter`.
-
-These tests pin the persistence contract that the web/Tk UI relies on
-and protect against the historical bug where tagging an anime more
-than once silently failed -- ``REPLACE INTO`` was either creating
-duplicate rows (no UNIQUE constraint) or wiping the unrelated column
-(with a UNIQUE constraint), leaving ``get_user_state`` to return a
-stale view of the world.
-
-The fixture spins up a real in-memory SQLite database and wires it
-through a minimal database wrapper that mimics the legacy contract
-(``get_lock()`` + ``sql(query, params, save=True/False)``). That gives
-us a *true* integration check of the adapter's SQL against a SQLite
-backend without depending on the rest of the legacy bootstrap chain.
-"""
+"""Regression tests for :class:`UserActionsRepository`."""
 
 from __future__ import annotations
 
@@ -23,19 +9,11 @@ from typing import Any
 
 import pytest
 
-from adapters.legacy.runtime import LegacyUserActionsAdapter
+from adapters.persistence.user_actions_repository import UserActionsRepository
 from domain.errors import InfrastructureError
 
 
 class _SqliteDatabase:
-    """Tiny shim that mirrors the surface of the legacy DB wrapper.
-
-    Only the calls used by ``LegacyUserActionsAdapter`` are
-    implemented: a re-entrant ``get_lock()`` context manager and a
-    ``sql(query, params, save=False)`` helper that returns rows or
-    persists a write.
-    """
-
     def __init__(self, *, with_unique_constraint: bool) -> None:
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._lock = threading.RLock()
@@ -77,7 +55,6 @@ class _SqliteDatabase:
         finally:
             cur.close()
 
-    # Helpers for tests
     def raw_rows(self) -> list[tuple]:
         return list(self.conn.execute("SELECT anime_id, user_id, tag, liked FROM user_tags"))
 
@@ -89,32 +66,16 @@ class _SqliteDatabase:
         self.conn.commit()
 
 
-class _Runtime:
-    """Minimal stand-in for :class:`LegacyRuntime`."""
-
-    def __init__(self, db: _SqliteDatabase) -> None:
-        self.database = db
-
-
 @pytest.fixture
 def adapter_unique():
-    """Adapter against a schema WITH a UNIQUE(anime_id, user_id) constraint."""
     db = _SqliteDatabase(with_unique_constraint=True)
-    yield LegacyUserActionsAdapter(_Runtime(db)), db
+    yield UserActionsRepository(db), db
 
 
 @pytest.fixture
 def adapter_no_constraint():
-    """Adapter against the *historical* schema without a UNIQUE
-    constraint -- the worst case where ``REPLACE INTO`` would silently
-    accumulate duplicate rows."""
     db = _SqliteDatabase(with_unique_constraint=False)
-    yield LegacyUserActionsAdapter(_Runtime(db)), db
-
-
-# ---------------------------------------------------------------------------
-# The core regression: tags must be modifiable after the first write.
-# ---------------------------------------------------------------------------
+    yield UserActionsRepository(db), db
 
 
 def test_set_tag_can_be_modified_multiple_times(adapter_unique):
@@ -129,7 +90,6 @@ def test_set_tag_can_be_modified_multiple_times(adapter_unique):
     adapter.set_tag(anime_id=23, tag="SEEN", user_id=1)
     assert adapter.get_user_state(23, 1) == {"tag": "SEEN", "liked": False}
 
-    # Only ONE row exists for this (anime_id, user_id) -- no accumulation.
     rows = [r for r in db.raw_rows() if r[0] == 23 and r[1] == 1]
     assert len(rows) == 1
 
@@ -137,11 +97,6 @@ def test_set_tag_can_be_modified_multiple_times(adapter_unique):
 def test_set_tag_can_be_modified_when_table_has_no_unique_constraint(
     adapter_no_constraint,
 ):
-    """The historical bug specifically required a UNIQUE constraint to
-    not be present (which is the case in some pre-migration databases).
-    Without the new UPDATE-or-INSERT logic, ``REPLACE INTO`` would just
-    append rows and ``get_user_state`` returned the OLDEST one.
-    """
     adapter, db = adapter_no_constraint
 
     adapter.set_tag(23, "WATCHING", 1)
@@ -153,8 +108,6 @@ def test_set_tag_can_be_modified_when_table_has_no_unique_constraint(
 
 
 def test_set_tag_does_not_overwrite_like(adapter_unique):
-    """The smoking-gun behavior the user reported: liking + tagging
-    must not clobber each other."""
     adapter, _ = adapter_unique
 
     adapter.set_like(anime_id=42, liked=True, user_id=1)
@@ -175,14 +128,7 @@ def test_set_like_does_not_overwrite_tag(adapter_unique):
     assert state == {"tag": "WATCHLIST", "liked": False}
 
 
-# ---------------------------------------------------------------------------
-# Backward compatibility with legacy duplicate-row state.
-# ---------------------------------------------------------------------------
-
-
 def test_get_user_state_merges_legacy_duplicate_rows(adapter_no_constraint):
-    """Users whose DB still contains duplicate rows from the buggy era
-    must see a coherent view (last non-NULL value wins per column)."""
     adapter, db = adapter_no_constraint
 
     db.force_insert(99, 1, "WATCHING", None)
@@ -196,11 +142,6 @@ def test_get_user_state_merges_legacy_duplicate_rows(adapter_no_constraint):
 def test_get_user_state_missing_row_returns_neutral_defaults(adapter_unique):
     adapter, _ = adapter_unique
     assert adapter.get_user_state(1, 1) == {"tag": "NONE", "liked": False}
-
-
-# ---------------------------------------------------------------------------
-# mark_seen and isolation
-# ---------------------------------------------------------------------------
 
 
 def test_mark_seen_writes_seen_tag(adapter_unique):
@@ -235,14 +176,7 @@ def test_users_are_isolated(adapter_unique):
     assert adapter.get_user_state(15, 2)["tag"] == "SEEN"
 
 
-# ---------------------------------------------------------------------------
-# Defensive behavior
-# ---------------------------------------------------------------------------
-
-
 def test_upsert_rejects_unknown_column(adapter_unique):
-    """Defense in depth: the column name is interpolated into SQL, so
-    the adapter must refuse anything outside the whitelist."""
     adapter, _ = adapter_unique
     with pytest.raises(InfrastructureError):
         adapter._upsert_column(
@@ -255,8 +189,6 @@ def test_upsert_rejects_unknown_column(adapter_unique):
 
 
 def test_db_errors_surface_as_infrastructure_error():
-    """Underlying DB errors are wrapped, never leaked raw to callers."""
-
     class _BrokenDB:
         @contextmanager
         def get_lock(self):
@@ -265,10 +197,57 @@ def test_db_errors_surface_as_infrastructure_error():
         def sql(self, *_args, **_kwargs):
             raise sqlite3.OperationalError("disk full")
 
-    adapter = LegacyUserActionsAdapter(_Runtime(_BrokenDB()))  # type: ignore[arg-type]
+    adapter = UserActionsRepository(_BrokenDB())  # type: ignore[arg-type]
     with pytest.raises(InfrastructureError):
         adapter.set_tag(1, "SEEN", 1)
     with pytest.raises(InfrastructureError):
         adapter.set_like(1, True, 1)
     with pytest.raises(InfrastructureError):
         adapter.get_user_state(1, 1)
+
+
+def test_episode_progress_round_trip(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(1, 1, "ep-001", "IN_PROGRESS", 42.5)
+    progress = adapter.get_episode_progress_map(1, 1)
+    assert progress["ep-001"] == {
+        "status": "IN_PROGRESS",
+        "position_seconds": 42.5,
+    }
+
+    adapter.set_episode_progress(1, 1, "ep-001", "SEEN", 120.0)
+    progress = adapter.get_episode_progress_map(1, 1)
+    assert progress["ep-001"]["status"] == "SEEN"
+    assert progress["ep-001"]["position_seconds"] == 120.0
+
+
+def test_episode_progress_update_existing_row(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(2, 1, "ep-002", "UNSEEN")
+    adapter.set_episode_progress(2, 1, "ep-002", "IN_PROGRESS", 10.0)
+    progress = adapter.get_episode_progress_map(2, 1)
+    assert progress["ep-002"]["status"] == "IN_PROGRESS"
+
+
+def test_episode_progress_delete(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(3, 1, "ep-003", "SEEN")
+    adapter.delete_episode_progress(3, 1, "ep-003")
+    assert adapter.get_episode_progress_map(3, 1) == {}
+
+
+def test_episode_progress_invalid_status_raises(adapter_unique):
+    adapter, _ = adapter_unique
+    with pytest.raises(InfrastructureError):
+        adapter.set_episode_progress(1, 1, "ep-x", "INVALID")
+
+
+def test_episode_progress_empty_file_id_raises(adapter_unique):
+    adapter, _ = adapter_unique
+    with pytest.raises(InfrastructureError):
+        adapter.set_episode_progress(1, 1, "  ", "SEEN")
+
+
+def test_delete_episode_progress_noop_for_empty_file_id(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.delete_episode_progress(1, 1, "")

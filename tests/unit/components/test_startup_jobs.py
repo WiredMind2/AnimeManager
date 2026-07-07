@@ -84,11 +84,12 @@ def _build_service(api, db) -> StartupJobsService:
     coord.set_api(api)
     coord.set_database_manager(db)
     coord.log = lambda *a, **k: None  # silence logs in tests
-    runtime = SimpleNamespace(logger=None)
     return StartupJobsService(
         api_coordinator=coord,
         database_manager=db,
-        runtime=runtime,
+        config=SimpleNamespace(settings={}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
         schedule_limit=10,
     )
 
@@ -256,7 +257,9 @@ def test_reconcile_deleted_torrents_job_runs_with_adapter():
     service = StartupJobsService(
         api_coordinator=coord,
         database_manager=db,
-        runtime=SimpleNamespace(logger=None),
+        config=SimpleNamespace(settings={}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
         download_adapter=adapter,
         schedule_limit=10,
     )

@@ -6,10 +6,10 @@ from contextlib import contextmanager
 from typing import Dict, Any, Optional, Tuple
 
 try:
-    from adapters.legacy.legacy_classes import NoneDict
+    from adapters.persistence.models import NoneDict
     from shared.telemetry.logger import log
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.legacy.legacy_classes import NoneDict  # type: ignore
+    from AnimeManager.adapters.persistence.models import NoneDict  # type: ignore
     from AnimeManager.shared.telemetry.logger import log  # type: ignore
 
 

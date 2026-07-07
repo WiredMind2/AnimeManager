@@ -12,13 +12,13 @@ from functools import wraps
 import requests
 
 try:
-    from adapters.legacy.legacy_classes import Anime, Character, NoIdFound
+    from adapters.persistence.models import Anime, Character, NoIdFound
     from shared.config.constants import Constants
     from shared.config.getters import Getters
     from shared.telemetry.logger import Logger
     from shared.utils.general import dict_merge
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.legacy.legacy_classes import (  # type: ignore
+    from AnimeManager.adapters.persistence.models import (  # type: ignore
         Anime,
         Character,
         NoIdFound,

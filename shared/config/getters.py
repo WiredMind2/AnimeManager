@@ -21,14 +21,14 @@ try:
     import adapters.persistence as db_managers  # type: ignore
     import adapters.file as file_managers  # type: ignore
     import adapters.torrent as torrent_managers  # type: ignore
-    from adapters.legacy.legacy_classes import Anime, RegroupList, ReturnThread, Torrent
+    from adapters.persistence.models import Anime, RegroupList, ReturnThread, Torrent
     from shared.config.constants import Constants
     from shared.utils.general import Timer
 except ImportError:  # pragma: no cover - packaged install fallback
     import AnimeManager.adapters.persistence as db_managers  # type: ignore
     import AnimeManager.adapters.file as file_managers  # type: ignore
     import AnimeManager.adapters.torrent as torrent_managers  # type: ignore
-    from AnimeManager.adapters.legacy.legacy_classes import (  # type: ignore
+    from AnimeManager.adapters.persistence.models import (  # type: ignore
         Anime,
         RegroupList,
         ReturnThread,
@@ -129,10 +129,9 @@ class Getters:
     """Legacy mixin that provides plugin-loader helpers.
 
     Historically this mixin was attached to the monolithic ``Manager`` class.
-    After the client/server refactor it is still consumed by
-    :class:`AnimeManager.backend.adapters.legacy_runtime.LegacyRuntime`, which
-    composes it with :class:`AnimeManager.constants.Constants` to spin up
-    file/torrent/database managers from the JSON settings file.
+    After the client/server refactor it is still consumed during
+    composition bootstrap to spin up file/torrent/database managers
+    from the JSON settings file.
 
     The type hints below describe the attributes the runtime is expected to
     expose. They are kept for static analysis only and intentionally typed as

@@ -94,8 +94,7 @@ FORBIDDEN_FOR_APPLICATION = {
 # Legacy bridge services migrated from the historical ``components/``
 # tree under the Root Hygiene cleanup. They live in ``application``
 # nominally (they orchestrate use-cases), but still concretely depend on
-# ``adapters.legacy`` data classes and ``adapters.persistence`` helpers
-# pending a follow-up refactor onto ports. Each file here is exempt from
+# ``adapters.persistence`` helpers pending a follow-up refactor onto ports. Each file here is exempt from
 # the ``application/`` -> ``adapters/`` import rule for the SPECIFIC
 # imports listed in ``LEGACY_BRIDGE_ALLOWED_IMPORTS``.
 LEGACY_BRIDGE_APPLICATION_FILES = {
@@ -106,7 +105,6 @@ LEGACY_BRIDGE_APPLICATION_FILES = {
 }
 
 LEGACY_BRIDGE_ALLOWED_IMPORT_PREFIXES = (
-    "adapters.legacy",
     "adapters.persistence",
 )
 

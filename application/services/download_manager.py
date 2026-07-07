@@ -12,7 +12,7 @@ The manager is intentionally narrow:
 The legacy event-bus subscriptions that drove ``download.start`` /
 ``download.cancel`` have been removed; clients now call
 :meth:`download_file` / :meth:`cancel_download` directly through
-``adapters.legacy.runtime.LegacyDownloadAdapter``.
+``adapters.torrent.download_adapter.DownloadAdapter``.
 """
 
 import os
@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from shared.base_component import BaseComponent
 from shared.security import validate_url
-from adapters.legacy.legacy_classes import Magnet, Torrent
+from adapters.persistence.models import Magnet, Torrent
 
 
 class DownloadManager(BaseComponent):
@@ -534,7 +534,7 @@ class DownloadManager(BaseComponent):
 
         Adapters return heterogeneous shapes: LibTorrent emits plain
         :class:`dict` rows, while qBittorrent emits
-        :class:`adapters.legacy.legacy_classes.Torrent` (which subclasses
+        :class:`adapters.persistence.models.Torrent` (which subclasses
         ``dict`` but also gates ``__setattr__`` on ``data_keys``). Routing
         all reads through ``dict.get`` works for both and side-steps the
         Item class's attribute filtering.

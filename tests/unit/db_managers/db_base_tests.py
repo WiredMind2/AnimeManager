@@ -19,7 +19,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 try:
-    from adapters.legacy.legacy_classes import Anime, AnimeList, Character, NoneDict
+    from adapters.persistence.models import Anime, AnimeList, Character, NoneDict
 except ImportError:
     # If relative imports fail, try importing from parent module
     try:
@@ -28,7 +28,7 @@ except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
-        from adapters.legacy.legacy_classes import Anime, AnimeList, Character, NoneDict
+        from adapters.persistence.models import Anime, AnimeList, Character, NoneDict
     except ImportError:
         # Create mock classes for testing if imports fail
         class Anime:

@@ -289,9 +289,9 @@ class LibTorrent(BaseTorrentManager):
     @staticmethod
     def _magnet_from_restore_row(row: Dict[str, Any]) -> Optional[str]:
         try:
-            from adapters.legacy.legacy_classes import Torrent
+            from adapters.persistence.models import Torrent
         except ImportError:
-            from AnimeManager.adapters.legacy.legacy_classes import Torrent  # type: ignore
+            from AnimeManager.adapters.persistence.models import Torrent  # type: ignore
 
         raw_hash = row.get("hash")
         if not raw_hash:

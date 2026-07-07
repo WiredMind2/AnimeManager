@@ -3,7 +3,7 @@ import hashlib
 import bencoding
 import pytest
 
-from adapters.legacy.legacy_classes import Episode, Torrent
+from adapters.persistence.models import Episode, Torrent
 
 
 @pytest.mark.timeout(30)

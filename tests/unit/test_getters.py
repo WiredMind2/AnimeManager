@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from adapters.legacy.legacy_classes import Anime, Torrent
+from adapters.persistence.models import Anime, Torrent
 from shared.config.getters import Getters
 
 
