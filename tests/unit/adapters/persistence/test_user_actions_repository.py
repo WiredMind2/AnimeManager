@@ -187,3 +187,50 @@ def test_db_errors_surface_as_infrastructure_error():
         adapter.set_like(1, True, 1)
     with pytest.raises(InfrastructureError):
         adapter.get_user_state(1, 1)
+
+
+def test_episode_progress_round_trip(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(1, 1, "ep-001", "IN_PROGRESS", 42.5)
+    progress = adapter.get_episode_progress_map(1, 1)
+    assert progress["ep-001"] == {
+        "status": "IN_PROGRESS",
+        "position_seconds": 42.5,
+    }
+
+    adapter.set_episode_progress(1, 1, "ep-001", "SEEN", 120.0)
+    progress = adapter.get_episode_progress_map(1, 1)
+    assert progress["ep-001"]["status"] == "SEEN"
+    assert progress["ep-001"]["position_seconds"] == 120.0
+
+
+def test_episode_progress_update_existing_row(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(2, 1, "ep-002", "UNSEEN")
+    adapter.set_episode_progress(2, 1, "ep-002", "IN_PROGRESS", 10.0)
+    progress = adapter.get_episode_progress_map(2, 1)
+    assert progress["ep-002"]["status"] == "IN_PROGRESS"
+
+
+def test_episode_progress_delete(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(3, 1, "ep-003", "SEEN")
+    adapter.delete_episode_progress(3, 1, "ep-003")
+    assert adapter.get_episode_progress_map(3, 1) == {}
+
+
+def test_episode_progress_invalid_status_raises(adapter_unique):
+    adapter, _ = adapter_unique
+    with pytest.raises(InfrastructureError):
+        adapter.set_episode_progress(1, 1, "ep-x", "INVALID")
+
+
+def test_episode_progress_empty_file_id_raises(adapter_unique):
+    adapter, _ = adapter_unique
+    with pytest.raises(InfrastructureError):
+        adapter.set_episode_progress(1, 1, "  ", "SEEN")
+
+
+def test_delete_episode_progress_noop_for_empty_file_id(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.delete_episode_progress(1, 1, "")
