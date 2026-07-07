@@ -177,6 +177,24 @@ class ClientSDK:
     def get_anime_torrents(self, anime_id: int) -> list[dict[str, Any]]:
         return self._facade.get_anime_torrents(anime_id)
 
+    def get_characters(self, anime_id: int) -> list[dict[str, Any]]:
+        return self._facade.get_characters(anime_id)
+
+    def get_character(self, character_id: int) -> dict[str, Any]:
+        return self._facade.get_character(character_id)
+
+    def get_anime_pictures(self, anime_id: int) -> list[dict[str, Any]]:
+        return self._facade.get_anime_pictures(anime_id)
+
+    def refresh_anime_characters(self, anime_id: int) -> list[dict[str, Any]]:
+        return self._facade.refresh_anime_characters(anime_id)
+
+    def refresh_character(self, character_id: int) -> dict[str, Any]:
+        return self._facade.refresh_character(character_id)
+
+    def refresh_anime_pictures(self, anime_id: int) -> list[dict[str, Any]]:
+        return self._facade.refresh_anime_pictures(anime_id)
+
     def list_episode_files(
         self, anime_id: int, user_id: int | None = None
     ) -> list[dict[str, Any]]:

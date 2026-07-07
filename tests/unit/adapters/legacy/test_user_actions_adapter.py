@@ -51,6 +51,9 @@ class _SqliteDatabase:
             )
             """
         )
+        self.conn.execute(
+            "CREATE TABLE anime (id INTEGER PRIMARY KEY, last_seen TEXT)"
+        )
         self.conn.commit()
 
     @contextmanager
@@ -201,11 +204,25 @@ def test_get_user_state_missing_row_returns_neutral_defaults(adapter_unique):
 
 
 def test_mark_seen_writes_seen_tag(adapter_unique):
-    adapter, _ = adapter_unique
+    adapter, db = adapter_unique
+    db.conn.execute("INSERT INTO anime (id, last_seen) VALUES (7, NULL)")
+    db.conn.commit()
     adapter.set_like(7, True, 1)
     adapter.mark_seen(7, file_name="ep01.mkv", user_id=1)
 
     assert adapter.get_user_state(7, 1) == {"tag": "SEEN", "liked": True}
+
+
+def test_mark_seen_persists_last_seen_on_anime_row(adapter_unique):
+    adapter, db = adapter_unique
+    db.conn.execute("CREATE TABLE IF NOT EXISTS anime (id INTEGER PRIMARY KEY, last_seen TEXT)")
+    db.conn.execute("INSERT INTO anime (id, last_seen) VALUES (7, NULL)")
+    db.conn.commit()
+
+    adapter.mark_seen(7, file_name="ep02.mkv", user_id=1)
+
+    row = db.sql("SELECT last_seen FROM anime WHERE id=7")
+    assert row == [("ep02.mkv",)]
 
 
 def test_users_are_isolated(adapter_unique):

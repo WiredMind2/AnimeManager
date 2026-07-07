@@ -266,6 +266,46 @@ def anime_relations(anime_id: int):
         raise _map_error(exc) from exc
 
 
+@app.get("/anime/{anime_id}/characters")
+def anime_characters(anime_id: int):
+    try:
+        return {"items": get_sdk().get_characters(anime_id)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.post("/anime/{anime_id}/characters/refresh")
+def refresh_anime_characters(anime_id: int):
+    try:
+        return {"items": get_sdk().refresh_anime_characters(anime_id)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/characters/{character_id}")
+def get_character(character_id: int):
+    try:
+        return get_sdk().get_character(character_id)
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.post("/characters/{character_id}/refresh")
+def refresh_character(character_id: int):
+    try:
+        return get_sdk().refresh_character(character_id)
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/anime/{anime_id}/pictures")
+def anime_pictures(anime_id: int):
+    try:
+        return {"items": get_sdk().get_anime_pictures(anime_id)}
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
 @app.get("/anime/{anime_id}/episode-files")
 def anime_episode_files(anime_id: int, user_id: int = 1):
     try:

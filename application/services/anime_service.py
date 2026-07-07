@@ -300,6 +300,45 @@ class AnimeApplicationService:
             return []
         return list(getter(anime_id) or [])
 
+    def get_characters(self, anime_id: int) -> list[dict]:
+        getter = getattr(self._anime_repository, "get_characters", None)
+        if not callable(getter):
+            return []
+        return list(getter(anime_id) or [])
+
+    def get_character(self, character_id: int) -> dict:
+        getter = getattr(self._anime_repository, "get_character", None)
+        if not callable(getter):
+            raise NotFoundError(f"Character with id={character_id} not found")
+        payload = getter(character_id)
+        if payload is None:
+            raise NotFoundError(f"Character with id={character_id} not found")
+        return payload
+
+    def get_anime_pictures(self, anime_id: int) -> list[dict]:
+        getter = getattr(self._anime_repository, "get_anime_pictures", None)
+        if not callable(getter):
+            return []
+        return list(getter(anime_id) or [])
+
+    def refresh_anime_characters(self, anime_id: int) -> list[dict]:
+        refresher = getattr(self._anime_repository, "refresh_anime_characters", None)
+        if not callable(refresher):
+            return self.get_characters(anime_id)
+        return list(refresher(anime_id) or [])
+
+    def refresh_character(self, character_id: int) -> dict:
+        refresher = getattr(self._anime_repository, "refresh_character", None)
+        if not callable(refresher):
+            return self.get_character(character_id)
+        return refresher(character_id)
+
+    def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
+        refresher = getattr(self._anime_repository, "refresh_anime_pictures", None)
+        if not callable(refresher):
+            return self.get_anime_pictures(anime_id)
+        return list(refresher(anime_id) or [])
+
     def _list_episode_files_core(self, anime_id: int) -> list[EpisodeFileDTO]:
         media = self._require_media_streaming()
         return media.list_episode_files(ListEpisodeFilesQuery(anime_id=anime_id))

@@ -188,6 +188,24 @@ class EmbeddedClientFacade:
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         return self._service.get_anime_torrents(anime_id)
 
+    def get_characters(self, anime_id: int) -> list[dict]:
+        return self._service.get_characters(anime_id)
+
+    def get_character(self, character_id: int) -> dict:
+        return self._service.get_character(character_id)
+
+    def get_anime_pictures(self, anime_id: int) -> list[dict]:
+        return self._service.get_anime_pictures(anime_id)
+
+    def refresh_anime_characters(self, anime_id: int) -> list[dict]:
+        return self._service.refresh_anime_characters(anime_id)
+
+    def refresh_character(self, character_id: int) -> dict:
+        return self._service.refresh_character(character_id)
+
+    def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
+        return self._service.refresh_anime_pictures(anime_id)
+
     def list_episode_files(self, anime_id: int, user_id: int | None = None):
         return self._service.list_episode_files(anime_id, user_id=user_id)
 

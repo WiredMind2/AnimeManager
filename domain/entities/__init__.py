@@ -7,7 +7,7 @@ shim that re-exports from here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 
@@ -31,6 +31,13 @@ class AnimeEntity:
     tag: Optional[str] = None
     liked: Optional[bool] = None
     last_seen: Optional[str] = None
+    broadcast: Optional[str] = None
+    airing_lines: list[str] = field(default_factory=list)
+    popularity: Optional[int] = None
+    studios: list[str] = field(default_factory=list)
+    producers: list[str] = field(default_factory=list)
+    external_ids: dict[str, int] = field(default_factory=dict)
+    external_urls: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -138,4 +145,21 @@ def from_legacy_anime(anime: Any) -> AnimeEntity:
     )
 
 
-__all__ = ["AnimeEntity", "TorrentEntity", "from_legacy_anime"]
+def enrich_anime_entity(entity: AnimeEntity, **fields: Any) -> AnimeEntity:
+    """Return a copy of ``entity`` with optional detail fields applied."""
+    allowed = {
+        "broadcast",
+        "airing_lines",
+        "popularity",
+        "studios",
+        "producers",
+        "external_ids",
+        "external_urls",
+    }
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if not updates:
+        return entity
+    return replace(entity, **updates)
+
+
+__all__ = ["AnimeEntity", "TorrentEntity", "from_legacy_anime", "enrich_anime_entity"]
