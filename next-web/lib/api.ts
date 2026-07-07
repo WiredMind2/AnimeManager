@@ -306,12 +306,14 @@ export const api = {
     list_start?: number;
     list_stop?: number;
     user_id?: number;
+    hide_rated?: boolean;
   }) => {
     const qs = new URLSearchParams();
     if (params.filter) qs.set("filter", params.filter);
     if (params.list_start !== undefined) qs.set("list_start", String(params.list_start));
     if (params.list_stop !== undefined) qs.set("list_stop", String(params.list_stop));
     if (params.user_id !== undefined) qs.set("user_id", String(params.user_id));
+    if (params.hide_rated !== undefined) qs.set("hide_rated", params.hide_rated ? "true" : "false");
     return request<{ items: AnimeItem[]; has_next: boolean }>(`/animelist?${qs}`);
   },
   searchAnime: (query: string, limit = 50) =>
