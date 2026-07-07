@@ -62,6 +62,37 @@ export type AnimeItem = {
   rating?: string;
   title_synonyms?: string[];
   trailer?: string;
+  last_seen?: string;
+  date_from?: number;
+  date_to?: number;
+  broadcast?: string;
+  airing_lines?: string[];
+  popularity?: number;
+  studios?: string[];
+  producers?: string[];
+  external_ids?: Record<string, number>;
+  external_urls?: Array<{ label: string; url: string }>;
+};
+
+export type AnimeCharacter = {
+  id: number;
+  name?: string;
+  picture?: string;
+  description?: string;
+  role?: string;
+};
+
+export type AnimeCharacterDetail = AnimeCharacter & {
+  animeography?: Array<{
+    anime_id?: number;
+    title?: string;
+    role?: string;
+  }>;
+};
+
+export type AnimePicture = {
+  url?: string;
+  size?: string;
 };
 
 export type UserState = {
@@ -296,6 +327,25 @@ export const api = {
       `/like/${animeId}?user_id=${userId}&liked=${liked ? "true" : "false"}`,
       { method: "POST" },
     ),
+  markSeen: (animeId: number, fileName: string, userId: number) =>
+    request<{ ok: boolean }>(
+      `/seen/${animeId}?file_name=${encodeURIComponent(fileName)}&user_id=${userId}`,
+      { method: "POST" },
+    ),
+  getCharacters: (animeId: number) =>
+    request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters`),
+  refreshAnimeCharacters: (animeId: number) =>
+    request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters/refresh`, {
+      method: "POST",
+    }),
+  getCharacter: (characterId: number) =>
+    request<AnimeCharacterDetail>(`/characters/${characterId}`),
+  refreshCharacter: (characterId: number) =>
+    request<AnimeCharacterDetail>(`/characters/${characterId}/refresh`, {
+      method: "POST",
+    }),
+  getAnimePictures: (animeId: number) =>
+    request<{ items: AnimePicture[] }>(`/anime/${animeId}/pictures`),
   getSearchTerms: (animeId: number) =>
     request<{ items: string[] }>(`/search-terms/${animeId}`),
   getRelations: (animeId: number) =>

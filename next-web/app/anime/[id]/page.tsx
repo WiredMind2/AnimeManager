@@ -25,7 +25,7 @@ export default async function AnimeDetailPage({ params }: PageProps) {
     throw err;
   }
 
-  const [userState, torrentSearchOptions, relationsRes, episodeRes, torrentsRes] =
+  const [userState, torrentSearchOptions, relationsRes, episodeRes, torrentsRes, charactersRes, picturesRes] =
     await Promise.all([
       api.getUserState(animeId, DEFAULT_USER_ID).catch(() => ({})),
       api.getTorrentSearchOptions(animeId).catch(() => ({
@@ -36,6 +36,8 @@ export default async function AnimeDetailPage({ params }: PageProps) {
       api.getRelations(animeId).catch(() => ({ items: [] })),
       api.getEpisodeFiles(animeId, DEFAULT_USER_ID).catch(() => ({ items: [] })),
       api.getAnimeLibraryTorrents(animeId).catch(() => ({ items: [] })),
+      api.getCharacters(animeId).catch(() => ({ items: [] })),
+      api.getAnimePictures(animeId).catch(() => ({ items: [] })),
     ]);
 
   const title = anime.title || `Anime #${animeId}`;
@@ -63,6 +65,8 @@ export default async function AnimeDetailPage({ params }: PageProps) {
         relations={relationsRes.items}
         episodeFiles={episodeRes.items}
         animeTorrents={torrentsRes.items}
+        characters={charactersRes.items}
+        pictures={picturesRes.items}
       />
     </AppShell>
   );

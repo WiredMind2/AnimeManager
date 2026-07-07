@@ -23,6 +23,15 @@ export default function DownloadedEpisodesTable({
     }
   }, [animeId]);
 
+  async function cancelDownload() {
+    try {
+      await api.cancelDownload(animeId);
+      await refresh();
+    } catch {
+      /* ignore */
+    }
+  }
+
   useEffect(() => {
     const onDownload = () => refresh();
     window.addEventListener("am:download-started", onDownload);
@@ -57,6 +66,7 @@ export default function DownloadedEpisodesTable({
               <col className="col--size" />
               <col className="col--progress" />
               <col className="col--state" />
+              <col className="col--actions" />
             </colgroup>
             <thead>
               <tr>
@@ -64,6 +74,7 @@ export default function DownloadedEpisodesTable({
                 <th className="num">Size</th>
                 <th className="num">Progress</th>
                 <th>State</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -106,6 +117,13 @@ export default function DownloadedEpisodesTable({
                       ) : (
                         <span className="badge">{state}</span>
                       )}
+                    </td>
+                    <td className="num">
+                      {state === "DOWNLOADING" ? (
+                        <button className="btn btn--ghost" type="button" onClick={() => void cancelDownload()}>
+                          Cancel
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 );

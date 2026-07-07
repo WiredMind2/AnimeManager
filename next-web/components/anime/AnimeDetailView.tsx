@@ -1,13 +1,18 @@
 import Link from "next/link";
 import type {
+  AnimeCharacter,
   AnimeItem,
   AnimeLibraryTorrent,
+  AnimePicture,
   AnimeRelation,
   EpisodeFile,
   TorrentSearchOptions,
   UserState,
 } from "@/lib/api";
 import AnimeActions from "./AnimeActions";
+import AnimeCharactersSection from "./AnimeCharactersSection";
+import AnimeMetadataSection from "./AnimeMetadataSection";
+import AnimePictureGallery from "./AnimePictureGallery";
 import DownloadedEpisodesTable from "./DownloadedEpisodesTable";
 import EpisodePlayerTable from "./EpisodePlayerTable";
 import TorrentSearchSection from "./TorrentSearchSection";
@@ -19,6 +24,8 @@ type AnimeDetailViewProps = {
   relations: AnimeRelation[];
   episodeFiles: EpisodeFile[];
   animeTorrents: AnimeLibraryTorrent[];
+  characters: AnimeCharacter[];
+  pictures: AnimePicture[];
   trailerEmbed?: string | null;
 };
 
@@ -29,6 +36,8 @@ export default function AnimeDetailView({
   relations,
   episodeFiles,
   animeTorrents,
+  characters,
+  pictures,
 }: AnimeDetailViewProps) {
   const genres = (anime.genres || []).slice(0, 6);
 
@@ -90,9 +99,16 @@ export default function AnimeDetailView({
             animeId={anime.id!}
             trailer={anime.trailer}
             initialUserState={userState}
+            initialLastSeen={anime.last_seen}
           />
         </div>
       </section>
+
+      <AnimeMetadataSection anime={anime} />
+
+      <AnimePictureGallery pictures={pictures} />
+
+      <AnimeCharactersSection animeId={anime.id!} initialCharacters={characters} />
 
       <TorrentSearchSection animeId={anime.id!} initialOptions={torrentSearchOptions} />
 
