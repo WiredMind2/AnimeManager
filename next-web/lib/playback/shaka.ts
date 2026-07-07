@@ -50,7 +50,7 @@ export function loadShakaScript(): Promise<typeof window.shaka | null> {
   return window.__animeManagerShakaPromise;
 }
 
-export async function createShakaPlayer(videoContainer: HTMLElement | null): Promise<{
+export async function createShakaPlayer(_videoContainer: HTMLElement | null): Promise<{
   player: InstanceType<NonNullable<typeof window.shaka>["Player"]>;
   shaka: NonNullable<typeof window.shaka>;
 }> {
@@ -65,9 +65,8 @@ export async function createShakaPlayer(videoContainer: HTMLElement | null): Pro
   if (PlayerCtor.isBrowserSupported && !PlayerCtor.isBrowserSupported()) {
     throw new Error("This browser does not support adaptive streaming.");
   }
+  // Do not call setVideoContainer before attach — Shaka 4.10 then expects a
+  // two-argument textDisplayFactory and attach can hang (legacy UI uses plain Player()).
   const player = new shaka.Player();
-  if (videoContainer && typeof player.setVideoContainer === "function") {
-    player.setVideoContainer(videoContainer);
-  }
   return { player, shaka };
 }

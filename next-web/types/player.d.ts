@@ -96,6 +96,7 @@ declare global {
       ) => Promise<{ dispose: () => void; canvasParent?: HTMLElement } | null>;
       disposeOctopus: (inst: { dispose?: () => void } | null) => void;
       createShakaTextDisplayFactory: () => unknown;
+      installAssTextBridge: (video: HTMLVideoElement) => void;
     };
   }
 }

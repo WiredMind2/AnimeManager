@@ -447,9 +447,6 @@ export function usePlayback(
         const resumePlayback = loadStartTime !== undefined && loadStartTime > 0;
         markLoadPhase("shaka_configuring", { generation });
         const shakaConfig = buildShakaConfig(resumePlayback) as Record<string, unknown>;
-        if (typeof AmPlaybackSubtitles.createShakaTextDisplayFactory === "function") {
-          shakaConfig.textDisplayFactory = AmPlaybackSubtitles.createShakaTextDisplayFactory();
-        }
         player.configure(shakaConfig);
         markLoadPhase("shaka_configured", { generation });
 
@@ -489,6 +486,13 @@ export function usePlayback(
         }
         playerLoggerRef.current?.log("info", "shaka_attached");
         markLoadPhase("shaka_attached", { generation });
+        if (typeof AmPlaybackSubtitles.installAssTextBridge === "function") {
+          try {
+            AmPlaybackSubtitles.installAssTextBridge(video);
+          } catch {
+            /* libass bridge is optional; plain VTT still works */
+          }
+        }
         if (abortIfStale("after_attach")) return;
 
         player.addEventListener("buffering", (evt: unknown) => {

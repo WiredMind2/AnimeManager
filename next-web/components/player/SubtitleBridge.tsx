@@ -12,10 +12,8 @@ export type AmPlaybackSubtitlesApi = {
     onError?: (err: unknown) => void,
   ) => Promise<{ dispose: () => void; canvasParent?: HTMLElement } | null>;
   disposeOctopus: (inst: { dispose?: () => void } | null) => void;
-  createShakaTextDisplayFactory: () => (
-    arg1: ShakaPlayerForTextDisplay | HTMLVideoElement,
-    arg2?: HTMLElement,
-  ) => unknown;
+  createShakaTextDisplayFactory: () => (player: ShakaPlayerForTextDisplay) => unknown;
+  installAssTextBridge: (video: HTMLVideoElement) => void;
 };
 
 /** Minimal Shaka player surface used by the text-display factory (4.10+). */
@@ -74,7 +72,30 @@ type LibassOctopusInstance = {
   lastRenderTime?: number;
   video?: HTMLVideoElement;
   timeOffset?: number;
+  __amSyncCleanup?: () => void;
 };
+
+function bindOctopusVideoSync(inst: LibassOctopusInstance, video: HTMLVideoElement) {
+  const syncTime = () => {
+    try {
+      inst.setCurrentTime?.(Number(video.currentTime || 0));
+    } catch {
+      /* ignore */
+    }
+  };
+  const onPlaying = () => {
+    syncOctopusAfterReady(inst, video);
+    syncTime();
+  };
+  video.addEventListener("timeupdate", syncTime);
+  video.addEventListener("seeked", syncTime);
+  video.addEventListener("playing", onPlaying);
+  inst.__amSyncCleanup = () => {
+    video.removeEventListener("timeupdate", syncTime);
+    video.removeEventListener("seeked", syncTime);
+    video.removeEventListener("playing", onPlaying);
+  };
+}
 
 function syncOctopusAfterReady(inst: LibassOctopusInstance, video: HTMLVideoElement) {
   try {
@@ -129,6 +150,12 @@ async function startLibassOctopus(
       fallbackFont: libassAsset("default.woff2"),
       onReady: () => {
         syncOctopusAfterReady(inst as LibassOctopusInstance, video);
+        bindOctopusVideoSync(inst as LibassOctopusInstance, video);
+        try {
+          inst.setCurrentTime?.(Number(video.currentTime || 0));
+        } catch {
+          /* ignore */
+        }
       },
       onError:
         onError ||
@@ -143,8 +170,14 @@ async function startLibassOctopus(
   }
 }
 
-function disposeOctopus(inst: { dispose?: () => void } | null) {
-  if (!inst?.dispose) return;
+function disposeOctopus(inst: { dispose?: () => void; __amSyncCleanup?: () => void } | null) {
+  if (!inst) return;
+  try {
+    inst.__amSyncCleanup?.();
+  } catch {
+    /* ignore */
+  }
+  if (!inst.dispose) return;
   try {
     inst.dispose();
   } catch {
@@ -173,33 +206,64 @@ function resolveVideoContainer(
   return video?.closest?.("[data-player-panel]") ?? null;
 }
 
+function buildAssTextBridge(video: HTMLVideoElement): ShakaTextBridge {
+  const videoContainer =
+    (video.closest?.(".watch-view__controller") as HTMLElement | null) ??
+    (video.closest?.("[data-player-panel]") as HTMLElement | null);
+  const bridge: ShakaTextBridge = {
+    _assBridgeActive: false,
+    _userWantsTextVisible: false,
+    configure() {},
+    append() {},
+    remove() {
+      return false;
+    },
+    isTextVisible() {
+      return bridge._userWantsTextVisible;
+    },
+    setTextVisibility(on) {
+      bridge._userWantsTextVisible = !!on;
+      if (!bridge._assBridgeActive) return;
+      const panel = video.closest?.("[data-player-panel]");
+      const inst = (panel as HTMLElement & { __amLibassOctopus?: { canvasParent?: HTMLElement } })
+        ?.__amLibassOctopus;
+      const parent = inst?.canvasParent;
+      if (parent?.style) {
+        parent.style.visibility = on ? "visible" : "hidden";
+      }
+    },
+    destroy() {},
+    setAssBridgeActive(active) {
+      bridge._assBridgeActive = !!active;
+      const el = videoContainer?.querySelector(".shaka-text-container") as HTMLElement | null;
+      if (el?.style) {
+        el.style.display = active ? "none" : "";
+      }
+    },
+  };
+  (video as HTMLVideoElement & { __amShakaTextBridge?: ShakaTextBridge }).__amShakaTextBridge =
+    bridge;
+  return bridge;
+}
+
+function installAssTextBridge(video: HTMLVideoElement): void {
+  buildAssTextBridge(video);
+}
+
 function createShakaTextDisplayFactory() {
-  return function amTextDisplayFactory(
-    arg1: ShakaPlayerForTextDisplay | HTMLVideoElement,
-    arg2?: HTMLElement,
-  ) {
+  return function amTextDisplayFactory(player: ShakaPlayerForTextDisplay) {
     const shaka = window.shaka;
     if (!shaka?.text?.UITextDisplayer) {
       return null;
     }
+    const video = player.getMediaElement?.() ?? null;
+    const videoContainer = resolveVideoContainer(player, video);
     let inner: InstanceType<typeof shaka.text.UITextDisplayer>;
-    let video: HTMLVideoElement | null;
-    let videoContainer: HTMLElement | null;
-    if (arg2 != null) {
-      // Shaka 4.10.x calls the factory with (video, videoContainer).
-      video = arg1 as HTMLVideoElement;
-      videoContainer = arg2;
+    try {
+      inner = new shaka.text.UITextDisplayer(player);
+    } catch {
+      if (!video || !videoContainer) return null;
       inner = new shaka.text.UITextDisplayer(video, videoContainer);
-    } else {
-      const player = arg1 as ShakaPlayerForTextDisplay;
-      video = player.getMediaElement?.() ?? null;
-      videoContainer = resolveVideoContainer(player, video);
-      try {
-        inner = new shaka.text.UITextDisplayer(player);
-      } catch {
-        if (!video || !videoContainer) return null;
-        inner = new shaka.text.UITextDisplayer(video, videoContainer);
-      }
     }
     const bridge: ShakaTextBridge = {
       _assBridgeActive: false,
@@ -261,6 +325,7 @@ export const AmPlaybackSubtitles: AmPlaybackSubtitlesApi = {
   startLibassOctopus,
   disposeOctopus,
   createShakaTextDisplayFactory,
+  installAssTextBridge,
 };
 
 export function installSubtitleBridge(): void {
@@ -268,3 +333,5 @@ export function installSubtitleBridge(): void {
     window.AmPlaybackSubtitles = AmPlaybackSubtitles;
   }
 }
+
+export { installAssTextBridge };
