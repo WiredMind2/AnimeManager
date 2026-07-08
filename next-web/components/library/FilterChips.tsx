@@ -1,5 +1,6 @@
 import { FILTER_OPTIONS, type FilterValue } from "@/lib/config";
 import { libraryPageUrl, type PageSizeOption } from "@/lib/library";
+import GenreBrowseChip from "./GenreBrowseChip";
 import SeasonBrowseChip from "./SeasonBrowseChip";
 
 type FilterChipsProps = {
@@ -66,6 +67,7 @@ export default function FilterChips({
         );
       })}
       <SeasonBrowseChip />
+      <GenreBrowseChip />
     </div>
   );
 }

@@ -10,6 +10,7 @@ The pipeline must:
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from types import SimpleNamespace
@@ -79,15 +80,34 @@ def _anime_like(rid, title="t"):
     )
 
 
-def _build_service(api, db) -> StartupJobsService:
+def _build_service(api, db, *, settings=None) -> StartupJobsService:
     coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
     coord.set_api(api)
     coord.set_database_manager(db)
     coord.log = lambda *a, **k: None  # silence logs in tests
+    anime_settings = {
+        "scheduleTimeout": 86400,
+        "lastSchedule": 0,
+        "maxTrendingAnime": 10,
+    }
+    if settings:
+        anime_settings.update(settings)
+    saved: dict = {}
+
+    def update_settings(updates):
+        saved.update(updates)
+        if "anime" in updates:
+            anime_settings.update(updates["anime"])
+
+    config = SimpleNamespace(
+        settings={"anime": anime_settings},
+        update_settings=update_settings,
+        _saved_settings=saved,
+    )
     return StartupJobsService(
         api_coordinator=coord,
         database_manager=db,
-        config=SimpleNamespace(settings={}),
+        config=config,
         torrent_manager=None,
         logger=SimpleNamespace(log=lambda *a, **k: None),
         schedule_limit=10,
@@ -268,3 +288,121 @@ def test_reconcile_deleted_torrents_job_runs_with_adapter():
     finally:
         coord.close()
     assert detail == "marked 2 torrent(s) deleted"
+
+
+def test_schedule_timeout_clamped_to_daily_minimum():
+    service = _build_service(_FakeAPI([]), _RecordingDBManager(), settings={"scheduleTimeout": 120})
+    timeout_s, _, _ = service._read_schedule_config()
+    assert timeout_s == StartupJobsService._SCHEDULE_MIN_INTERVAL_S
+
+
+def test_startup_skips_fetch_when_last_schedule_is_recent():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+    service = _build_service(
+        api,
+        db,
+        settings={"lastSchedule": int(time.time())},
+    )
+    try:
+        report = service.run()
+    finally:
+        service._api_coordinator.close()
+
+    fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
+    assert fetch.ok is True
+    assert "skipped (recent fetch)" in fetch.detail
+    assert db.upserts == []
+
+
+def test_fetch_marks_last_schedule(monkeypatch):
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    fixed = 1_700_000_000
+
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    try:
+        detail = service._job_fetch_latest()
+    finally:
+        service._api_coordinator.close()
+
+    assert "records=" in detail
+    assert service._config._saved_settings.get("anime", {}).get("lastSchedule") == fixed
+
+
+class _StatusDB:
+    def __init__(self, upcoming=(), airing=()):
+        self.upcoming = list(upcoming)
+        self.airing = list(airing)
+        self.updates = []
+
+    @contextlib.contextmanager
+    def get_lock(self):
+        yield
+
+    def sql(self, query, params=None, save=False):
+        if "status='UPCOMING'" in query:
+            return list(self.upcoming)
+        if "status='AIRING'" in query:
+            return list(self.airing)
+        if query.startswith("UPDATE anime SET status=?"):
+            self.updates.append((params[0], list(params[1:])))
+            return []
+        raise AssertionError(f"Unexpected SQL: {query!r}")
+
+
+class _StatusDBManager(_RecordingDBManager):
+    def __init__(self, db):
+        super().__init__()
+        self._db = db
+
+    def get_database(self):
+        return self._db
+
+    def repair_duplicate_anime_entries(self):
+        return 0
+
+
+def test_update_status_marks_stale_airing_finished():
+    db = _StatusDB(
+        airing=[(42, "AIRING", 1_600_000_000, 1_600_000_100, 12)],
+    )
+    service = _build_service(_FakeAPI([]), _StatusDBManager(db))
+    detail = service._job_update_status()
+    assert "FINISHED=1" in detail
+    assert db.updates == [("FINISHED", [42])]
+
+
+def test_schedule_refresh_runs_fetch_and_status():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(7)])])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    try:
+        report = service.run_schedule_refresh()
+    finally:
+        service._api_coordinator.close()
+
+    names = [o.name for o in report.outcomes]
+    assert names == ["fetch_latest_anime", "update_status"]
+
+
+@pytest.mark.parametrize(
+    "settings, expect_max",
+    [
+        # Far-future lastSchedule -> negative elapsed -> would overflow without clamping.
+        ({"lastSchedule": 10**18}, StartupJobsService._SCHEDULE_SLEEP_MAX_S),
+        # Oversized scheduleTimeout alone must also be capped.
+        ({"scheduleTimeout": 10**18, "lastSchedule": 0}, StartupJobsService._SCHEDULE_SLEEP_MAX_S),
+    ],
+)
+def test_schedule_loop_sleep_is_bounded(settings, expect_max):
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+    service = _build_service(api, db, settings=settings)
+    try:
+        sleep_s = service._next_schedule_sleep_s()
+    finally:
+        service._api_coordinator.close()
+
+    assert 60.0 <= sleep_s <= expect_max

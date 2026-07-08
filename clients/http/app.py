@@ -53,6 +53,12 @@ def _shutdown_embedded_background() -> None:
         sdk = get_sdk()
     except Exception:  # noqa: BLE001
         return
+    stopper = getattr(sdk, "stop_schedule_loop", None)
+    if callable(stopper):
+        try:
+            stopper()
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("schedule loop shutdown skipped: %s", exc)
     facade = getattr(sdk, "_facade", None)
     if facade is None:
         return
@@ -155,6 +161,29 @@ def search(query: str, limit: int = 50):
         return get_sdk().search_anime(query=query, limit=limit)
     except Exception as exc:  # pragma: no cover
         raise _map_error(exc) from exc
+
+
+@app.get("/season")
+def browse_season(year: int, season: str, limit: int = 50):
+    try:
+        return get_sdk().browse_season(year=year, season=season, limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/genre")
+def browse_genre(name: str, limit: int = 50):
+    try:
+        return get_sdk().browse_genre(genre=name, limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise _map_error(exc) from exc
+
+
+@app.get("/genres")
+def list_genres():
+    from domain.policies.genre import GENRES
+
+    return {"items": sorted(GENRES)}
 
 
 @app.post("/download/{anime_id}")

@@ -47,7 +47,9 @@
   --tag-watching: #e79622;
   --tag-watchlist: #56d8ef;
 
-  /* Broadcast-season palette (winter/spring/summer/fall) */
+  /* Broadcast-season palette (winter/spring/summer/fall) — distinct from
+   * the semantic accent/success/warning/danger tokens above so a season
+   * tint never reads as a status color. */
   --season-winter: #7dc4f5;
   --season-winter-soft: rgba(125, 196, 245, 0.14);
   --season-spring: #9fe66d;
@@ -782,6 +784,151 @@ textarea {
   font-weight: 500;
 }
 
+/* Season-tinted header: the underline accent and the emphasized season
+ * name in the subtitle pick up the selected quarter's color instead of
+ * the default accent, so the page feels themed to the chosen season. */
+.page-head[data-season] .page-head__title::after {
+  background: linear-gradient(90deg, var(--season-tint, var(--accent)), transparent);
+}
+
+.page-head[data-season="winter"] { --season-tint: var(--season-winter); }
+.page-head[data-season="spring"] { --season-tint: var(--season-spring); }
+.page-head[data-season="summer"] { --season-tint: var(--season-summer); }
+.page-head[data-season="fall"]   { --season-tint: var(--season-fall); }
+
+.page-head[data-season] .page-head__subtitle strong {
+  color: var(--season-tint, var(--text));
+}
+
+/* -------------------------------------------------------------------------- *
+ * Season browse: segmented season tabs + year stepper
+ * -------------------------------------------------------------------------- */
+.season-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+
+.season-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+}
+
+.season-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--sp-2) var(--sp-4);
+  border: 0;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  text-decoration: none;
+}
+
+.season-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.season-tab svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.75;
+  flex: 0 0 auto;
+}
+
+.season-tab.is-active {
+  color: var(--tint, var(--accent));
+  background: var(--tint-soft, var(--accent-soft));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.season-tab[data-season="winter"] { --tint: var(--season-winter); --tint-soft: var(--season-winter-soft); }
+.season-tab[data-season="spring"] { --tint: var(--season-spring); --tint-soft: var(--season-spring-soft); }
+.season-tab[data-season="summer"] { --tint: var(--season-summer); --tint-soft: var(--season-summer-soft); }
+.season-tab[data-season="fall"]   { --tint: var(--season-fall);   --tint-soft: var(--season-fall-soft); }
+
+.season-year-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.season-year-stepper__btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.season-year-stepper__btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.season-year-stepper__btn[disabled] {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.season-year-stepper__btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+.season-year-stepper__value {
+  min-width: 4.5ch;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .season-picker {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .season-tabs {
+    flex: 1 1 auto;
+  }
+
+  .season-tab span {
+    display: none;
+  }
+
+  .season-tab {
+    flex: 1 1 0;
+    justify-content: center;
+    padding: var(--sp-2);
+  }
+}
+
 /* -------------------------------------------------------------------------- *
  * Anime card grid
  * -------------------------------------------------------------------------- */
@@ -1217,6 +1364,9 @@ textarea {
 
 .detail__section {
   margin-top: var(--sp-10);
+  /* Anchor jumps (quick-nav chips, topbar shortcuts) shouldn't land a
+   * section title underneath the sticky topbar. */
+  scroll-margin-top: calc(var(--topbar-h) + var(--sp-4));
 }
 
 .detail__section-title {
@@ -1235,6 +1385,10 @@ textarea {
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.14em;
+}
+
+.detail__metadata-toggle {
+  margin-left: auto;
 }
 
 .detail__metadata-grid {
@@ -1291,11 +1445,20 @@ textarea {
 }
 
 .detail__gallery-hero {
+  display: block;
+  width: 100%;
   border-radius: var(--r-2);
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--surface-2);
   max-height: 420px;
+  padding: 0;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+
+.detail__gallery-hero:hover {
+  border-color: var(--border-strong);
 }
 
 .detail__gallery-hero img {
@@ -1310,6 +1473,72 @@ textarea {
   flex-wrap: wrap;
   gap: var(--sp-2);
   margin-top: var(--sp-3);
+}
+
+.detail__gallery-more {
+  margin-top: var(--sp-3);
+}
+
+.detail__lightbox-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  max-height: 76vh;
+}
+
+.detail__lightbox-stage img {
+  max-width: 100%;
+  max-height: 76vh;
+  object-fit: contain;
+  border-radius: var(--r-1);
+}
+
+.detail__lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(10, 12, 20, 0.6);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.detail__lightbox-nav:hover {
+  background: var(--surface-3);
+}
+
+.detail__lightbox-nav--prev {
+  left: var(--sp-3);
+}
+
+.detail__lightbox-nav--next {
+  right: var(--sp-3);
+}
+
+.detail__lightbox-count {
+  text-align: center;
+  margin: var(--sp-3) 0 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.modal__dialog--lightbox {
+  width: min(1100px, 100%);
+}
+
+.modal__dialog--lightbox .modal__body {
+  background: var(--surface);
 }
 
 .detail__gallery-thumb {
@@ -1395,6 +1624,10 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.detail__character-more {
+  margin-top: var(--sp-3);
 }
 
 .drawer {
@@ -1489,6 +1722,32 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
+}
+
+.drawer__list--skeleton {
+  gap: var(--sp-3);
+}
+
+.drawer__skeleton-row {
+  height: 14px;
+  border-radius: var(--r-1);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 37%,
+    var(--surface-2) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
 }
 
 .player-panel {
@@ -2464,6 +2723,79 @@ tr:hover .torrent-name::after,
   border-color: rgba(95, 217, 238, 0.25);
   background: rgba(95, 217, 238, 0.06);
   color: var(--accent);
+}
+
+/* -------------------------------------------------------------------------- *
+ * Toasts (transient feedback for optimistic actions)
+ * -------------------------------------------------------------------------- */
+.toast-stack {
+  position: fixed;
+  bottom: var(--sp-5);
+  right: var(--sp-5);
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-width: min(360px, calc(100vw - var(--sp-8)));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-2);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-3);
+  font-size: 13px;
+  color: var(--text);
+  animation: toast-in 180ms ease;
+}
+
+.toast--success {
+  border-color: rgba(152, 226, 43, 0.3);
+  box-shadow: var(--shadow-3), inset 3px 0 0 var(--success);
+}
+
+.toast--error {
+  border-color: rgba(249, 36, 114, 0.3);
+  box-shadow: var(--shadow-3), inset 3px 0 0 var(--danger);
+}
+
+.toast--info {
+  border-color: rgba(95, 217, 238, 0.3);
+  box-shadow: var(--shadow-3), inset 3px 0 0 var(--accent);
+}
+
+.toast span {
+  flex: 1;
+  line-height: 1.5;
+}
+
+.toast__close {
+  background: transparent;
+  border: 0;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.toast__close:hover {
+  color: var(--text);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* -------------------------------------------------------------------------- *

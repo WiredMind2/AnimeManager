@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Shaka text-display bridge + libass (SubtitlesOctopus).
  * Port of clients/http/static/js/am_playback_subtitles.js

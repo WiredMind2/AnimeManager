@@ -17,6 +17,14 @@ class FakeSDK:
         _ = limit
         return [{"id": 1, "title": query}]
 
+    def browse_season(self, year: int, season: str, limit: int = 50):
+        _ = limit
+        return [{"id": 1, "title": f"{season} {year}"}]
+
+    def browse_genre(self, genre: str, limit: int = 50):
+        _ = limit
+        return [{"id": 1, "title": genre}]
+
     def start_download(self, anime_id: int, url=None, hash_value=None, user_id=None):
         _ = (anime_id, url, hash_value, user_id)
         return True
@@ -75,6 +83,9 @@ def test_http_adapter_routes_use_shared_sdk(monkeypatch):
     assert client.get("/anime/7").json()["id"] == 7
     assert client.get("/animelist").json()["items"][0]["id"] == 1
     assert client.get("/search", params={"query": "bleach"}).json()[0]["title"] == "bleach"
+    assert client.get("/season", params={"year": 2026, "season": "spring"}).json()[0]["title"] == "spring 2026"
+    assert client.get("/genre", params={"name": "Comedy"}).json()[0]["title"] == "Comedy"
+    assert "Comedy" in client.get("/genres").json()["items"]
     assert client.post("/download/1", params={"url": "magnet:?xt=urn:btih:abc"}).json()["started"] is True
     assert client.post("/download/cancel/1").json()["cancelled"] is True
     assert client.get("/download/active").json()["items"][0]["anime_id"] == 1

@@ -29,6 +29,19 @@ class SearchRequest:
 
 
 @dataclass(slots=True)
+class SeasonBrowseRequest:
+    year: int
+    season: str
+    limit: int = 50
+
+
+@dataclass(slots=True)
+class GenreBrowseRequest:
+    genre: str
+    limit: int = 50
+
+
+@dataclass(slots=True)
 class DownloadRequest:
     anime_id: int
     url: Optional[str] = None
@@ -45,6 +58,8 @@ class AnimeListResponse:
 __all__ = [
     "AnimeListRequest",
     "SearchRequest",
+    "SeasonBrowseRequest",
+    "GenreBrowseRequest",
     "DownloadRequest",
     "AnimeListResponse",
 ]

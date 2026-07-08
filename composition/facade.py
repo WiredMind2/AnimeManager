@@ -17,7 +17,7 @@ from application.services.startup_jobs import (
     StartupJobReport,
     StartupJobsService,
 )
-from domain.dto import AnimeListRequest, DownloadRequest, SearchRequest
+from domain.dto import AnimeListRequest, DownloadRequest, GenreBrowseRequest, SearchRequest, SeasonBrowseRequest
 
 
 class EmbeddedClientFacade:
@@ -63,6 +63,18 @@ class EmbeddedClientFacade:
             return None
         return self._startup_jobs.run_in_background()
 
+    def start_schedule_loop(self):
+        """Start the daily provider schedule refresh loop."""
+        if self._startup_jobs is None:
+            return None
+        return self._startup_jobs.start_schedule_loop()
+
+    def stop_schedule_loop(self) -> None:
+        """Stop the daily provider schedule refresh loop."""
+        if self._startup_jobs is None:
+            return
+        self._startup_jobs.stop_schedule_loop()
+
     def search_anime(self, query: str, limit: int = 50):
         return self._service.search_anime(
             SearchRequest(query=query, limit=limit)
@@ -76,6 +88,42 @@ class EmbeddedClientFacade:
             return
         for item in self._service.search_anime(
             SearchRequest(query=query, limit=limit)
+        ):
+            yield item
+
+    def browse_season(self, year: int, season: str, limit: int = 50):
+        return self._service.browse_season(
+            SeasonBrowseRequest(year=year, season=season, limit=limit)
+        )
+
+    def stream_browse_season(self, year: int, season: str, limit: int = 50):
+        """Yield :class:`AnimeEntity` results for a broadcast season."""
+        streamer = getattr(self._service, "stream_browse_season", None)
+        if callable(streamer):
+            yield from streamer(
+                SeasonBrowseRequest(year=year, season=season, limit=limit)
+            )
+            return
+        for item in self._service.browse_season(
+            SeasonBrowseRequest(year=year, season=season, limit=limit)
+        ):
+            yield item
+
+    def browse_genre(self, genre: str, limit: int = 50):
+        return self._service.browse_genre(
+            GenreBrowseRequest(genre=genre, limit=limit)
+        )
+
+    def stream_browse_genre(self, genre: str, limit: int = 50):
+        """Yield :class:`AnimeEntity` results for a genre browse."""
+        streamer = getattr(self._service, "stream_browse_genre", None)
+        if callable(streamer):
+            yield from streamer(
+                GenreBrowseRequest(genre=genre, limit=limit)
+            )
+            return
+        for item in self._service.browse_genre(
+            GenreBrowseRequest(genre=genre, limit=limit)
         ):
             yield item
 

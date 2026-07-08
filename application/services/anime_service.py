@@ -19,11 +19,18 @@ from domain.dto import (
     AnimeListRequest,
     AnimeListResponse,
     DownloadRequest,
+    GenreBrowseRequest,
     SearchRequest,
+    SeasonBrowseRequest,
 )
 from domain.entities import AnimeEntity
 from domain.errors import NotFoundError, ValidationError
-from domain.policies import normalize_search_query
+from domain.policies import (
+    normalize_airing_season,
+    normalize_genre,
+    normalize_search_query,
+    validate_season_year,
+)
 from ports.interfaces import (
     AnimeRepositoryPort,
     DownloadPort,
@@ -59,6 +66,21 @@ class AnimeApplicationService:
         seen_ids: set[int] = set()
         merged: list[AnimeEntity] = []
         limit = request.limit
+
+        matched_genre: str | None = None
+        try:
+            matched_genre = normalize_genre(query)
+        except ValidationError:
+            matched_genre = None
+
+        if matched_genre is not None:
+            for entity in self._anime_repository.list_by_genre(matched_genre, limit):
+                if entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                merged.append(entity)
+                if len(merged) >= limit:
+                    return merged
 
         for entity in self._anime_repository.search(query, limit):
             if entity.id in seen_ids:
@@ -99,6 +121,21 @@ class AnimeApplicationService:
 
         seen_ids: set[int] = set()
 
+        matched_genre: str | None = None
+        try:
+            matched_genre = normalize_genre(query)
+        except ValidationError:
+            matched_genre = None
+
+        if matched_genre is not None:
+            for entity in self._anime_repository.list_by_genre(
+                matched_genre, request.limit
+            ):
+                if entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                yield entity
+
         local_results = self._anime_repository.search(query, request.limit)
         if local_results:
             for entity in local_results:
@@ -117,6 +154,150 @@ class AnimeApplicationService:
             return
 
         for entity in self._metadata_provider.search(query, request.limit):
+            if entity is None or entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            yield entity
+
+    def browse_season(self, request: SeasonBrowseRequest) -> list[AnimeEntity]:
+        year = validate_season_year(request.year)
+        season = normalize_airing_season(request.season)
+        limit = request.limit
+        seen_ids: set[int] = set()
+        merged: list[AnimeEntity] = []
+
+        for entity in self._anime_repository.list_by_airing_season(
+            year, season, limit
+        ):
+            if entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            merged.append(entity)
+            if len(merged) >= limit:
+                return merged
+
+        browser = getattr(self._metadata_provider, "browse_season", None)
+        if callable(browser):
+            for entity in browser(year, season, limit):
+                if entity is None or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                merged.append(entity)
+                if len(merged) >= limit:
+                    break
+            return merged
+
+        for entity in self._metadata_provider.search(f"{season} {year}", limit):
+            if entity is None or entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            merged.append(entity)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def stream_browse_season(self, request: SeasonBrowseRequest):
+        """Yield season browse results: local catalog first, then providers."""
+        year = validate_season_year(request.year)
+        season = normalize_airing_season(request.season)
+        seen_ids: set[int] = set()
+
+        for entity in self._anime_repository.list_by_airing_season(
+            year, season, request.limit
+        ):
+            if entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            yield entity
+
+        streamer = getattr(self._metadata_provider, "stream_browse_season", None)
+        if callable(streamer):
+            for entity in streamer(year, season, request.limit):
+                if entity is None or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                yield entity
+            return
+
+        browser = getattr(self._metadata_provider, "browse_season", None)
+        if callable(browser):
+            for entity in browser(year, season, request.limit):
+                if entity is None or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                yield entity
+            return
+
+        for entity in self._metadata_provider.search(f"{season} {year}", request.limit):
+            if entity is None or entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            yield entity
+
+    def browse_genre(self, request: GenreBrowseRequest) -> list[AnimeEntity]:
+        genre = normalize_genre(request.genre)
+        limit = request.limit
+        seen_ids: set[int] = set()
+        merged: list[AnimeEntity] = []
+
+        for entity in self._anime_repository.list_by_genre(genre, limit):
+            if entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            merged.append(entity)
+            if len(merged) >= limit:
+                return merged
+
+        browser = getattr(self._metadata_provider, "browse_genre", None)
+        if callable(browser):
+            for entity in browser(genre, limit):
+                if entity is None or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                merged.append(entity)
+                if len(merged) >= limit:
+                    break
+            return merged
+
+        for entity in self._metadata_provider.search(genre, limit):
+            if entity is None or entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            merged.append(entity)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def stream_browse_genre(self, request: GenreBrowseRequest):
+        """Yield genre browse results: local catalog first, then providers."""
+        genre = normalize_genre(request.genre)
+        seen_ids: set[int] = set()
+
+        for entity in self._anime_repository.list_by_genre(genre, request.limit):
+            if entity.id in seen_ids:
+                continue
+            seen_ids.add(entity.id)
+            yield entity
+
+        streamer = getattr(self._metadata_provider, "stream_browse_genre", None)
+        if callable(streamer):
+            for entity in streamer(genre, request.limit):
+                if entity is None or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                yield entity
+            return
+
+        browser = getattr(self._metadata_provider, "browse_genre", None)
+        if callable(browser):
+            for entity in browser(genre, request.limit):
+                if entity is None or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                yield entity
+            return
+
+        for entity in self._metadata_provider.search(genre, request.limit):
             if entity is None or entity.id in seen_ids:
                 continue
             seen_ids.add(entity.id)

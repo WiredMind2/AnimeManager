@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { ToastProvider } from "@/components/Toast";
 import Rail from "./Rail";
 import TopBar from "./TopBar";
 import type { FilterValue, NavKey } from "@/lib/config";
@@ -23,19 +24,21 @@ export default function AppShell({
   flash,
 }: AppShellProps) {
   return (
-    <div className="shell">
-      <Suspense fallback={null}>
-        <Rail activeNav={activeNav} activeFilter={activeFilter} />
-      </Suspense>
-      <main className="main">
+    <ToastProvider>
+      <div className="shell">
         <Suspense fallback={null}>
-          <TopBar title={pageTitle} actions={topbarActions} showSearch={showSearch} />
+          <Rail activeNav={activeNav} activeFilter={activeFilter} />
         </Suspense>
-        <div className="content">
-          {flash ? <div className={`flash flash--${flash.kind}`}>{flash.message}</div> : null}
-          {children}
-        </div>
-      </main>
-    </div>
+        <main className="main">
+          <Suspense fallback={null}>
+            <TopBar title={pageTitle} actions={topbarActions} showSearch={showSearch} />
+          </Suspense>
+          <div className="content">
+            {flash ? <div className={`flash flash--${flash.kind}`}>{flash.message}</div> : null}
+            {children}
+          </div>
+        </main>
+      </div>
+    </ToastProvider>
   );
 }

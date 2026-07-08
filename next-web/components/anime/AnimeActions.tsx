@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { useToast } from "@/components/Toast";
 import { api, type UserState } from "@/lib/api";
 import { DEFAULT_USER_ID } from "@/lib/config";
+import { useDialogBehavior } from "@/lib/use-dialog";
 import { youtubeEmbedUrl } from "@/lib/youtube";
 
 const TAGS = ["NONE", "WATCHING", "WATCHLIST", "SEEN"] as const;
@@ -25,6 +27,12 @@ export default function AnimeActions({
   const [seenFile, setSeenFile] = useState(initialLastSeen || "");
   const [markingSeen, setMarkingSeen] = useState(false);
   const embed = youtubeEmbedUrl(trailer);
+  const closeTrailer = useCallback(() => setTrailerOpen(false), []);
+  const { panelRef } = useDialogBehavior<HTMLDivElement>({
+    open: trailerOpen && Boolean(embed),
+    onClose: closeTrailer,
+  });
+  const { showToast } = useToast();
 
   async function toggleLike() {
     const next = !userState.liked;
@@ -33,6 +41,7 @@ export default function AnimeActions({
       await api.setLike(animeId, DEFAULT_USER_ID, next);
     } catch {
       setUserState((s) => ({ ...s, liked: !next }));
+      showToast("Failed to update like status. Please try again.", "error");
     }
   }
 
@@ -43,6 +52,7 @@ export default function AnimeActions({
       await api.setTag(animeId, tag, DEFAULT_USER_ID);
     } catch {
       setUserState((s) => ({ ...s, tag: prev }));
+      showToast("Failed to update tag. Please try again.", "error");
     }
   }
 
@@ -53,7 +63,7 @@ export default function AnimeActions({
       await api.markSeen(animeId, fileName, DEFAULT_USER_ID);
       setUserState((s) => ({ ...s, tag: "SEEN" }));
     } catch {
-      /* ignore */
+      showToast("Failed to mark episode as seen. Please try again.", "error");
     } finally {
       setMarkingSeen(false);
     }
@@ -150,8 +160,8 @@ export default function AnimeActions({
           aria-modal="true"
           aria-labelledby="trailer-modal-title"
         >
-          <div className="modal__backdrop" data-trailer-close onClick={() => setTrailerOpen(false)} />
-          <div className="modal__dialog" role="document">
+          <div className="modal__backdrop" data-trailer-close onClick={closeTrailer} />
+          <div className="modal__dialog" role="document" ref={panelRef}>
             <header className="modal__header">
               <h2 id="trailer-modal-title" className="modal__title">
                 Trailer
@@ -161,7 +171,7 @@ export default function AnimeActions({
                 type="button"
                 aria-label="Close trailer"
                 data-trailer-close
-                onClick={() => setTrailerOpen(false)}
+                onClick={closeTrailer}
               >
                 ×
               </button>

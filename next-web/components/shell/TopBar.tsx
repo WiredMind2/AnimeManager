@@ -91,7 +91,7 @@ export default function TopBar({ title = "Library", actions, showSearch = true }
             name="q"
             value={query}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search anime by title…"
+            placeholder="Search by title or genre…"
             autoComplete="off"
             aria-label="Search anime"
           />

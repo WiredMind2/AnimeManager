@@ -29,7 +29,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
     """Create the complete embedded backend graph."""
     deps = bootstrap_embedded_deps()
 
-    repository = AnimeRepositoryAdapter(deps.db_manager, deps.config)
+    repository = AnimeRepositoryAdapter(deps.db_manager, deps.config, api=deps.api)
     user_actions = UserActionsRepository(deps.database)
     media_library = LocalMediaLibraryAdapter(
         scanner=deps.scanner,
@@ -70,7 +70,6 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         schedule_limit = int(anime_cfg.get("maxTrendingAnime", 100))
     except (TypeError, ValueError):
         schedule_limit = 100
-
     startup_jobs = StartupJobsService(
         api_coordinator=metadata.api_coordinator,
         database_manager=deps.db_manager,

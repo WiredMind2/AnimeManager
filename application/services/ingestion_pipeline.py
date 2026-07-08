@@ -130,11 +130,15 @@ class IngestionPipeline:
         *,
         limit: int = 50,
         sink: Optional[PersistenceSink] = None,
+        limit_per_provider: bool = False,
     ) -> IngestionResult:
         if not providers:
             return IngestionResult(status=IngestionStatus.COMPLETE, total_providers=0)
 
-        per_provider_limit = max(1, limit // max(1, len(providers)))
+        if limit_per_provider:
+            per_provider_limit = max(1, limit)
+        else:
+            per_provider_limit = max(1, limit // max(1, len(providers)))
         start_ns = time.perf_counter()
         futures = {
             self._executor.submit(self._run_one, spec, terms, per_provider_limit): spec

@@ -57,6 +57,21 @@ class AnimeRepositoryPort(Protocol):
     ) -> tuple[list[AnimeEntity], bool]:
         ...
 
+    def list_by_airing_season(
+        self,
+        year: int,
+        season: str,
+        limit: int = 50,
+    ) -> list[AnimeEntity]:
+        ...
+
+    def list_by_genre(
+        self,
+        genre: str,
+        limit: int = 50,
+    ) -> list[AnimeEntity]:
+        ...
+
     def get_anime(self, anime_id: int) -> Optional[AnimeEntity]:
         ...
 
@@ -111,6 +126,22 @@ class AnimeRepositoryPort(Protocol):
 
 class MetadataProviderPort(Protocol):
     def search(self, query: str, limit: int = 50) -> list[AnimeEntity]:
+        ...
+
+    def browse_season(
+        self, year: int, season: str, limit: int = 50
+    ) -> list[AnimeEntity]:
+        ...
+
+    def stream_browse_season(self, year: int, season: str, limit: int = 50):
+        ...
+
+    def browse_genre(
+        self, genre: str, limit: int = 50
+    ) -> list[AnimeEntity]:
+        ...
+
+    def stream_browse_genre(self, genre: str, limit: int = 50):
         ...
 
 

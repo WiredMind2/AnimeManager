@@ -980,6 +980,151 @@ def web_library_search_stream(
     )
 
 
+@router.get("/ui/library/season/stream", name="web_library_season_stream")
+def web_library_season_stream(
+    request: Request,
+    year: int = 0,
+    season: str = "",
+    limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+) -> StreamingResponse:
+    """Server-Sent Events feed for broadcast-season browse."""
+    _ = request
+    season_raw = (season or "").strip()
+    limit = _safe_int(limit, _LIBRARY_STREAM_MAX_RESULTS)
+    if limit <= 0 or limit > 200:
+        limit = _LIBRARY_STREAM_MAX_RESULTS
+
+    def event_stream() -> Iterable[bytes]:
+        if not season_raw or not year:
+            yield _sse_event("error", "Missing year or season.")
+            yield _sse_event("done", "0")
+            return
+
+        try:
+            from domain.policies.season import (
+                normalize_airing_season,
+                validate_season_year,
+            )
+
+            year_value = validate_season_year(year)
+            season_value = normalize_airing_season(season_raw)
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+            yield _sse_event("done", "0")
+            return
+        except Exception:  # noqa: BLE001
+            yield _sse_event("error", "Invalid season browse parameters.")
+            yield _sse_event("done", "0")
+            return
+
+        yield b": stream-open\n\n"
+
+        sdk = get_sdk()
+        emitted = 0
+        seen_ids: set[Any] = set()
+        try:
+            for item in sdk.stream_browse_season(
+                year_value, season_value, limit=limit
+            ):
+                anime_id = item.get("id") if isinstance(item, dict) else None
+                if anime_id is not None:
+                    if anime_id in seen_ids:
+                        continue
+                    seen_ids.add(anime_id)
+                yield _sse_event("card", json.dumps(item))
+                emitted += 1
+                if emitted >= limit:
+                    break
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("library season stream failed: %s", exc)
+            yield _sse_event(
+                "error",
+                "Season browse failed; check the metadata provider configuration.",
+            )
+        yield _sse_event("done", str(emitted))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.get("/ui/library/genre/stream", name="web_library_genre_stream")
+def web_library_genre_stream(
+    request: Request,
+    genre: str = "",
+    limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+) -> StreamingResponse:
+    """Server-Sent Events feed for genre browse."""
+    _ = request
+    genre_raw = (genre or "").strip()
+    limit = _safe_int(limit, _LIBRARY_STREAM_MAX_RESULTS)
+    if limit <= 0 or limit > 200:
+        limit = _LIBRARY_STREAM_MAX_RESULTS
+
+    def event_stream() -> Iterable[bytes]:
+        if not genre_raw:
+            yield _sse_event("error", "Missing genre.")
+            yield _sse_event("done", "0")
+            return
+
+        try:
+            from domain.policies.genre import normalize_genre
+
+            genre_value = normalize_genre(genre_raw)
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+            yield _sse_event("done", "0")
+            return
+        except Exception:  # noqa: BLE001
+            yield _sse_event("error", "Invalid genre browse parameters.")
+            yield _sse_event("done", "0")
+            return
+
+        yield b": stream-open\n\n"
+
+        sdk = get_sdk()
+        emitted = 0
+        seen_ids: set[Any] = set()
+        try:
+            for item in sdk.stream_browse_genre(genre_value, limit=limit):
+                anime_id = item.get("id") if isinstance(item, dict) else None
+                if anime_id is not None:
+                    if anime_id in seen_ids:
+                        continue
+                    seen_ids.add(anime_id)
+                yield _sse_event("card", json.dumps(item))
+                emitted += 1
+                if emitted >= limit:
+                    break
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("library genre stream failed: %s", exc)
+            yield _sse_event(
+                "error",
+                "Genre browse failed; check the metadata provider configuration.",
+            )
+        yield _sse_event("done", str(emitted))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.get("/ui/anime/{anime_id}", name="web_anime_detail")
 def web_anime_detail(request: Request, anime_id: int) -> HTMLResponse:
     sdk = get_sdk()

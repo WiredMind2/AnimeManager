@@ -124,6 +124,8 @@ export function shakaErrorToPlain(
   try {
     if (detail && typeof detail.getMessage === "function") {
       out.message = String(detail.getMessage() || "").trim();
+    } else if (typeof detail?.message === "string") {
+      out.message = detail.message.trim();
     }
   } catch {
     /* ignore */

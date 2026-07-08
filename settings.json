@@ -120,7 +120,7 @@
     "apiHost": "kitsu.io",
     "hideRated": true,
     "maxTimeout": 30,
-    "scheduleTimeout": 120,
+    "scheduleTimeout": 86400,
     "lastSchedule": 0,
     "maxTrendingAnime": 100,
     "topPublishers": [

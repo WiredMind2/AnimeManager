@@ -45,6 +45,36 @@ class ClientSDK:
         for item in self._facade.search_anime(query, limit):
             yield asdict(item)
 
+    def browse_season(
+        self, year: int, season: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self._facade.browse_season(year, season, limit)]
+
+    def stream_browse_season(self, year: int, season: str, limit: int = 50):
+        """Yield serializable anime dicts for a broadcast season."""
+        streamer = getattr(self._facade, "stream_browse_season", None)
+        if callable(streamer):
+            for item in streamer(year, season, limit):
+                yield asdict(item)
+            return
+        for item in self._facade.browse_season(year, season, limit):
+            yield asdict(item)
+
+    def browse_genre(
+        self, genre: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self._facade.browse_genre(genre, limit)]
+
+    def stream_browse_genre(self, genre: str, limit: int = 50):
+        """Yield serializable anime dicts for a genre browse."""
+        streamer = getattr(self._facade, "stream_browse_genre", None)
+        if callable(streamer):
+            for item in streamer(genre, limit):
+                yield asdict(item)
+            return
+        for item in self._facade.browse_genre(genre, limit):
+            yield asdict(item)
+
     def get_anime_list(
         self,
         filter_name: str = "DEFAULT",
@@ -304,6 +334,19 @@ class ClientSDK:
         if not callable(kickoff):
             return None
         return kickoff()
+
+    def start_schedule_loop(self):
+        """Start the daily provider schedule refresh loop."""
+        starter = getattr(self._facade, "start_schedule_loop", None)
+        if not callable(starter):
+            return None
+        return starter()
+
+    def stop_schedule_loop(self) -> None:
+        """Stop the daily provider schedule refresh loop."""
+        stopper = getattr(self._facade, "stop_schedule_loop", None)
+        if callable(stopper):
+            stopper()
 
 
 __all__ = ["ClientSDK", "AnimeManagerError"]

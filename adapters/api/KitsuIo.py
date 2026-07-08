@@ -16,6 +16,21 @@ except ImportError:
     from APIUtils import Anime, APIUtils, Character
 
 
+def _current_anime_season() -> tuple[int, str]:
+    """Return ``(year, season)`` for the current calendar anime season."""
+    now = datetime.now(timezone.utc)
+    month = now.month
+    if month <= 3:
+        season = "winter"
+    elif month <= 6:
+        season = "spring"
+    elif month <= 9:
+        season = "summer"
+    else:
+        season = "fall"
+    return now.year, season
+
+
 def error_wrapper(func):
     def wrapper(self, *args, **kwargs):
         try:
@@ -85,104 +100,137 @@ class KitsuIoWrapper(APIUtils):
         return a
 
     @error_wrapper
-    def season(self, year, season):
+    def season(self, year, season, limit=50):
         modifier = Filter(seasonYear=year, season=season) + Inclusion(
             "genres", "mediaRelationships", "mediaRelationships.destination"
         )
+        count = 0
         for a in self.s.iterate("anime", modifier):
             data = self._convertAnime(a)
             if data is None:
                 continue
             yield data
+            count += 1
+            if count >= limit:
+                return
+
+    @error_wrapper
+    def genre(self, name, limit=50):
+        modifier = Filter(genres=name) + Inclusion(
+            "genres", "mediaRelationships", "mediaRelationships.destination"
+        )
+        count = 0
+        for a in self.s.iterate("anime", modifier):
+            data = self._convertAnime(a)
+            if data is None:
+                continue
+            yield data
+            count += 1
+            if count >= limit:
+                return
 
     @error_wrapper
     def schedule(self, limit=50):
-        def getSchedule():
-            modifier = Inclusion(
-                "genres",
-                "mediaRelationships",
-                "mediaRelationships.destination",
-                "mappings",
-            ) + Modifier("page[limit]=20")
-            trending = self.s.iterate("trending/anime", modifier)
+        seen_ids: set[int] = set()
+        count = 0
 
-            for a in trending:
-                yield a
-
-            modifier += Modifier("sort=-startDate,-endDate")
-
-            r_modifier = modifier + Filter(status="current")
-            recent = self.s.iterate("anime", r_modifier)
-
-            u_modifier = modifier + Filter(status="upcoming")
-            upcoming = self.s.iterate("anime", u_modifier)
-
+        def convert_unique(raw):
+            nonlocal count
+            if count >= limit:
+                return False
             try:
-                r_anime = next(recent, None)
-            except exceptions.DocumentError as e:
-                r_anime = None
-                if e.errors["status_code"] == 500:
-                    # Internal server error
-                    # Happens while using filter, might be fixed one day?
-                    pass
-                else:
-                    raise
-
-            try:
-                u_anime = next(upcoming, None)
-            except exceptions.DocumentError as e:
-                u_anime = None
-                if e.errors["status_code"] == 500:
-                    # Internal server error
-                    # Happens while using filter, might be fixed one day?
-                    pass
-                else:
-                    raise
-
-            while r_anime is not None or u_anime is not None:
-                if r_anime is not None:
-                    yield r_anime
-
-                    try:
-                        r_anime = next(recent, None)
-                    except exceptions.DocumentError as e:
-                        if e.errors["status_code"] == 500:
-                            # Internal server error
-                            # Happens while using filter, might be fixed one day?
-                            pass
-                        else:
-                            raise
-
-                if u_anime is not None:
-                    yield u_anime
-
-                    try:
-                        u_anime = next(upcoming, None)
-                    except exceptions.DocumentError as e:
-                        if e.errors["status_code"] == 500:
-                            # Internal server error
-                            # Happens while using filter, might be fixed one day?
-                            pass
-                        else:
-                            raise
-
-        schedule = getSchedule()
-
-        for c, a in enumerate(schedule):
-            try:
-                data = self._convertAnime(a)
+                data = self._convertAnime(raw)
             except Exception as e:
                 self.log(f"An error occured: {e}")
                 traceback.print_exc()
-                # continue
-                raise  # Remove for production
+                raise
+            if not data:
+                return None
+            data_id = (
+                data.get("id") if isinstance(data, dict) else getattr(data, "id", None)
+            )
+            if data_id is None or int(data_id) in seen_ids:
+                return None
+            seen_ids.add(int(data_id))
+            count += 1
+            return data
 
-            if data is None:
-                continue
+        inclusion = Inclusion(
+            "genres",
+            "mediaRelationships",
+            "mediaRelationships.destination",
+            "mappings",
+        )
+        trending = self.s.iterate(
+            "trending/anime", inclusion + Modifier("page[limit]=20")
+        )
+        for raw in trending:
+            item = convert_unique(raw)
+            if item is False:
+                return
+            if item:
+                yield item
 
-            yield data
-            if c >= limit:
-                break
+        modifier = inclusion + Modifier("page[limit]=20") + Modifier(
+            "sort=-startDate,-endDate"
+        )
+        recent = self.s.iterate("anime", modifier + Filter(status="current"))
+        upcoming = self.s.iterate("anime", modifier + Filter(status="upcoming"))
+
+        try:
+            r_anime = next(recent, None)
+        except exceptions.DocumentError as e:
+            r_anime = None
+            if e.errors["status_code"] != 500:
+                raise
+
+        try:
+            u_anime = next(upcoming, None)
+        except exceptions.DocumentError as e:
+            u_anime = None
+            if e.errors["status_code"] != 500:
+                raise
+
+        while (r_anime is not None or u_anime is not None) and count < limit:
+            if r_anime is not None:
+                item = convert_unique(r_anime)
+                if item is False:
+                    return
+                if item:
+                    yield item
+                try:
+                    r_anime = next(recent, None)
+                except exceptions.DocumentError as e:
+                    r_anime = None
+                    if e.errors["status_code"] != 500:
+                        raise
+
+            if u_anime is not None:
+                item = convert_unique(u_anime)
+                if item is False:
+                    return
+                if item:
+                    yield item
+                try:
+                    u_anime = next(upcoming, None)
+                except exceptions.DocumentError as e:
+                    u_anime = None
+                    if e.errors["status_code"] != 500:
+                        raise
+
+        if count >= limit:
+            return
+
+        year, season = _current_anime_season()
+        season_iter = self.s.iterate(
+            "anime", Filter(seasonYear=year, season=season) + inclusion
+        )
+        for raw in season_iter:
+            item = convert_unique(raw)
+            if item is False:
+                return
+            if item:
+                yield item
 
     @error_wrapper
     def searchAnime(self, search, limit=50):

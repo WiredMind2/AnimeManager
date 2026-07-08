@@ -204,7 +204,13 @@ class APICoordinator(BaseComponent):
             self.log("API_COORDINATOR", f"Stream failed mid-flight: {exc}")
             self._telemetry.increment("coordinator.search_errors")
 
-    def fetch_latest(self, limit: int = 50) -> Optional[IngestionResult]:
+    def fetch_latest(
+        self,
+        limit: int = 50,
+        *,
+        per_provider: bool = False,
+        provider_timeout_s: Optional[float] = None,
+    ) -> Optional[IngestionResult]:
         """Pull the latest anime data from every provider that exposes
         a ``schedule`` endpoint.
 
@@ -239,12 +245,24 @@ class APICoordinator(BaseComponent):
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
-        result: IngestionResult = self._pipeline.run(
-            specs,
-            "",
-            limit=limit,
-            sink=sink,
+        timeout = (
+            float(provider_timeout_s)
+            if provider_timeout_s is not None
+            else max(float(self._provider_timeout), 60.0)
         )
+        pipeline = self._pipeline
+        original_timeout = pipeline._provider_timeout
+        try:
+            pipeline._provider_timeout = timeout
+            result: IngestionResult = pipeline.run(
+                specs,
+                "",
+                limit=limit,
+                sink=sink,
+                limit_per_provider=per_provider,
+            )
+        finally:
+            pipeline._provider_timeout = original_timeout
         self._telemetry.set_gauge(
             "coordinator.last_schedule_records", float(len(result.records))
         )
@@ -278,10 +296,323 @@ class APICoordinator(BaseComponent):
                 # Some legacy wrappers accept positional-only ``limit``.
                 return provider.schedule(lim)
 
+        def adapter(raw: Any) -> Optional[AnimeRecord]:
+            return self._legacy_adapter(raw, provider_name=provider_name)
+
         return ProviderSpec(
             name=provider_name,
             search=schedule_search,
-            adapter=self._legacy_adapter,
+            adapter=adapter,
+        )
+
+    def browse_season(
+        self,
+        year: int,
+        season: str,
+        limit: int = 50,
+    ) -> Optional[AnimeList]:
+        """Fetch anime for a broadcast season across providers exposing ``season``."""
+        if not self._api:
+            self.log("API_COORDINATOR", "[ERROR] - API not initialized")
+            return None
+        if not self._rate_limiter.allow_request():
+            self.log("API_COORDINATOR", "Rate limit exceeded, skipping season browse")
+            return None
+        if (
+            self._feature_flags.get("new_ingestion_pipeline", True)
+            and hasattr(self._api, "get_providers")
+            and self._pipeline is not None
+        ):
+            return self._browse_season_via_pipeline(year, season, limit)
+        season_fn = getattr(self._api, "season", None)
+        if not callable(season_fn):
+            return None
+        try:
+            results = season_fn(year, season, limit=limit)
+        except TypeError:
+            results = season_fn(year, season, limit)
+        if not results:
+            return None
+        return results
+
+    def stream_browse_season(
+        self,
+        year: int,
+        season: str,
+        limit: int = 50,
+    ) -> Iterable[Any]:
+        """Yield legacy-shaped anime objects for a broadcast season."""
+        if not self._api:
+            self.log("API_COORDINATOR", "[ERROR] - API not initialized")
+            return
+        if not self._rate_limiter.allow_request():
+            self.log("API_COORDINATOR", "Rate limit exceeded, skipping season browse")
+            return
+        if (
+            not self._feature_flags.get("new_ingestion_pipeline", True)
+            or not hasattr(self._api, "get_providers")
+            or self._pipeline is None
+        ):
+            result = self.browse_season(year, season, limit=limit)
+            if result:
+                for item in result:
+                    yield item
+            return
+
+        providers = [p for p in self._api.get_providers() if p is not None]
+        specs = [
+            self._season_spec_for(provider, year, season)
+            for provider in providers
+            if hasattr(provider, "season")
+        ]
+        if not specs:
+            return
+        sink = (
+            self._build_sink()
+            if self._feature_flags.get("db_gateway_writes_only", True)
+            else None
+        )
+        self.log(
+            "API_COORDINATOR",
+            f"Streaming season {season} {year} across {len(specs)} providers",
+        )
+        emitted = 0
+        try:
+            for provider_name, records in self._pipeline.stream(
+                specs,
+                "",
+                limit=limit,
+                sink=sink,
+            ):
+                for record in records:
+                    yield self._record_to_anime(record)
+                    emitted += 1
+                self.log(
+                    "API_COORDINATOR",
+                    f"Season stream +{len(records)} from {provider_name} (total {emitted})",
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.log("API_COORDINATOR", f"Season stream failed mid-flight: {exc}")
+            self._telemetry.increment("coordinator.search_errors")
+
+    def _browse_season_via_pipeline(
+        self,
+        year: int,
+        season: str,
+        limit: int,
+    ) -> Optional[AnimeList]:
+        providers = [p for p in self._api.get_providers() if p is not None]
+        specs = [
+            self._season_spec_for(provider, year, season)
+            for provider in providers
+            if hasattr(provider, "season")
+        ]
+        if not specs:
+            return None
+        sink = (
+            self._build_sink()
+            if self._feature_flags.get("db_gateway_writes_only", True)
+            else None
+        )
+        result: IngestionResult = self._pipeline.run(
+            specs,
+            "",
+            limit=limit,
+            sink=sink,
+            limit_per_provider=True,
+        )
+        self._telemetry.set_gauge(
+            "coordinator.last_season_records", float(len(result.records))
+        )
+        self._telemetry.set_gauge(
+            "coordinator.last_season_failed", float(result.failed_providers)
+        )
+        self.log(
+            "API_COORDINATOR",
+            f"Season browse completion={result.status.value} "
+            f"records={len(result.records)} failed={result.failed_providers}/"
+            f"{result.total_providers} elapsed_ms={result.elapsed_ms}",
+        )
+        if result.status == IngestionStatus.FAILED or not result.records:
+            return None
+        return AnimeList([self._record_to_anime(r) for r in result.records])
+
+    def _season_spec_for(
+        self,
+        provider: Any,
+        year: int,
+        season: str,
+    ) -> ProviderSpec:
+        provider_name = (
+            getattr(provider, "__name__", None) or type(provider).__name__
+        )
+
+        def season_search(_terms: str, lim: int) -> Iterable[Any]:
+            try:
+                return provider.season(year, season, limit=lim)
+            except TypeError:
+                return provider.season(year, season, lim)
+
+        def adapter(raw: Any) -> Optional[AnimeRecord]:
+            return self._legacy_adapter(raw, provider_name=provider_name)
+
+        return ProviderSpec(
+            name=provider_name,
+            search=season_search,
+            adapter=adapter,
+        )
+
+    def browse_genre(
+        self,
+        genre: str,
+        limit: int = 50,
+    ) -> Optional[AnimeList]:
+        """Fetch anime for a genre across providers exposing ``genre``."""
+        if not self._api:
+            self.log("API_COORDINATOR", "[ERROR] - API not initialized")
+            return None
+        if not self._rate_limiter.allow_request():
+            self.log("API_COORDINATOR", "Rate limit exceeded, skipping genre browse")
+            return None
+        if (
+            self._feature_flags.get("new_ingestion_pipeline", True)
+            and hasattr(self._api, "get_providers")
+            and self._pipeline is not None
+        ):
+            return self._browse_genre_via_pipeline(genre, limit)
+        genre_fn = getattr(self._api, "genre", None)
+        if not callable(genre_fn):
+            return None
+        try:
+            results = genre_fn(genre, limit=limit)
+        except TypeError:
+            results = genre_fn(genre, limit)
+        if not results:
+            return None
+        return results
+
+    def stream_browse_genre(
+        self,
+        genre: str,
+        limit: int = 50,
+    ) -> Iterable[Any]:
+        """Yield legacy-shaped anime objects for a genre browse."""
+        if not self._api:
+            self.log("API_COORDINATOR", "[ERROR] - API not initialized")
+            return
+        if not self._rate_limiter.allow_request():
+            self.log("API_COORDINATOR", "Rate limit exceeded, skipping genre browse")
+            return
+        if (
+            not self._feature_flags.get("new_ingestion_pipeline", True)
+            or not hasattr(self._api, "get_providers")
+            or self._pipeline is None
+        ):
+            result = self.browse_genre(genre, limit=limit)
+            if result:
+                for item in result:
+                    yield item
+            return
+
+        providers = [p for p in self._api.get_providers() if p is not None]
+        specs = [
+            self._genre_spec_for(provider, genre)
+            for provider in providers
+            if hasattr(provider, "genre")
+        ]
+        if not specs:
+            return
+        sink = (
+            self._build_sink()
+            if self._feature_flags.get("db_gateway_writes_only", True)
+            else None
+        )
+        self.log(
+            "API_COORDINATOR",
+            f"Streaming genre {genre} across {len(specs)} providers",
+        )
+        emitted = 0
+        try:
+            for provider_name, records in self._pipeline.stream(
+                specs,
+                "",
+                limit=limit,
+                sink=sink,
+            ):
+                for record in records:
+                    yield self._record_to_anime(record)
+                    emitted += 1
+                self.log(
+                    "API_COORDINATOR",
+                    f"Genre stream +{len(records)} from {provider_name} (total {emitted})",
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.log("API_COORDINATOR", f"Genre stream failed mid-flight: {exc}")
+            self._telemetry.increment("coordinator.search_errors")
+
+    def _browse_genre_via_pipeline(
+        self,
+        genre: str,
+        limit: int,
+    ) -> Optional[AnimeList]:
+        providers = [p for p in self._api.get_providers() if p is not None]
+        specs = [
+            self._genre_spec_for(provider, genre)
+            for provider in providers
+            if hasattr(provider, "genre")
+        ]
+        if not specs:
+            return None
+        sink = (
+            self._build_sink()
+            if self._feature_flags.get("db_gateway_writes_only", True)
+            else None
+        )
+        result: IngestionResult = self._pipeline.run(
+            specs,
+            "",
+            limit=limit,
+            sink=sink,
+            limit_per_provider=True,
+        )
+        self._telemetry.set_gauge(
+            "coordinator.last_genre_records", float(len(result.records))
+        )
+        self._telemetry.set_gauge(
+            "coordinator.last_genre_failed", float(result.failed_providers)
+        )
+        self.log(
+            "API_COORDINATOR",
+            f"Genre browse completion={result.status.value} "
+            f"records={len(result.records)} failed={result.failed_providers}/"
+            f"{result.total_providers} elapsed_ms={result.elapsed_ms}",
+        )
+        if result.status == IngestionStatus.FAILED or not result.records:
+            return None
+        return AnimeList([self._record_to_anime(r) for r in result.records])
+
+    def _genre_spec_for(
+        self,
+        provider: Any,
+        genre: str,
+    ) -> ProviderSpec:
+        provider_name = (
+            getattr(provider, "__name__", None) or type(provider).__name__
+        )
+
+        def genre_search(_terms: str, lim: int) -> Iterable[Any]:
+            try:
+                return provider.genre(genre, limit=lim)
+            except TypeError:
+                return provider.genre(genre, lim)
+
+        def adapter(raw: Any) -> Optional[AnimeRecord]:
+            return self._legacy_adapter(raw, provider_name=provider_name)
+
+        return ProviderSpec(
+            name=provider_name,
+            search=genre_search,
+            adapter=adapter,
         )
 
     def _search_via_pipeline(self, terms: str, limit: int) -> Optional[AnimeList]:

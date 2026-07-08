@@ -28,6 +28,22 @@ class _SqliteDB:
                                    save_path TEXT, status TEXT);
             CREATE TABLE torrentsIndex (id INTEGER, value TEXT);
             CREATE TABLE animeRelations (id INTEGER, type TEXT, related_id INTEGER);
+            CREATE TABLE characters (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                picture TEXT,
+                description TEXT
+            );
+            CREATE TABLE characterRelations (
+                id INTEGER NOT NULL,
+                anime_id INTEGER NOT NULL,
+                role TEXT
+            );
+            CREATE TABLE pictures (
+                id INTEGER NOT NULL,
+                url TEXT,
+                size TEXT
+            );
             """
         )
         self.conn.execute("INSERT INTO anime (id, title) VALUES (?, ?)", (1, "Naruto"))
@@ -38,15 +54,22 @@ class _SqliteDB:
         with self._lock:
             yield self
 
-    def get(self, anime_id: int, *, table: str = "anime"):
-        if table != "anime":
-            return None
-        row = self.conn.execute(
-            "SELECT id, title FROM anime WHERE id=?", (anime_id,)
-        ).fetchone()
-        if not row:
-            return None
-        return {"id": row[0], "title": row[1]}
+    def get(self, item_id: int, *, table: str = "anime"):
+        if table == "anime":
+            row = self.conn.execute(
+                "SELECT id, title FROM anime WHERE id=?", (item_id,)
+            ).fetchone()
+            if not row:
+                return None
+            return {"id": row[0], "title": row[1]}
+        if table == "characters":
+            rows = self.sql(
+                "SELECT * FROM characters WHERE id=?", (item_id,), to_dict=True
+            )
+            if not rows:
+                return None
+            return rows[0]
+        return None
 
     def sql(
         self,
@@ -95,6 +118,36 @@ class _FakeConfig:
     def update_settings(self, updates: dict) -> dict:
         self.settings.update(updates)
         return self.settings
+
+
+class _FakeAPI:
+    def __init__(self, db: _SqliteDB | None = None) -> None:
+        self._db = db
+        self.characters_by_anime: dict[int, list[Any]] = {}
+        self.character_by_id: dict[int, Any] = {}
+        self.pictures_by_anime: dict[int, list[dict]] = {}
+        self.saved_pictures: list[tuple[int, list[dict]]] = []
+
+    def animeCharacters(self, anime_id: int):
+        return iter(self.characters_by_anime.get(anime_id, []))
+
+    def character(self, character_id: int):
+        return self.character_by_id.get(character_id)
+
+    def animePictures(self, anime_id: int):
+        return self.pictures_by_anime.get(anime_id, [])
+
+    def save_pictures(self, anime_id: int, pictures: list[dict]) -> None:
+        self.saved_pictures.append((anime_id, pictures))
+        if self._db is None:
+            return
+        self._db.conn.execute("DELETE FROM pictures WHERE id=?", (anime_id,))
+        for pic in pictures:
+            self._db.conn.execute(
+                "INSERT INTO pictures(id, url, size) VALUES (?, ?, ?)",
+                (anime_id, pic["url"], pic["size"]),
+            )
+        self._db.conn.commit()
 
 
 @pytest.fixture
@@ -266,3 +319,101 @@ def test_ensure_disabled_search_titles_table_raises_when_no_db():
     adapter = AnimeRepositoryAdapter(_FakeDBManager(None), _FakeConfig())
     with pytest.raises(InfrastructureError):
         adapter._ensure_disabled_search_titles_table()
+
+
+def _seed_character_data(db: _SqliteDB) -> None:
+    db.conn.execute(
+        "INSERT INTO characters(id, name, picture, description) VALUES (5, 'Hero', 'pic.jpg', 'Bio')"
+    )
+    db.conn.execute(
+        "INSERT INTO characterRelations(id, anime_id, role) VALUES (5, 1, 'main')"
+    )
+    db.conn.execute(
+        "INSERT INTO pictures(id, url, size) VALUES (1, 'https://example.com/l.jpg', 'large')"
+    )
+    db.conn.commit()
+
+
+def test_get_characters_returns_joined_rows(repo):
+    adapter, _, db, _ = repo
+    _seed_character_data(db)
+    items = adapter.get_characters(1)
+    assert items == [
+        {
+            "id": 5,
+            "name": "Hero",
+            "picture": "pic.jpg",
+            "description": "Bio",
+            "role": "main",
+        }
+    ]
+
+
+def test_get_character_includes_animeography(repo):
+    adapter, _, db, _ = repo
+    _seed_character_data(db)
+    payload = adapter.get_character(5)
+    assert payload is not None
+    assert payload["name"] == "Hero"
+    assert payload["animeography"] == [
+        {"anime_id": 1, "title": "Naruto", "role": "main"}
+    ]
+
+
+def test_get_anime_pictures(repo):
+    adapter, _, db, _ = repo
+    _seed_character_data(db)
+    pictures = adapter.get_anime_pictures(1)
+    assert pictures == [{"url": "https://example.com/l.jpg", "size": "large"}]
+
+
+def test_refresh_anime_characters_upserts_and_returns(repo):
+    adapter, db_manager, db, config = repo
+    api = _FakeAPI(db)
+    adapter = AnimeRepositoryAdapter(db_manager, config, api=api)
+    api.characters_by_anime[1] = [
+        SimpleNamespace(
+            id=7,
+            name="Rival",
+            picture="rival.jpg",
+            desc="A rival",
+            role="Supporting",
+        )
+    ]
+    items = adapter.refresh_anime_characters(1)
+    assert items == [
+        {
+            "id": 7,
+            "name": "Rival",
+            "picture": "rival.jpg",
+            "description": "A rival",
+            "role": "supporting",
+        }
+    ]
+
+
+def test_refresh_anime_characters_no_api_raises(repo):
+    adapter, _, _, _ = repo
+    with pytest.raises(InfrastructureError, match="Metadata API not configured"):
+        adapter.refresh_anime_characters(1)
+
+
+def test_refresh_anime_pictures_normalizes_jpg(repo):
+    adapter, db_manager, db, config = repo
+    api = _FakeAPI(db)
+    adapter = AnimeRepositoryAdapter(db_manager, config, api=api)
+    api.pictures_by_anime[1] = [
+        {
+            "jpg": {
+                "small_image_url": "https://example.com/s.jpg",
+                "image_url": "https://example.com/m.jpg",
+                "large_image_url": "https://example.com/l.jpg",
+            }
+        }
+    ]
+    pictures = adapter.refresh_anime_pictures(1)
+    assert pictures == [
+        {"url": "https://example.com/s.jpg", "size": "small"},
+        {"url": "https://example.com/m.jpg", "size": "medium"},
+        {"url": "https://example.com/l.jpg", "size": "large"},
+    ]

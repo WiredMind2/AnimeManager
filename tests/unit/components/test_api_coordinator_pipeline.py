@@ -15,15 +15,40 @@ from ....application.services.api_coordinator import APICoordinator
 class _FakeProvider:
     """Minimal stand-in for the legacy `AnimeAPI` wrappers."""
 
-    def __init__(self, name, items=(), raises=False):
+    def __init__(
+        self,
+        name,
+        items=(),
+        raises=False,
+        schedule_items=(),
+        season_items=(),
+    ):
         self.__name__ = name
         self._items = items
         self._raises = raises
+        self._schedule_items = schedule_items
+        self._season_items = season_items
+        self.last_schedule_limit = None
+        self.last_season_args = None
 
     def searchAnime(self, terms, limit=50):
         if self._raises:
             raise RuntimeError(f"{self.__name__} explosion")
         for item in self._items[:limit]:
+            yield item
+
+    def schedule(self, limit=50):
+        self.last_schedule_limit = limit
+        if self._raises:
+            raise RuntimeError(f"{self.__name__} schedule explosion")
+        for item in self._schedule_items[:limit]:
+            yield item
+
+    def season(self, year, season, limit=50):
+        self.last_season_args = (year, season, limit)
+        if self._raises:
+            raise RuntimeError(f"{self.__name__} season explosion")
+        for item in self._season_items[:limit]:
             yield item
 
 
@@ -38,6 +63,9 @@ class _FakeAPI:
 class _RecordingDBManager:
     def __init__(self):
         self.upserts = []
+
+    def get_database(self):
+        return None
 
     def upsert_anime_batch(self, records):
         self.upserts.append(list(records))
@@ -147,3 +175,57 @@ def test_close_is_idempotent():
     coord.log = lambda *args, **kwargs: None
     coord.close()
     coord.close()  # second call must not raise
+
+
+def test_fetch_latest_per_provider_uses_full_limit():
+    providers = [
+        _FakeProvider("A", schedule_items=[_anime_like(i) for i in range(1, 9)]),
+        _FakeProvider("B", schedule_items=[_anime_like(i) for i in range(9, 17)]),
+    ]
+    api = _FakeAPI(providers)
+    db = _RecordingDBManager()
+    coord = _build_coordinator(api, db)
+    try:
+        result = coord.fetch_latest(limit=8, per_provider=True)
+    finally:
+        coord.close()
+
+    assert result is not None
+    assert providers[0].last_schedule_limit == 8
+    assert providers[1].last_schedule_limit == 8
+    assert len(result.records) == 16
+
+
+def test_browse_season_dedupes_across_providers():
+    api = _FakeAPI(
+        [
+            _FakeProvider("A", season_items=[_anime_like(1), _anime_like(2)]),
+            _FakeProvider("B", season_items=[_anime_like(2), _anime_like(3)]),
+        ]
+    )
+    db = _RecordingDBManager()
+    coord = _build_coordinator(api, db)
+    try:
+        results = coord.browse_season(2026, "spring", limit=10)
+    finally:
+        coord.close()
+
+    assert results is not None
+    assert sorted(a.id for a in results) == [1, 2, 3]
+
+
+def test_stream_browse_season_yields_progressively():
+    api = _FakeAPI(
+        [
+            _FakeProvider("A", season_items=[_anime_like(1)]),
+            _FakeProvider("B", season_items=[_anime_like(2)]),
+        ]
+    )
+    db = _RecordingDBManager()
+    coord = _build_coordinator(api, db)
+    try:
+        ids = [item.id for item in coord.stream_browse_season(2026, "spring", limit=10)]
+    finally:
+        coord.close()
+
+    assert sorted(ids) == [1, 2]

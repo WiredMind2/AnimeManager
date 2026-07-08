@@ -97,6 +97,26 @@ class JikanMoeWrapper(APIUtils):
                 # anime['status'] = 'UPDATE'
                 yield anime
 
+    def season(self, year, season, limit=50):
+        self.delay()
+        season_key = str(season or "").strip().lower()
+        if season_key not in ("winter", "spring", "summer", "fall"):
+            return
+        rep = self.get(f"/seasons/{int(year)}/{season_key}")
+        if not rep or not isinstance(rep, dict):
+            return
+        if rep.get("status") == 429:
+            return
+        count = 0
+        for anime in rep.get("data", []):
+            data = self._convertAnime(anime)
+            if not data:
+                continue
+            yield data
+            count += 1
+            if count >= limit:
+                return
+
     def searchAnime(self, search, limit=50):
         self.delay()
         rep = self.get("/anime", q=search, order_by="end_date", sort="desc")
@@ -293,7 +313,8 @@ class JikanMoeWrapper(APIUtils):
         out.id = c_id
 
         out.name = c["name"]
-        # out.role = data['role'].lower()
+        if role is not None:
+            out.role = str(role).strip().lower()
         # TODO - Use multiple images?
         out.picture = c["images"]["jpg"]["image_url"]
 

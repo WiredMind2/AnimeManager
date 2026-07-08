@@ -138,7 +138,7 @@ const LEAF_LABELS: Record<string, string> = {
   rate_limit: "Rate limit (per minute)",
   timeout: "Timeout (seconds)",
   max_concurrent: "Max concurrent downloads",
-  scheduleTimeout: "Schedule refresh interval (seconds)",
+  scheduleTimeout: "Schedule refresh interval (seconds, minimum 86400)",
   lastSchedule: "Last schedule (epoch)",
   maxTimeout: "Max timeout (seconds)",
   maxTrendingAnime: "Max trending anime",

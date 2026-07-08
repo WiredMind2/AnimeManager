@@ -10,7 +10,14 @@ import json
 
 from shared.base_component import BaseComponent
 from adapters.persistence.queue import PersistenceQueue
-from adapters.persistence.query_builder import ALLOWED_CRITERIA, build_anime_list_query
+from adapters.persistence.query_builder import (
+    ALLOWED_CRITERIA,
+    build_anime_list_query,
+    build_genre_list_query,
+    build_season_list_query,
+)
+from domain.policies.genre import normalize_genre
+from domain.policies.season import normalize_airing_season, season_date_range, validate_season_year
 from shared.telemetry import get_telemetry
 from adapters.persistence.models import Anime, AnimeList
 from adapters.persistence import databases
@@ -228,6 +235,68 @@ class DatabaseManager(BaseComponent):
         except Exception as e:
             self.log("DB_ERROR", f"Failed to get anime list: {e}")
             return None, None
+
+    def list_anime_by_airing_season(
+        self,
+        year: int,
+        season: str,
+        limit: int = 50,
+        *,
+        user_id: Optional[int] = None,
+    ) -> Optional[AnimeList]:
+        """Return anime in the local catalog for a broadcast season."""
+        if user_id is None:
+            user_id = 4
+        season_key = normalize_airing_season(season)
+        year_value = validate_season_year(year)
+        safe_limit = max(1, min(int(limit), 200))
+        start_ts, end_ts = season_date_range(year_value, season_key)
+        args = build_season_list_query(
+            start_ts,
+            end_ts,
+            (0, safe_limit),
+            user_id=int(user_id),
+        ).to_args()
+        try:
+            with self.get_connection() as db:
+                anime_list = db.filter(**args)
+                if anime_list.empty():
+                    return None
+                return anime_list
+        except Exception as e:
+            self.log("DB_ERROR", f"Season list failed: {e}")
+            return None
+
+    def list_anime_by_genre(
+        self,
+        genre: str,
+        limit: int = 50,
+        *,
+        user_id: Optional[int] = None,
+        hide_rated: Optional[bool] = None,
+    ) -> Optional[AnimeList]:
+        """Return anime in the local catalog tagged with a genre."""
+        if user_id is None:
+            user_id = 4
+        if hide_rated is None:
+            hide_rated = getattr(self, "hide_rated", True)
+        genre_value = normalize_genre(genre)
+        safe_limit = max(1, min(int(limit), 200))
+        args = build_genre_list_query(
+            genre_value,
+            (0, safe_limit),
+            hide_rated=hide_rated,
+            user_id=int(user_id),
+        ).to_args()
+        try:
+            with self.get_connection() as db:
+                anime_list = db.filter(**args)
+                if anime_list.empty():
+                    return None
+                return anime_list
+        except Exception as e:
+            self.log("DB_ERROR", f"Genre list failed: {e}")
+            return None
 
     def _build_query_args(self, criteria: str, listrange: Tuple[int, int],
                          hide_rated: bool, user_id: int) -> Dict[str, Any]:

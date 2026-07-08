@@ -19,3 +19,5 @@ def test_build_embedded_facade_wires_ports_without_legacy_runtime():
     assert type(service._user_actions_port).__name__ == "UserActionsRepository"
     assert type(service._download_port).__name__ == "DownloadAdapter"
     assert type(service._metadata_provider).__name__ == "ApiCoordinatorAdapter"
+    assert hasattr(service._anime_repository, "get_characters")
+    assert hasattr(service._anime_repository, "refresh_anime_characters")

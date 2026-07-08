@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useToast } from "@/components/Toast";
 import { api, type AnimeLibraryTorrent } from "@/lib/api";
 
 type DownloadedEpisodesTableProps = {
@@ -13,22 +14,30 @@ export default function DownloadedEpisodesTable({
   initialTorrents,
 }: DownloadedEpisodesTableProps) {
   const [torrents, setTorrents] = useState(initialTorrents);
+  const { showToast } = useToast();
+  // Polling refresh runs every few seconds while a download is active; only
+  // surface one toast per outage instead of re-notifying on every tick.
+  const refreshFailedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
       const { items } = await api.getAnimeLibraryTorrents(animeId);
       setTorrents(items);
+      refreshFailedRef.current = false;
     } catch {
-      /* ignore */
+      if (!refreshFailedRef.current) {
+        refreshFailedRef.current = true;
+        showToast("Failed to refresh downloads.", "error");
+      }
     }
-  }, [animeId]);
+  }, [animeId, showToast]);
 
   async function cancelDownload() {
     try {
       await api.cancelDownload(animeId);
       await refresh();
     } catch {
-      /* ignore */
+      showToast("Failed to cancel download. Please try again.", "error");
     }
   }
 

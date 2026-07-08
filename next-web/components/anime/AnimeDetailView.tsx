@@ -12,6 +12,7 @@ import type {
 import AnimeActions from "./AnimeActions";
 import AnimeCharactersSection from "./AnimeCharactersSection";
 import AnimeMetadataSection from "./AnimeMetadataSection";
+import { hasMetadataContent } from "./anime-metadata-utils";
 import AnimePictureGallery from "./AnimePictureGallery";
 import DownloadedEpisodesTable from "./DownloadedEpisodesTable";
 import EpisodePlayerTable from "./EpisodePlayerTable";
@@ -40,6 +41,11 @@ export default function AnimeDetailView({
   pictures,
 }: AnimeDetailViewProps) {
   const genres = (anime.genres || []).slice(0, 6);
+  const showMetadataLink = hasMetadataContent(anime);
+  const showGalleryLink = pictures.length > 0;
+  const showCharactersLink = characters.length > 0;
+  const showQuickNav =
+    showMetadataLink || showGalleryLink || showCharactersLink;
 
   return (
     <>
@@ -76,9 +82,9 @@ export default function AnimeDetailView({
               ) : null}
               {anime.rating ? <span className="badge">{anime.rating}</span> : null}
               {genres.map((g) => (
-                <span key={g} className="badge">
+                <Link key={g} className="badge" href={`/library/genre?name=${encodeURIComponent(g)}`}>
                   {g}
-                </span>
+                </Link>
               ))}
               {userState.tag ? (
                 <span className="badge badge--accent">Tag · {userState.tag}</span>
@@ -104,17 +110,43 @@ export default function AnimeDetailView({
         </div>
       </section>
 
-      <AnimeMetadataSection anime={anime} />
-
-      <AnimePictureGallery pictures={pictures} />
-
-      <AnimeCharactersSection animeId={anime.id!} initialCharacters={characters} />
+      {showQuickNav ? (
+        <nav className="chip-row" aria-label="Jump to section">
+          <a className="chip" href="#anime-torrents">
+            Torrents
+          </a>
+          <a className="chip" href="#anime-downloaded-episodes">
+            Downloads
+          </a>
+          {showMetadataLink ? (
+            <a className="chip" href="#anime-metadata">
+              Metadata
+            </a>
+          ) : null}
+          {showGalleryLink ? (
+            <a className="chip" href="#anime-gallery">
+              Pictures
+            </a>
+          ) : null}
+          {showCharactersLink ? (
+            <a className="chip" href="#anime-characters">
+              Characters
+            </a>
+          ) : null}
+        </nav>
+      ) : null}
 
       <TorrentSearchSection animeId={anime.id!} initialOptions={torrentSearchOptions} />
 
       <EpisodePlayerTable animeId={anime.id!} initialFiles={episodeFiles} />
 
       <DownloadedEpisodesTable animeId={anime.id!} initialTorrents={animeTorrents} />
+
+      <AnimeMetadataSection anime={anime} />
+
+      <AnimePictureGallery pictures={pictures} title={anime.title} />
+
+      <AnimeCharactersSection animeId={anime.id!} initialCharacters={characters} />
 
       {relations.length > 0 ? (
         <section className="detail__section">

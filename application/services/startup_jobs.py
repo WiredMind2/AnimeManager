@@ -81,14 +81,25 @@ class StartupJobsService:
     * ``fetch_latest_anime`` -- pull the current season / trending
       lists from every metadata provider that exposes a ``schedule``
       endpoint and persist them through the canonical ingestion
-      pipeline.
-    * ``update_status`` -- transition ``UPCOMING`` rows whose
-      ``date_from`` is in the past to the status implied by their
-      airing window (``AIRING`` / ``FINISHED``).
+      pipeline (at most once per :attr:`_SCHEDULE_MIN_INTERVAL_S`).
+    * ``update_status`` -- transition stale lifecycle rows
+      (``UPCOMING`` / ``AIRING``) based on airing dates.
 
     The orchestrator never raises; callers inspect
     :class:`StartupJobReport` if they need to react to failures.
     """
+
+    # Provider schedule pulls are expensive and metadata changes slowly;
+    # never fetch more often than once per day regardless of settings.
+    _SCHEDULE_MIN_INTERVAL_S = 86_400
+
+    # Hard ceiling for the schedule-loop sleep. ``threading.Event.wait`` on
+    # Windows ultimately calls ``WaitForSingleObject`` with a 32-bit DWORD
+    # timeout (~49.7 days); an unbounded sleep computed from a bogus or
+    # future ``lastSchedule`` (negative elapsed) or an oversized
+    # ``scheduleTimeout`` overflows that and raises ``OverflowError``,
+    # killing the ``AM-ScheduleRefresh`` thread on every startup.
+    _SCHEDULE_SLEEP_MAX_S = 7 * 86_400
 
     def __init__(
         self,
@@ -112,6 +123,8 @@ class StartupJobsService:
         self._lock = threading.Lock()
         self._last_report: Optional[StartupJobReport] = None
         self._running = False
+        self._schedule_loop_thread: Optional[threading.Thread] = None
+        self._schedule_loop_stop = threading.Event()
 
     @property
     def last_report(self) -> Optional[StartupJobReport]:
@@ -177,6 +190,149 @@ class StartupJobsService:
         thread.start()
         return thread
 
+    def run_schedule_refresh(self) -> StartupJobReport:
+        """Run provider fetch (when due) plus local status maintenance."""
+        with self._lock:
+            if self._running:
+                return self._last_report or StartupJobReport()
+            self._running = True
+
+        report = StartupJobReport()
+        total_start = time.perf_counter()
+        try:
+            if self._should_fetch_schedule():
+                self._run_one(
+                    StartupJob("fetch_latest_anime", self._job_fetch_latest),
+                    report,
+                )
+            else:
+                report.add(
+                    StartupJobOutcome(
+                        name="fetch_latest_anime",
+                        ok=True,
+                        detail="skipped (recent fetch)",
+                        elapsed_ms=0,
+                    )
+                )
+            self._run_one(
+                StartupJob("update_status", self._job_update_status),
+                report,
+            )
+        finally:
+            report.elapsed_ms = int(
+                (time.perf_counter() - total_start) * 1000
+            )
+            with self._lock:
+                self._running = False
+                self._last_report = report
+
+        self._log(
+            f"Schedule refresh complete: {report.total - report.failures}"
+            f"/{report.total} jobs ok in {report.elapsed_ms} ms"
+        )
+        return report
+
+    def start_schedule_loop(self, *, daemon: bool = True) -> threading.Thread:
+        """Start a daemon thread that refreshes schedule data at most daily."""
+        with self._lock:
+            if (
+                self._schedule_loop_thread is not None
+                and self._schedule_loop_thread.is_alive()
+            ):
+                return self._schedule_loop_thread
+            self._schedule_loop_stop.clear()
+
+        thread = threading.Thread(
+            target=self._schedule_loop_worker,
+            name="AM-ScheduleRefresh",
+            daemon=daemon,
+        )
+        with self._lock:
+            self._schedule_loop_thread = thread
+        thread.start()
+        return thread
+
+    def stop_schedule_loop(self) -> None:
+        """Signal the daily schedule refresh loop to exit."""
+        self._schedule_loop_stop.set()
+        thread = self._schedule_loop_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _schedule_loop_worker(self) -> None:
+        while not self._schedule_loop_stop.is_set():
+            try:
+                self.run_schedule_refresh()
+            except Exception as exc:  # noqa: BLE001
+                self._log(
+                    f"Schedule refresh loop error: {type(exc).__name__}: {exc}"
+                )
+
+            if self._schedule_loop_stop.is_set():
+                break
+
+            sleep_s = self._next_schedule_sleep_s()
+            if self._schedule_loop_stop.wait(timeout=sleep_s):
+                break
+
+    def _next_schedule_sleep_s(self) -> float:
+        """Seconds to wait before the next schedule refresh.
+
+        Bounded to ``[60, _SCHEDULE_SLEEP_MAX_S]`` so a bogus or future
+        ``lastSchedule`` (negative elapsed) or an oversized ``scheduleTimeout``
+        never overflows the OS-level wait used by ``threading.Event.wait``.
+        """
+        timeout_s, _, _ = self._read_schedule_config()
+        elapsed = time.time() - self._last_schedule_epoch()
+        remaining = float(timeout_s) - max(0.0, elapsed)
+        return min(max(60.0, remaining), float(timeout_s), self._SCHEDULE_SLEEP_MAX_S)
+
+    def _anime_settings(self) -> dict[str, Any]:
+        settings = getattr(self._config, "settings", None) or {}
+        anime_cfg = settings.get("anime")
+        if isinstance(anime_cfg, dict):
+            return anime_cfg
+        return {}
+
+    def _read_schedule_config(self) -> tuple[int, int, int]:
+        """Return ``(timeout_s, last_schedule, limit)`` from runtime settings."""
+        anime_cfg = self._anime_settings()
+        try:
+            configured = int(anime_cfg.get("scheduleTimeout", self._SCHEDULE_MIN_INTERVAL_S))
+        except (TypeError, ValueError):
+            configured = self._SCHEDULE_MIN_INTERVAL_S
+        timeout_s = max(configured, self._SCHEDULE_MIN_INTERVAL_S)
+        try:
+            last_schedule = int(anime_cfg.get("lastSchedule", 0))
+        except (TypeError, ValueError):
+            last_schedule = 0
+        try:
+            limit = int(anime_cfg.get("maxTrendingAnime", self._schedule_limit))
+        except (TypeError, ValueError):
+            limit = self._schedule_limit
+        return timeout_s, last_schedule, max(1, limit)
+
+    def _last_schedule_epoch(self) -> float:
+        _, last_schedule, _ = self._read_schedule_config()
+        return float(last_schedule)
+
+    def _should_fetch_schedule(self) -> bool:
+        timeout_s, last_schedule, _ = self._read_schedule_config()
+        if last_schedule <= 0:
+            return True
+        return time.time() - float(last_schedule) >= float(timeout_s)
+
+    def _mark_schedule_fetched(self) -> None:
+        updater = getattr(self._config, "update_settings", None)
+        if not callable(updater):
+            return
+        try:
+            updater({"anime": {"lastSchedule": int(time.time())}})
+        except Exception as exc:  # noqa: BLE001
+            self._log(
+                f"Failed persisting lastSchedule: {type(exc).__name__}: {exc}"
+            )
+
     def _run_one(
         self, job: StartupJob, report: StartupJobReport
     ) -> None:
@@ -221,7 +377,13 @@ class StartupJobsService:
         yield StartupJob(
             "repair_duplicate_anime", self._job_repair_duplicate_anime
         )
-        yield StartupJob("fetch_latest_anime", self._job_fetch_latest)
+        if self._should_fetch_schedule():
+            yield StartupJob("fetch_latest_anime", self._job_fetch_latest)
+        else:
+            yield StartupJob(
+                "fetch_latest_anime",
+                lambda: "skipped (recent fetch)",
+            )
         yield StartupJob("update_status", self._job_update_status)
         yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
@@ -372,8 +534,13 @@ class StartupJobsService:
 
     def _job_fetch_latest(self) -> str:
         """Pull the latest anime data from every provider's schedule."""
+        _, _, limit = self._read_schedule_config()
+        effective_limit = max(limit, self._schedule_limit)
         result: Optional[IngestionResult] = (
-            self._api_coordinator.fetch_latest(limit=self._schedule_limit)
+            self._api_coordinator.fetch_latest(
+                limit=effective_limit,
+                per_provider=True,
+            )
         )
         if result is None:
             return "skipped (no providers / API unavailable)"
@@ -405,6 +572,7 @@ class StartupJobsService:
                 f"{result.failed_providers} records=0"
             )
 
+        self._mark_schedule_fetched()
         return (
             f"providers={result.total_providers} failed="
             f"{result.failed_providers} records={len(records)} "
@@ -412,22 +580,18 @@ class StartupJobsService:
         )
 
     def _job_update_status(self) -> str:
-        """Transition stale ``UPCOMING`` rows whose air date has passed.
-
-        The legacy ``UpdateUtils.updateStatus`` walked the table and
-        applied ``Getters.getStatus()`` -- a pure helper based on the
-        current date and the anime's ``date_from`` / ``date_to`` /
-        ``episodes`` columns. We re-use that helper directly so the
-        derivation stays in sync with the rest of the codebase.
-        """
+        """Transition stale ``UPCOMING`` / ``AIRING`` rows by airing dates."""
         from shared.config.getters import Getters
 
         db = self._database_manager.get_database()
         if db is None:
             return "skipped (database not initialized)"
 
+        now_ts = datetime.now(timezone.utc).timestamp()
+        transitions: dict[str, list[int]] = {}
+
         try:
-            rows = db.sql(
+            upcoming_rows = db.sql(
                 "SELECT id, status, date_from, date_to, episodes "
                 "FROM anime "
                 "WHERE status='UPCOMING' "
@@ -440,13 +604,8 @@ class StartupJobsService:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
-        if not rows:
-            return "no rows to update"
-
-        now_ts = datetime.now(timezone.utc).timestamp()
-        transitions: dict[str, list[int]] = {}
-        for row in rows:
-            anime_id, status, date_from, date_to, episodes = (
+        for row in upcoming_rows:
+            anime_id, _status, date_from, date_to, episodes = (
                 row[0],
                 row[1],
                 row[2],
@@ -457,8 +616,6 @@ class StartupJobsService:
                 continue
             try:
                 if float(date_from) > now_ts:
-                    # Rows are ordered ASC by ``date_from``; everything
-                    # that follows is still in the future.
                     break
             except (TypeError, ValueError):
                 continue
@@ -466,7 +623,7 @@ class StartupJobsService:
             anime = Anime(
                 {
                     "id": anime_id,
-                    "status": None,  # force getStatus to derive
+                    "status": None,
                     "date_from": date_from,
                     "date_to": date_to,
                     "episodes": episodes,
@@ -476,6 +633,25 @@ class StartupJobsService:
             if not new_status or new_status == "UPCOMING":
                 continue
             transitions.setdefault(new_status, []).append(int(anime_id))
+
+        try:
+            airing_rows = db.sql(
+                "SELECT id, status, date_from, date_to, episodes "
+                "FROM anime "
+                "WHERE status='AIRING' "
+                "AND date_to IS NOT NULL "
+                "AND date_to <= %s",
+                [now_ts],
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed reading airing anime rows: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        for row in airing_rows:
+            anime_id = int(row[0])
+            transitions.setdefault("FINISHED", []).append(anime_id)
 
         if not transitions:
             return "no rows to update"

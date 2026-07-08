@@ -8,7 +8,7 @@ from typing import Any, Optional
 from adapters.persistence.models import Anime
 from application.services.database_manager import DatabaseManager
 from domain.entities import AnimeEntity, from_legacy_anime
-from domain.errors import InfrastructureError
+from domain.errors import InfrastructureError, NotFoundError
 from shared.config import ConfigProvider
 
 
@@ -19,9 +19,12 @@ class AnimeRepositoryAdapter:
         self,
         db_manager: DatabaseManager,
         config: ConfigProvider,
+        *,
+        api: Any | None = None,
     ) -> None:
         self._db_manager = db_manager
         self._config = config
+        self._api = api
 
     @property
     def _database(self):
@@ -272,3 +275,305 @@ class AnimeRepositoryAdapter:
                     entry["trackers"] = trackers_raw
             out.append(entry)
         return out
+
+    def _require_api(self) -> Any:
+        if self._api is None:
+            raise InfrastructureError("Metadata API not configured")
+        return self._api
+
+    def _character_row_to_dict(self, row: dict, *, role: Optional[str] = None) -> dict:
+        description = row.get("description") or row.get("desc")
+        entry = {
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "picture": row.get("picture"),
+            "description": description,
+        }
+        if role is not None:
+            entry["role"] = role
+        return entry
+
+    def get_characters(self, anime_id: int) -> list[dict]:
+        db = self._database
+        if db is None:
+            return []
+        try:
+            rows = db.sql(
+                (
+                    "SELECT c.id, c.name, c.picture, c.description, cr.role "
+                    "FROM characterRelations AS cr "
+                    "JOIN characters AS c ON c.id = cr.id "
+                    "WHERE cr.anime_id=? "
+                    "ORDER BY c.name"
+                ),
+                (anime_id,),
+                to_dict=True,
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load characters for anime {anime_id}: {exc}"
+            ) from exc
+        return [
+            self._character_row_to_dict(row, role=row.get("role"))
+            for row in (rows or [])
+            if row and row.get("id") is not None
+        ]
+
+    def get_character(self, character_id: int) -> Optional[dict]:
+        db = self._database
+        if db is None:
+            return None
+        try:
+            row = db.get(character_id, table="characters")
+        except Exception:
+            row = None
+        if not row:
+            return None
+
+        if hasattr(row, "items"):
+            base = dict(row)
+        else:
+            base = {
+                "id": getattr(row, "id", character_id),
+                "name": getattr(row, "name", None),
+                "picture": getattr(row, "picture", None),
+                "description": getattr(row, "desc", None)
+                or getattr(row, "description", None),
+            }
+
+        try:
+            rel_rows = db.sql(
+                (
+                    "SELECT cr.anime_id, cr.role, a.title "
+                    "FROM characterRelations AS cr "
+                    "LEFT JOIN anime AS a ON a.id = cr.anime_id "
+                    "WHERE cr.id=?"
+                ),
+                (character_id,),
+                to_dict=True,
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load character animeography for {character_id}: {exc}"
+            ) from exc
+
+        animeography = []
+        for rel in rel_rows or []:
+            if not rel:
+                continue
+            animeography.append(
+                {
+                    "anime_id": rel.get("anime_id"),
+                    "title": rel.get("title"),
+                    "role": rel.get("role"),
+                }
+            )
+
+        payload = self._character_row_to_dict(base)
+        payload["animeography"] = animeography
+        return payload
+
+    def get_anime_pictures(self, anime_id: int) -> list[dict]:
+        db = self._database
+        if db is None:
+            return []
+        try:
+            rows = db.sql(
+                "SELECT url, size FROM pictures WHERE id=?",
+                (anime_id,),
+                to_dict=True,
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load pictures for anime {anime_id}: {exc}"
+            ) from exc
+        return [
+            {"url": row.get("url"), "size": row.get("size")}
+            for row in (rows or [])
+            if row and row.get("url")
+        ]
+
+    def _resolve_character_role(self, character: Any, role: Optional[str] = None) -> str:
+        if role:
+            return str(role).strip().lower() or "unknown"
+        if hasattr(character, "role"):
+            value = getattr(character, "role", None)
+            if value:
+                return str(value).strip().lower()
+        if isinstance(character, dict):
+            value = character.get("role")
+            if value:
+                return str(value).strip().lower()
+        return "unknown"
+
+    def _upsert_character(
+        self,
+        character: Any,
+        *,
+        anime_id: Optional[int] = None,
+        role: Optional[str] = None,
+    ) -> None:
+        if character is None:
+            return
+
+        if hasattr(character, "id"):
+            char_id = getattr(character, "id", None)
+            name = getattr(character, "name", None)
+            picture = getattr(character, "picture", None)
+            description = getattr(character, "desc", None) or getattr(
+                character, "description", None
+            )
+            animeography = getattr(character, "animeography", None)
+        elif isinstance(character, dict):
+            char_id = character.get("id")
+            name = character.get("name")
+            picture = character.get("picture")
+            description = character.get("desc") or character.get("description")
+            animeography = character.get("animeography")
+        else:
+            return
+
+        if char_id is None:
+            return
+
+        if callable(animeography):
+            try:
+                animeography = animeography()
+            except Exception:
+                animeography = None
+
+        if anime_id is not None:
+            if not isinstance(animeography, dict):
+                animeography = {}
+            if anime_id not in animeography:
+                animeography[anime_id] = self._resolve_character_role(character, role)
+
+        db = self._database
+        if db is None:
+            raise InfrastructureError("Database not initialized")
+
+        try:
+            with db.get_lock():
+                exists = db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM characters WHERE id=?)",
+                    (int(char_id),),
+                )
+                if bool(exists[0][0]):
+                    db.sql(
+                        (
+                            "UPDATE characters "
+                            "SET name=?, picture=?, description=? "
+                            "WHERE id=?"
+                        ),
+                        (name, picture, description, int(char_id)),
+                        save=True,
+                    )
+                else:
+                    db.sql(
+                        (
+                            "INSERT INTO characters(id, name, picture, description) "
+                            "VALUES (?, ?, ?, ?)"
+                        ),
+                        (int(char_id), name, picture, description),
+                        save=True,
+                    )
+
+                if isinstance(animeography, dict):
+                    for anime_id, role in animeography.items():
+                        exists_rel = db.sql(
+                            (
+                                "SELECT EXISTS("
+                                "SELECT 1 FROM characterRelations "
+                                "WHERE id=? AND anime_id=?"
+                                ")"
+                            ),
+                            (int(char_id), int(anime_id)),
+                        )
+                        if bool(exists_rel[0][0]):
+                            db.sql(
+                                (
+                                    "UPDATE characterRelations "
+                                    "SET role=? WHERE id=? AND anime_id=?"
+                                ),
+                                (role, int(char_id), int(anime_id)),
+                                save=True,
+                            )
+                        else:
+                            db.sql(
+                                (
+                                    "INSERT INTO characterRelations(id, anime_id, role) "
+                                    "VALUES (?, ?, ?)"
+                                ),
+                                (int(char_id), int(anime_id), role),
+                                save=True,
+                            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to upsert character {char_id}: {exc}"
+            ) from exc
+
+    def refresh_anime_characters(self, anime_id: int) -> list[dict]:
+        api = self._require_api()
+        try:
+            characters = api.animeCharacters(anime_id)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to refresh characters for anime {anime_id}: {exc}"
+            ) from exc
+        for character in characters or []:
+            self._upsert_character(character, anime_id=anime_id)
+        return self.get_characters(anime_id)
+
+    def refresh_character(self, character_id: int) -> dict:
+        api = self._require_api()
+        try:
+            character = api.character(character_id)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to refresh character {character_id}: {exc}"
+            ) from exc
+        if not character:
+            raise NotFoundError(f"Character with id={character_id} not found")
+        self._upsert_character(character)
+        payload = self.get_character(character_id)
+        if payload is None:
+            raise NotFoundError(f"Character with id={character_id} not found")
+        return payload
+
+    def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
+        api = self._require_api()
+        try:
+            pictures = api.animePictures(anime_id)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to refresh pictures for anime {anime_id}: {exc}"
+            ) from exc
+
+        normalized: list[dict] = []
+        for pic in pictures or []:
+            if not isinstance(pic, dict):
+                continue
+            if "url" in pic and pic.get("url"):
+                normalized.append(
+                    {"url": pic["url"], "size": pic.get("size") or "medium"}
+                )
+                continue
+            jpg = pic.get("jpg") if isinstance(pic.get("jpg"), dict) else None
+            if jpg:
+                for size_key, size_label in (
+                    ("small_image_url", "small"),
+                    ("image_url", "medium"),
+                    ("large_image_url", "large"),
+                ):
+                    url = jpg.get(size_key)
+                    if url:
+                        normalized.append({"url": url, "size": size_label})
+
+        if normalized:
+            try:
+                api.save_pictures(anime_id, normalized)
+            except Exception as exc:
+                raise InfrastructureError(
+                    f"Failed to persist pictures for anime {anime_id}: {exc}"
+                ) from exc
+        return self.get_anime_pictures(anime_id)

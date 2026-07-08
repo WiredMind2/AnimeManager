@@ -8,7 +8,10 @@ from ....adapters.persistence.query_builder import (
     ALLOWED_CRITERIA,
     AnimeListQuery,
     build_anime_list_query,
+    build_genre_list_query,
+    build_season_list_query,
 )
+from domain.policies.season import season_date_range
 
 
 class TestBuildAnimeListQuery:
@@ -91,3 +94,24 @@ class TestBuildAnimeListQuery:
     def test_returns_animelistquery_instance(self):
         q = build_anime_list_query("DEFAULT", (0, 10), hide_rated=False, user_id=1)
         assert isinstance(q, AnimeListQuery)
+
+
+class TestBuildSeasonListQuery:
+    def test_filters_date_from_within_season(self):
+        start_ts, end_ts = season_date_range(2026, "winter")
+        q = build_season_list_query(start_ts, end_ts, (0, 24), user_id=4)
+        assert f"anime.date_from >= {start_ts}" in q.filter_clause
+        assert f"anime.date_from < {end_ts}" in q.filter_clause
+        assert q.order == "anime.date_from"
+        assert q.sort == "DESC"
+
+
+class TestBuildGenreListQuery:
+    def test_filters_by_genre_exists(self):
+        q = build_genre_list_query("Comedy", (0, 24), hide_rated=True, user_id=4)
+        assert "EXISTS (SELECT 1 FROM genres g WHERE g.id = anime.id" in q.filter_clause
+        assert "g.value = 'Comedy'" in q.filter_clause
+        assert "anime.status != 'UPCOMING'" in q.filter_clause
+        assert "rating NOT IN" in q.filter_clause
+        assert q.order == "anime.date_from"
+        assert q.sort == "DESC"

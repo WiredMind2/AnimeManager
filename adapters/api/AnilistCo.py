@@ -9,6 +9,32 @@ except ImportError:
     from APIUtils import Anime, APIUtils, Character, EnhancedSession
 
 
+def _current_anilist_season() -> tuple[int, str]:
+    """Return ``(seasonYear, MediaSeason)`` for the current anime season."""
+    now = datetime.now(timezone.utc)
+    month = now.month
+    if month <= 3:
+        season = "WINTER"
+    elif month <= 6:
+        season = "SPRING"
+    elif month <= 9:
+        season = "SUMMER"
+    else:
+        season = "FALL"
+    return now.year, season
+
+
+def _anilist_season_enum(season: str) -> str | None:
+    normalized = str(season or "").strip().lower()
+    mapping = {
+        "winter": "WINTER",
+        "spring": "SPRING",
+        "summer": "SUMMER",
+        "fall": "FALL",
+    }
+    return mapping.get(normalized)
+
+
 class QueryObject:
     def __init__(self, name, args=None, fields=None) -> None:
         self.name = name
@@ -281,6 +307,127 @@ class AnilistCoWrapper(APIUtils):
         count = 0
         for a in self.iterate(query, variables):
             data = self._convertAnime(a)
+            if data and len(data) != 0:
+                yield data
+                count += 1
+                if count >= limit:
+                    return
+
+    def season(self, year, season, limit=50):
+        season_enum = _anilist_season_enum(season)
+        if season_enum is None:
+            return
+        query = QueryObject(
+            "query",
+            args=(
+                ("$page", "Int"),
+                ("$perPage", "Int"),
+                ("$season", "MediaSeason"),
+                ("$seasonYear", "Int"),
+            ),
+            fields=[
+                self.pagination_query.add_field(
+                    QueryObject(
+                        "media",
+                        args=(
+                            ("season", "$season"),
+                            ("seasonYear", "$seasonYear"),
+                            ("type", "ANIME"),
+                            ("sort", "START_DATE_DESC"),
+                        ),
+                        fields=self.media_fields,
+                    )
+                )
+            ],
+        )
+        variables = {
+            "page": 1,
+            "perPage": min(50, max(1, int(limit))),
+            "season": season_enum,
+            "seasonYear": int(year),
+            "max_pages": max(1, (int(limit) + 49) // 50),
+        }
+        count = 0
+        for media in self.iterate(query, variables):
+            data = self._convertAnime(media)
+            if data and len(data) != 0:
+                yield data
+                count += 1
+                if count >= limit:
+                    return
+
+    def genre(self, name, limit=50):
+        query = QueryObject(
+            "query",
+            args=(
+                ("$page", "Int"),
+                ("$perPage", "Int"),
+                ("$genre", "String"),
+            ),
+            fields=[
+                self.pagination_query.add_field(
+                    QueryObject(
+                        "media",
+                        args=(
+                            ("genre_in", "[$genre]"),
+                            ("type", "ANIME"),
+                            ("sort", "POPULARITY_DESC"),
+                        ),
+                        fields=self.media_fields,
+                    )
+                )
+            ],
+        )
+        variables = {
+            "page": 1,
+            "perPage": min(50, max(1, int(limit))),
+            "genre": str(name),
+            "max_pages": max(1, (int(limit) + 49) // 50),
+        }
+        count = 0
+        for media in self.iterate(query, variables):
+            data = self._convertAnime(media)
+            if data and len(data) != 0:
+                yield data
+                count += 1
+                if count >= limit:
+                    return
+
+    def schedule(self, limit=50):
+        season_year, season = _current_anilist_season()
+        query = QueryObject(
+            "query",
+            args=(
+                ("$page", "Int"),
+                ("$perPage", "Int"),
+                ("$season", "MediaSeason"),
+                ("$seasonYear", "Int"),
+            ),
+            fields=[
+                self.pagination_query.add_field(
+                    QueryObject(
+                        "media",
+                        args=(
+                            ("season", "$season"),
+                            ("seasonYear", "$seasonYear"),
+                            ("type", "ANIME"),
+                            ("sort", "START_DATE_DESC"),
+                        ),
+                        fields=self.media_fields,
+                    )
+                )
+            ],
+        )
+        variables = {
+            "page": 1,
+            "perPage": min(50, max(1, int(limit))),
+            "season": season,
+            "seasonYear": int(season_year),
+            "max_pages": max(1, (int(limit) + 49) // 50),
+        }
+        count = 0
+        for media in self.iterate(query, variables):
+            data = self._convertAnime(media)
             if data and len(data) != 0:
                 yield data
                 count += 1

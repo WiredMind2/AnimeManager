@@ -43,3 +43,25 @@ export function seasonSearchUrl(year: number, season: string): string {
   const query = `${normalized} ${year}`;
   return `/library?q=${encodeURIComponent(query)}`;
 }
+
+export function formatSeasonLabel(season: AiringSeason | string, year: number): string {
+  const normalized = normalizeSeason(String(season));
+  if (!normalized) return `${season} ${year}`;
+  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} ${year}`;
+}
+
+export function parseSeasonBrowseParams(
+  season?: string,
+  year?: string | number,
+): { season: AiringSeason; year: number } | null {
+  const normalizedSeason = season ? normalizeSeason(season) : null;
+  const parsedYear = parseSeasonYear(year);
+  if (!normalizedSeason || parsedYear == null) return null;
+  return { season: normalizedSeason, year: parsedYear };
+}
+
+export function seasonBrowseUrl(year: number, season: string): string {
+  const normalized = normalizeSeason(season);
+  if (!normalized) return "/library/season";
+  return `/library/season?year=${year}&season=${normalized}`;
+}

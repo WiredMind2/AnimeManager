@@ -69,6 +69,13 @@ def _kickoff_startup_jobs() -> None:
                 "Embedded facade has no startup-jobs service; "
                 "pipeline not started."
             )
+        else:
+            loop = sdk.start_schedule_loop()
+            if loop is None:
+                _LOG.warning(
+                    "Embedded facade has no schedule refresh loop; "
+                    "daily fetch not scheduled."
+                )
     except Exception as exc:  # noqa: BLE001 - best-effort
         _LOG.warning("Startup-jobs pipeline failed to launch: %s", exc)
 

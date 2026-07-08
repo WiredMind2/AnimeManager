@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Tuple
 
 
-__all__ = ["AnimeListQuery", "build_anime_list_query", "ALLOWED_CRITERIA"]
+__all__ = [
+    "AnimeListQuery",
+    "build_anime_list_query",
+    "build_genre_list_query",
+    "build_season_list_query",
+    "ALLOWED_CRITERIA",
+]
 
 
 ALLOWED_CRITERIA: frozenset = frozenset(
@@ -151,4 +157,62 @@ def build_anime_list_query(
         sort=sort,
         range=safe_range,
         params=params,
+    )
+
+
+def build_genre_list_query(
+    genre: str,
+    listrange: Tuple[int, int],
+    *,
+    hide_rated: bool,
+    user_id: int,
+) -> AnimeListQuery:
+    """Build a query for anime tagged with a validated genre name."""
+    start, stop = listrange
+    start = max(0, int(start))
+    stop = max(start + 1, int(stop))
+    safe_range = (start, stop)
+    uid = int(user_id)
+    clause = (
+        f"EXISTS (SELECT 1 FROM genres g WHERE g.id = anime.id "
+        f"AND g.value = '{genre}') "
+        "AND anime.status != 'UPCOMING' AND anime.status != 'UNKNOWN'"
+    )
+    if hide_rated:
+        clause += f" AND {_RATING_GUARD}"
+    return AnimeListQuery(
+        table=_default_table(uid),
+        filter_clause=clause,
+        order="anime.date_from",
+        sort="DESC",
+        range=safe_range,
+        params={"user_id": uid, "genre": genre},
+    )
+
+
+def build_season_list_query(
+    start_ts: int,
+    end_ts: int,
+    listrange: Tuple[int, int],
+    *,
+    user_id: int,
+) -> AnimeListQuery:
+    """Build a query for anime whose ``date_from`` falls in an airing season."""
+    start, stop = listrange
+    start = max(0, int(start))
+    stop = max(start + 1, int(stop))
+    safe_range = (start, stop)
+    uid = int(user_id)
+    clause = (
+        "anime.date_from IS NOT NULL "
+        f"AND anime.date_from >= {int(start_ts)} "
+        f"AND anime.date_from < {int(end_ts)}"
+    )
+    return AnimeListQuery(
+        table=_default_table(uid),
+        filter_clause=clause,
+        order="anime.date_from",
+        sort="DESC",
+        range=safe_range,
+        params={"user_id": uid, "start_ts": int(start_ts), "end_ts": int(end_ts)},
     )

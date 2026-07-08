@@ -71,8 +71,22 @@ class UserActionsRepository:
         )
 
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
-        _ = file_name
         self.set_tag(anime_id, "SEEN", user_id)
+        clean_name = str(file_name or "").strip()
+        if not clean_name:
+            return
+        db = self._database
+        try:
+            with db.get_lock():
+                db.sql(
+                    "UPDATE anime SET last_seen=? WHERE id=?",
+                    (clean_name, anime_id),
+                    save=True,
+                )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to persist last_seen for anime {anime_id}: {exc}"
+            ) from exc
 
     def get_user_state(self, anime_id: int, user_id: int) -> dict:
         db = self._database

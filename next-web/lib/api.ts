@@ -318,6 +318,15 @@ export const api = {
   },
   searchAnime: (query: string, limit = 50) =>
     request<AnimeItem[]>(`/search?query=${encodeURIComponent(query)}&limit=${limit}`),
+  browseSeason: (year: number, season: string, limit = 50) =>
+    request<AnimeItem[]>(
+      `/season?year=${encodeURIComponent(String(year))}&season=${encodeURIComponent(season)}&limit=${limit}`,
+    ),
+  browseGenre: (name: string, limit = 50) =>
+    request<AnimeItem[]>(
+      `/genre?name=${encodeURIComponent(name)}&limit=${limit}`,
+    ),
+  getGenres: () => request<{ items: string[] }>("/genres"),
   getUserState: (animeId: number, userId: number) =>
     request<UserState>(`/state/${animeId}?user_id=${userId}`),
   setTag: (animeId: number, tag: string, userId: number) =>
