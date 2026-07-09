@@ -98,3 +98,30 @@ def test_planner_does_not_duplicate_ascii_terms(limits):
     """ASCII-only terms must not generate a redundant folded variant."""
     plan = plan_terms(["Bleach"], limits)
     assert [term.normalized for term in plan.terms] == ["Bleach"]
+
+
+TAI_ARI_PRIMARY = "Tai-Ari deshita.: Ojou-sama wa Kakutou Game nante Shinai"
+TAI_ARI_SYNONYM = "Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai"
+
+
+def test_planner_expands_punctuation_and_hyphen_variants_for_romanized_title():
+    """Catalog titles with ``.: `` and hyphens must search the nyaa-friendly form."""
+    limits = SearchLimits(max_terms=10, max_term_length=200)
+    plan = plan_terms([TAI_ARI_PRIMARY, TAI_ARI_SYNONYM], limits)
+    normalized = [term.normalized for term in plan.terms]
+    assert TAI_ARI_SYNONYM in normalized
+    assert TAI_ARI_PRIMARY not in normalized
+
+
+def test_planner_emits_romanized_prefix_for_long_title():
+    limits = SearchLimits(max_terms=10, max_term_length=200)
+    plan = plan_terms([TAI_ARI_PRIMARY], limits)
+    normalized = [term.normalized for term in plan.terms]
+    assert "Tai-Ari deshita" in normalized
+
+
+def test_planner_does_not_emit_prefix_for_short_english_title():
+    limits = SearchLimits(max_terms=10, max_term_length=200)
+    plan = plan_terms(["Young Ladies Don't Play Fighting Games"], limits)
+    normalized = [term.normalized for term in plan.terms]
+    assert "Young Ladies" not in normalized
