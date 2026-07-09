@@ -13,6 +13,7 @@ type TorrentSearchPageProps = {
   animeId?: number;
   results: TorrentRow[] | null;
   searched: boolean;
+  allowNsfw?: boolean;
 };
 
 export default function TorrentSearchPage({
@@ -20,13 +21,19 @@ export default function TorrentSearchPage({
   animeId,
   results,
   searched,
+  allowNsfw = false,
 }: TorrentSearchPageProps) {
   const router = useRouter();
   const [query, setQuery] = useState(term);
+  const [showNsfw, setShowNsfw] = useState(allowNsfw);
 
   useEffect(() => {
     setQuery(term);
   }, [term]);
+
+  useEffect(() => {
+    setShowNsfw(allowNsfw);
+  }, [allowNsfw]);
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -34,6 +41,7 @@ export default function TorrentSearchPage({
     const trimmed = query.trim();
     if (trimmed) params.set("term", trimmed);
     if (animeId != null) params.set("anime_id", String(animeId));
+    if (showNsfw) params.set("allow_nsfw", "true");
     const qs = params.toString();
     router.push(qs ? `/torrents?${qs}` : "/torrents");
   };
@@ -71,6 +79,16 @@ export default function TorrentSearchPage({
           onChange={(e) => setQuery(e.target.value)}
         />
         {animeId != null ? <input type="hidden" name="anime_id" value={animeId} /> : null}
+        <label className="torrent-search__nsfw-toggle">
+          <input
+            type="checkbox"
+            name="allow_nsfw"
+            value="true"
+            checked={showNsfw}
+            onChange={(e) => setShowNsfw(e.target.checked)}
+          />
+          <span>Include NSFW / hentai</span>
+        </label>
         <button className="btn btn--primary" type="submit">
           Search
         </button>
@@ -78,7 +96,7 @@ export default function TorrentSearchPage({
 
       {hasResults ? (
         <section>
-          <TorrentResultsTable rows={tableRows} animeId={animeId} />
+          <TorrentResultsTable rows={tableRows} animeId={animeId} hideNsfw={!showNsfw} />
         </section>
       ) : searched ? (
         <EmptyState

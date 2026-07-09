@@ -29,11 +29,16 @@ describe("filterFooterLabel", () => {
 
 describe("resolvePageSize", () => {
   it("prefers URL param over settings", () => {
-    expect(resolvePageSize("50", 24)).toBe(50);
+    expect(resolvePageSize("48", 24)).toBe(48);
+  });
+
+  it("maps legacy page size 50 to 48", () => {
+    expect(resolvePageSize("50", 24)).toBe(48);
+    expect(resolvePageSize(undefined, 50)).toBe(48);
   });
 
   it("falls back to settings then default", () => {
-    expect(resolvePageSize(undefined, 50)).toBe(50);
+    expect(resolvePageSize(undefined, 48)).toBe(48);
     expect(resolvePageSize(undefined, 99)).toBe(24);
   });
 });

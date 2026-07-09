@@ -1,4 +1,9 @@
 import type { AnimeItem } from "@/lib/api";
+import {
+  formatBroadcastDisplay,
+  formatBroadcastJst,
+  parseBroadcast,
+} from "@/lib/broadcast-schedule";
 
 const UTC_MONTHS = [
   "Jan",
@@ -29,24 +34,36 @@ export function formatDateRange(dateFrom?: number, dateTo?: number): string | nu
   if (dateTo) return `${formatUtcDate(dateFrom)} → ${formatUtcDate(dateTo)}`;
   return `${formatUtcDate(dateFrom)} → ?`;
 }
-export function formatBroadcast(broadcast?: string): string | null {
-  if (!broadcast) return null;
-  const parts = broadcast.split("-");
-  if (parts.length !== 3) return null;
-  const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const [w, h, m] = parts.map((p) => Number.parseInt(p, 10));
-  if (!Number.isFinite(w) || w < 0 || w > 6) return null;
-  if (!Number.isFinite(h) || h < 0 || h > 23) return null;
-  if (!Number.isFinite(m) || m < 0 || m > 59) return null;
-  return `${weekdays[w]} ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+export function formatBroadcast(
+  broadcast?: string,
+  timeZone?: string | null,
+): string | null {
+  const slot = parseBroadcast(broadcast);
+  if (!slot) return null;
+  if (!timeZone) return formatBroadcastJst(slot);
+  return formatBroadcastDisplay(slot, timeZone);
 }
 
-export function hasMetadataContent(anime: AnimeItem): boolean {
+export type DetailMetaRow = { label: string; value: string };
+
+export function buildDetailMetaRows(
+  anime: AnimeItem,
+  timeZone?: string | null,
+): DetailMetaRow[] {
   const aired = formatDateRange(anime.date_from, anime.date_to);
-  const broadcast = formatBroadcast(anime.broadcast);
+  const broadcast = formatBroadcast(anime.broadcast, timeZone);
   const studios = (anime.studios || []).filter(Boolean);
   const producers = (anime.producers || []).filter(Boolean);
-  const rows = [aired, broadcast, anime.popularity, studios.length, producers.length, anime.last_seen];
-  const hasRows = rows.some((value) => value !== null && value !== undefined && value !== 0);
-  return hasRows || (anime.airing_lines || []).length > 0 || (anime.external_urls || []).length > 0;
+
+  return [
+    { label: "Aired", value: aired ?? "" },
+    { label: "Broadcast", value: broadcast ?? "" },
+    {
+      label: "Popularity",
+      value:
+        anime.popularity != null ? anime.popularity.toLocaleString("en-US") : "",
+    },
+    { label: "Studios", value: studios.length ? studios.join(", ") : "" },
+    { label: "Producers", value: producers.length ? producers.join(", ") : "" },
+  ].filter((row) => row.value);
 }

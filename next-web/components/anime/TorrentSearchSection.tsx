@@ -10,28 +10,35 @@ import TorrentSearchOptionsModal from "./TorrentSearchOptionsModal";
 type TorrentSearchSectionProps = {
   animeId: number;
   initialOptions: TorrentSearchOptions;
+  activated: boolean;
 };
 
-function buildStreamUrl(animeId: number, terms: string[]): string {
+function buildStreamUrl(animeId: number, terms: string[], allowNsfw: boolean): string {
   const base = backendPath(`/ui/anime/${animeId}/torrents/stream`);
-  if (!terms.length) return base;
-  const qs = terms.map((t) => `terms=${encodeURIComponent(t)}`).join("&");
-  return `${base}?${qs}`;
+  const params = new URLSearchParams();
+  for (const term of terms) {
+    params.append("terms", term);
+  }
+  if (allowNsfw) params.set("allow_nsfw", "true");
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
 }
 
 export default function TorrentSearchSection({
   animeId,
   initialOptions,
+  activated,
 }: TorrentSearchSectionProps) {
   const [options, setOptions] = useState(initialOptions);
   const [rows, setRows] = useState<TorrentTableRow[]>([]);
+  const [showNsfw, setShowNsfw] = useState(false);
   const [status, setStatus] = useState<"idle" | "searching" | "done" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const sourceRef = useRef<EventSource | null>(null);
   const searchGen = useRef(0);
 
-  const startSearch = useCallback((terms: string[]) => {
+  const startSearch = useCallback((terms: string[], allowNsfw = showNsfw) => {
     sourceRef.current?.close();
     const gen = ++searchGen.current;
     setRows([]);
@@ -43,7 +50,7 @@ export default function TorrentSearchSection({
     }
 
     setStatus("searching");
-    const url = buildStreamUrl(animeId, terms);
+    const url = buildStreamUrl(animeId, terms, allowNsfw);
     let source: EventSource;
     try {
       source = new EventSource(url);
@@ -79,14 +86,19 @@ export default function TorrentSearchSection({
       setStatus("done");
       source.close();
     });
-  }, [animeId]);
+  }, [animeId, showNsfw]);
 
   useEffect(() => {
-    startSearch(options.active_terms);
+    setOptions(initialOptions);
+  }, [initialOptions]);
+
+  useEffect(() => {
+    if (!activated) return;
+    startSearch(options.active_terms, showNsfw);
     return () => {
       sourceRef.current?.close();
     };
-  }, [options.active_terms, startSearch]);
+  }, [activated, options.active_terms, showNsfw, startSearch]);
 
   const terms = options.active_terms;
   const termPreview = terms.slice(0, 3);
@@ -118,6 +130,14 @@ export default function TorrentSearchSection({
         <button className="btn btn--primary" type="submit">
           Search
         </button>
+        <label className="torrent-search__nsfw-toggle">
+          <input
+            type="checkbox"
+            checked={showNsfw}
+            onChange={(e) => setShowNsfw(e.target.checked)}
+          />
+          <span>Include NSFW / hentai</span>
+        </label>
         {status === "searching" ? (
           <span id="anime-torrent-spinner" className="htmx-indicator">
             <span className="spinner" />
@@ -198,7 +218,12 @@ export default function TorrentSearchSection({
             </p>
 
             {rows.length > 0 ? (
-              <TorrentResultsTable rows={rows} animeId={animeId} streamMode />
+              <TorrentResultsTable
+                rows={rows}
+                animeId={animeId}
+                streamMode
+                hideNsfw={!showNsfw}
+              />
             ) : status === "done" ? (
               <p
                 className="anime-torrent-empty"

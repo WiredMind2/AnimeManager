@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { type EpisodeFile } from "@/lib/api";
 import { uiPost } from "@/lib/api";
 import { formatMb, watchPercent, watchProgressLabel, watchProgressTitle } from "@/lib/format";
@@ -19,6 +19,10 @@ const STATUSES = [
 
 export default function EpisodePlayerTable({ animeId, initialFiles }: EpisodePlayerTableProps) {
   const [files, setFiles] = useState(initialFiles);
+
+  useEffect(() => {
+    setFiles(initialFiles);
+  }, [initialFiles]);
 
   async function updateProgress(fileId: string, status: string) {
     setFiles((prev) =>

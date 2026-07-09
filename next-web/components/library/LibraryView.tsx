@@ -23,7 +23,7 @@ type LibraryViewProps = {
 export default function LibraryView({
   query,
   streamPath = "/ui/library/stream",
-  limit = 50,
+  limit = 48,
   onStreamUpdate,
 }: LibraryViewProps) {
   const [items, setItems] = useState<AnimeItem[]>([]);

@@ -15,6 +15,10 @@ export default function DownloadedEpisodesTable({
 }: DownloadedEpisodesTableProps) {
   const [torrents, setTorrents] = useState(initialTorrents);
   const { showToast } = useToast();
+
+  useEffect(() => {
+    setTorrents(initialTorrents);
+  }, [initialTorrents]);
   // Polling refresh runs every few seconds while a download is active; only
   // surface one toast per outage instead of re-notifying on every tick.
   const refreshFailedRef = useRef(false);

@@ -85,7 +85,11 @@ export default function AnimeCard({ item }: AnimeCardProps) {
         <span className="card__overlay" aria-hidden="true" />
       </div>
       <span className="card__title" data-tag={tag}>
-        {title}
+        {title.trim() ? (
+          title
+        ) : (
+          <span className="card__title-skeleton" aria-hidden="true" />
+        )}
       </span>
       <span className="card__meta">
         {item.episodes ? <span>{item.episodes} ep</span> : null}
