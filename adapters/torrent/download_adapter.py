@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from dataclasses import replace
+
 from adapters.file.local_episode_scanner import LocalEpisodeScanner
 from adapters.persistence.user_actions_repository import UserActionsRepository
 from adapters.search import SearchFacade
+from adapters.search.config import load_profile
 from application.services.database_manager import DatabaseManager
 from application.services.download_manager import DownloadManager
 
@@ -136,8 +139,9 @@ class DownloadAdapter:
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ) -> list[dict]:
-        facade = SearchFacade.for_profile(profile)
+        facade = SearchFacade(profile=replace(load_profile(profile), allow_nsfw=allow_nsfw))
         rows = list(facade.search(terms))
         rows.sort(key=lambda row: int(row.get("seeds") or 0), reverse=True)
         return rows[: max(1, limit)]
@@ -147,8 +151,9 @@ class DownloadAdapter:
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ):
-        facade = SearchFacade.for_profile(profile)
+        facade = SearchFacade(profile=replace(load_profile(profile), allow_nsfw=allow_nsfw))
         max_results = max(1, limit)
         emitted = 0
         for row in facade.search(terms):

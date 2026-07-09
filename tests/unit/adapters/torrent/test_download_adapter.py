@@ -153,7 +153,7 @@ def test_search_torrents_sorts_and_limits():
         {"name": "high", "seeds": 99},
     ]
     with patch("adapters.torrent.download_adapter.SearchFacade") as facade_cls:
-        facade_cls.for_profile.return_value.search.return_value = rows
+        facade_cls.return_value.search.return_value = rows
         results = adapter.search_torrents(["naruto"], limit=1)
     assert len(results) == 1
     assert results[0]["name"] == "high"
@@ -163,7 +163,7 @@ def test_stream_torrents_stops_at_limit():
     adapter, _ = _make_adapter()
     rows = [{"name": f"t{i}", "seeds": i} for i in range(5)]
     with patch("adapters.torrent.download_adapter.SearchFacade") as facade_cls:
-        facade_cls.for_profile.return_value.search.return_value = iter(rows)
+        facade_cls.return_value.search.return_value = iter(rows)
         streamed = list(adapter.stream_torrents(["x"], limit=2))
     assert len(streamed) == 2
 

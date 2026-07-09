@@ -11,7 +11,7 @@ import pytest
 from application.commands import CreatePlaybackSessionCommand
 from application.playback.contract import PREFETCH_MARGIN, SEGMENT_SECONDS
 from application.playback.playlist import render_manifest
-from application.playback.resume import anchor_segment, resume_segment_index
+from application.playback.resume import anchor_segment, clamp_resume_seconds, resume_segment_index
 from application.playback.service import PlaybackService
 from application.dto import PlaybackSessionDTO
 from application.queries import GetPlaybackSessionQuery
@@ -143,6 +143,29 @@ def test_resume_segment_and_anchor_math():
     assert anchor_segment(177) == 177 - PREFETCH_MARGIN
     assert resume_segment_index(1420.0, total_segments=900, segment_seconds=4) == 355
     assert anchor_segment(355) == 355 - PREFETCH_MARGIN
+
+
+def test_clamp_resume_seconds_restarts_near_end():
+    """Positions within NEAR_END_RESTART_SECONDS of the end restart from 0.
+
+    Guards against the historical live-edge-seek corruption that parked the
+    playhead ~12s before the end on fresh starts.
+    """
+    duration = 1442.112
+    # Bogus near-end position (the corrupt 1430.141 from the bug report) restarts.
+    assert clamp_resume_seconds(1430.141, max_duration=duration) == 0.0
+    # A genuine mid-episode resume is preserved (clamped to duration - 1s).
+    assert clamp_resume_seconds(700.0, max_duration=duration) == 700.0
+    # Exactly at the near-end boundary restarts.
+    from application.playback.contract import NEAR_END_RESTART_SECONDS
+
+    assert clamp_resume_seconds(duration - NEAR_END_RESTART_SECONDS, max_duration=duration) == 0.0
+    # Just inside the safe zone is preserved.
+    assert clamp_resume_seconds(duration - NEAR_END_RESTART_SECONDS - 1.0, max_duration=duration) > 0
+    # Below MIN_RESUME_SECONDS normalizes to 0 (fresh start).
+    assert clamp_resume_seconds(5.0, max_duration=duration) == 0.0
+    # No duration known: passthrough (still normalized).
+    assert clamp_resume_seconds(700.0) == 700.0
 
 
 def test_create_session_waits_for_resume_playhead_segment(tmp_path: Path):

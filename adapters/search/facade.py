@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Iterator, List, Optional, Sequence
 
+from domain.policies.adult_content import is_adult_torrent
+
 from .config import (
     DEFAULT_PROFILE,
     DEFAULT_PROFILES,
@@ -188,6 +190,11 @@ class SearchFacade:
         def sink(result: TorrentResult, job: SearchJob) -> None:
             nonlocal results_emitted
             if cancel.is_set():
+                return
+            if not self._profile.allow_nsfw and is_adult_torrent(
+                result.name, result.engine_url
+            ):
+                self._metrics.incr("adult_filtered")
                 return
             if deduper.register(result) is None:
                 self._metrics.incr("dedupe_dropped")

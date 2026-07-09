@@ -57,12 +57,25 @@ export async function stopSessionUrl(stopUrl: string): Promise<void> {
   await fetch(resolveBackendUrl(stopUrl), { method: "POST", credentials: "include" });
 }
 
-export function startHeartbeat(heartbeatUrl: string): () => void {
+export type HeartbeatOptions = {
+  /** Invoked when the server reports the playback session is gone (HTTP 404). */
+  onSessionLost?: (reason: "heartbeat_404") => void;
+};
+
+export function startHeartbeat(
+  heartbeatUrl: string,
+  options: HeartbeatOptions = {},
+): () => void {
   if (!heartbeatUrl) return () => {};
+  const { onSessionLost } = options;
   const id = setInterval(() => {
-    fetch(resolveBackendUrl(heartbeatUrl), { method: "POST", credentials: "include" }).catch(
-      () => {},
-    );
+    fetch(resolveBackendUrl(heartbeatUrl), { method: "POST", credentials: "include" })
+      .then((response) => {
+        if (response.status === 404) {
+          onSessionLost?.("heartbeat_404");
+        }
+      })
+      .catch(() => {});
   }, 30000);
   return () => clearInterval(id);
 }

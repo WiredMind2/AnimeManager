@@ -48,14 +48,14 @@ class TestEnginePolicyLoading:
         kept = policy.filter(["x"], _profile())
         assert kept == []
 
-    def test_nsfw_blocked_in_strict_profile(self, policy_factory):
+    def test_nsfw_blocked_unless_profile_allows(self, policy_factory):
         policy = policy_factory(
             engines={"adult": {"enabled": True, "nsfw": True}},
         )
-        kept_strict = policy.filter(["adult"], _profile(name="strict"))
-        assert kept_strict == []
-        kept_interactive = policy.filter(["adult"], _profile(name="interactive"))
-        assert kept_interactive == ["adult"]
+        kept_blocked = policy.filter(["adult"], _profile(allow_nsfw=False))
+        assert kept_blocked == []
+        kept_allowed = policy.filter(["adult"], _profile(allow_nsfw=True))
+        assert kept_allowed == ["adult"]
 
     def test_explicit_allowlist_lower_cases_the_comparison_only(self, policy_factory):
         """Allowlist match is case-insensitive, but record lookup is case-sensitive.
