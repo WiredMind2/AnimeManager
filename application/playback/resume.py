@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from application.playback.contract import MIN_RESUME_SECONDS, PREFETCH_MARGIN
+from application.playback.contract import MIN_RESUME_SECONDS, NEAR_END_RESTART_SECONDS, PREFETCH_MARGIN
 
 
 def resume_segment_index(
@@ -47,8 +47,10 @@ def clamp_resume_seconds(
         return 0.0
     if max_duration is None or max_duration <= 0:
         return seconds
-    # Corrupt or stale progress (e.g. bad probe duration) — restart cleanly.
-    if seconds >= max_duration - 1.0:
+    # Position is effectively at the end (finished, or the historical
+    # live-edge-seek corruption that parked the playhead ~12s before the
+    # end) — restart cleanly from the beginning.
+    if seconds >= max_duration - NEAR_END_RESTART_SECONDS:
         return 0.0
     return min(seconds, max_duration - 1.0)
 

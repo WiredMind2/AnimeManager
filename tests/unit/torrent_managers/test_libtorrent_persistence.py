@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import threading
 import types
 from unittest.mock import MagicMock, patch
@@ -237,3 +238,82 @@ def test_restore_from_resume_skips_deleted_status(libtorrent_manager, tmp_path, 
     assert deleted_hash not in manager.handles
     assert not resume_path.exists()
     manager.session.add_torrent.assert_not_called()
+
+
+def test_resume_write_uses_unique_temp_and_succeeds(libtorrent_manager):
+    path = libtorrent_manager._resume_file_path("f" * 40)
+    libtorrent_manager._atomic_write_bytes(path, b"unique-temp-test")
+
+    assert os.path.isfile(path)
+    assert not os.path.exists(f"{path}.tmp")
+    dirname = os.path.dirname(path)
+    leftovers = [name for name in os.listdir(dirname) if name.endswith(".tmp")]
+    assert not leftovers
+    with open(path, "rb") as fh:
+        assert fh.read() == b"unique-temp-test"
+
+
+def test_resume_write_retries_on_windows_access_denied(libtorrent_manager, monkeypatch):
+    path = libtorrent_manager._resume_file_path("d" * 40)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    calls = {"count": 0}
+    real_replace = os.replace
+
+    def flaky_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            exc = OSError("[WinError 5] Access is denied")
+            exc.winerror = 5
+            raise exc
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    libtorrent_manager._atomic_write_bytes(path, b"payload")
+
+    assert os.path.isfile(path)
+    with open(path, "rb") as fh:
+        assert fh.read() == b"payload"
+    assert calls["count"] >= 2
+
+
+def test_resume_write_serializes_concurrent_same_hash(libtorrent_manager, mock_lt):
+    handle = MagicMock()
+    handle.info_hash.return_value = b"\xcc" * 20
+    alert = mock_lt.save_resume_data_alert()
+    alert.params = object()
+    alert.resume_data = {"deprecated": True}
+    alert.handle = handle
+
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            libtorrent_manager._write_resume_alert(alert)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    info_hash = libtorrent_manager._normalise_hash(handle.info_hash.return_value)
+    resume_path = libtorrent_manager._resume_file_path(info_hash)
+    assert os.path.isfile(resume_path)
+    with open(resume_path, "rb") as fh:
+        assert fh.read() == b"serialized-resume"
+
+
+def test_resume_write_clears_readonly_target(libtorrent_manager):
+    path = libtorrent_manager._resume_file_path("e" * 40)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(b"old")
+    os.chmod(path, stat.S_IREAD)
+
+    libtorrent_manager._atomic_write_bytes(path, b"new-data")
+
+    with open(path, "rb") as fh:
+        assert fh.read() == b"new-data"

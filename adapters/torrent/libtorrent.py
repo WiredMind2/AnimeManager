@@ -1,8 +1,10 @@
 import glob
 import os
+import stat
 import tempfile
 import threading
 import time
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -58,6 +60,7 @@ class LibTorrent(BaseTorrentManager):
         self._shutting_down = False
         self._pending_resume_saves = 0
         self._resume_lock = threading.Lock()
+        self._resume_file_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)
         self._last_periodic_save = 0.0
         self._last_handle_save: Dict[str, float] = {}
         self._restore_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None
@@ -127,6 +130,72 @@ class LibTorrent(BaseTorrentManager):
         return os.path.join(
             self._resume_dir(), f"{self._normalise_hash(info_hash)}{_RESUME_SUFFIX}"
         )
+
+    @staticmethod
+    def _is_retryable_write_error(exc: BaseException) -> bool:
+        if isinstance(exc, PermissionError):
+            return True
+        if isinstance(exc, OSError):
+            winerror = getattr(exc, "winerror", None)
+            if winerror in (5, 32):
+                return True
+            if exc.errno in (13,):
+                return True
+        return False
+
+    @staticmethod
+    def _clear_writable(path: str) -> None:
+        try:
+            if os.path.exists(path):
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+
+    def _commit_atomic_write(self, tmp: str, path: str) -> None:
+        self._clear_writable(path)
+        last_exc: Optional[BaseException] = None
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except OSError as exc:
+                last_exc = exc
+                if not self._is_retryable_write_error(exc):
+                    break
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+        try:
+            self._clear_writable(path)
+            if os.path.exists(path):
+                os.remove(path)
+            os.rename(tmp, path)
+            return
+        except OSError as exc:
+            last_exc = exc
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        if last_exc is not None:
+            raise last_exc
+
+    def _atomic_write_bytes(self, path: str, data: bytes) -> None:
+        dirpath = os.path.dirname(path)
+        basename = os.path.basename(path)
+        os.makedirs(dirpath, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=dirpath, prefix=f"{basename}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            self._commit_atomic_write(tmp, path)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def initialize(self):
         if lt is None:
@@ -399,11 +468,8 @@ class LibTorrent(BaseTorrentManager):
         if info_hash:
             path = self._resume_file_path(info_hash)
             try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                tmp = f"{path}.tmp"
-                with open(tmp, "wb") as fh:
-                    fh.write(resume_bytes)
-                os.replace(tmp, path)
+                with self._resume_file_locks[info_hash]:
+                    self._atomic_write_bytes(path, resume_bytes)
             except Exception as exc:
                 print(f"Failed to write resume file {path}: {exc}")  # TODO - logger
         with self._resume_lock:

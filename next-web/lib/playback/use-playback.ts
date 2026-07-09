@@ -41,6 +41,9 @@ import type { PlaybackSessionPayload } from "@/types/player";
 /** Survives remounts so in-flight loads can be invalidated. */
 let playbackLoadEpoch = 0;
 
+const MAX_SESSION_RECOVERY_ATTEMPTS = 3;
+const STALE_SESSION_RECOVERY_DELAY_MS = 250;
+
 export type UsePlaybackOptions = {
   animeId: number;
   trackMap: WatchTrackMap;
@@ -94,6 +97,10 @@ export function usePlayback(
   const replayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const replayInFlightRef = useRef(false);
   const replayQueuedRef = useRef(false);
+  const queueReplayCurrentRef = useRef<() => void>(() => {});
+  const scheduleStaleSessionRecoveryRef = useRef<(reason: string) => void>(() => {});
+  const sessionRecoveryAttemptsRef = useRef(0);
+  const staleRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const subtitleStateRef = useRef<SubtitleState>({
     trackRefs: {},
     assById: {},
@@ -415,7 +422,11 @@ export function usePlayback(
       const playbackStartSeconds = Number(payload.playback_start_seconds ?? 0);
       const hlsAnchorSegment = Math.max(0, Number(payload.hls_anchor_segment ?? 0));
       const segmentSeconds = Math.max(1, Number(payload.segment_seconds ?? 4));
-      const loadStartTime = loadStartTimeFromPayload(payload);
+      // For a fresh start, pass 0 (not undefined) so Shaka seeks to the
+      // beginning. The on-demand HLS manifest is EVENT-typed (no EXT-X-ENDLIST
+      // yet) which Shaka treats as live with Infinity duration; with no
+      // startTime it seeks to the live edge (~end) instead of segment 0.
+      const loadStartTime = loadStartTimeFromPayload(payload) ?? 0;
       sessionIdRef.current = payload.session_id || "";
       sessionGenerationRef.current = generation;
       playerLoggerRef.current?.setSessionId(sessionIdRef.current);
@@ -469,6 +480,12 @@ export function usePlayback(
                     }
                   }
                   playerLoggerRef.current?.log("warn", "stream_http_error", logPayload);
+                  if (
+                    response.code === 404 &&
+                    String(response.uri || "").includes("index.m3u8")
+                  ) {
+                    scheduleStaleSessionRecoveryRef.current("manifest_404");
+                  }
                 }
               },
             );
@@ -535,6 +552,7 @@ export function usePlayback(
 
         await player.load(manifestUrl, loadStartTime);
         markLoadPhase("manifest_loaded", { generation, load_start_time: loadStartTime ?? null });
+        sessionRecoveryAttemptsRef.current = 0;
         if (abortIfStale("after_manifest_load")) return;
 
         const expectedStart = loadStartTime ?? 0;
@@ -632,7 +650,9 @@ export function usePlayback(
       }
 
       if (abortIfStale("before_heartbeat")) return;
-      heartbeatStopRef.current = startHeartbeat(payload.heartbeat_url || "");
+      heartbeatStopRef.current = startHeartbeat(payload.heartbeat_url || "", {
+        onSessionLost: () => scheduleStaleSessionRecoveryRef.current("heartbeat_404"),
+      });
       } finally {
         if (activeLoadGenerationRef.current === generation) {
           activeLoadGenerationRef.current = null;
@@ -679,6 +699,34 @@ export function usePlayback(
       });
     }, 120);
   }, [initialFileId, initialFileTitle, loadPlayback, title]);
+
+  queueReplayCurrentRef.current = queueReplayCurrent;
+
+  const scheduleStaleSessionRecovery = useCallback(
+    (reason: string) => {
+      if (replayInFlightRef.current) {
+        return;
+      }
+      if (sessionRecoveryAttemptsRef.current >= MAX_SESSION_RECOVERY_ATTEMPTS) {
+        setError("Playback session expired. Press play again or reload the page.");
+        setStatus("Playback unavailable.");
+        return;
+      }
+      if (staleRecoveryTimerRef.current) return;
+      staleRecoveryTimerRef.current = setTimeout(() => {
+        staleRecoveryTimerRef.current = null;
+        sessionRecoveryAttemptsRef.current += 1;
+        playerLoggerRef.current?.log("warn", "session_stale_recovery", {
+          reason,
+          attempt: sessionRecoveryAttemptsRef.current,
+        });
+        queueReplayCurrentRef.current();
+      }, STALE_SESSION_RECOVERY_DELAY_MS);
+    },
+    [setStatus],
+  );
+
+  scheduleStaleSessionRecoveryRef.current = scheduleStaleSessionRecovery;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -800,11 +848,20 @@ export function usePlayback(
   useEffect(() => {
     if (!initialFileId) return;
     updateTrackSelectors(initialFileId);
-    const t = setTimeout(() => {
+    let cancelled = false;
+    let frameId = 0;
+    const tryAutoLoad = () => {
+      if (cancelled) return;
+      if (!videoRef.current) {
+        frameId = requestAnimationFrame(tryAutoLoad);
+        return;
+      }
       void loadPlayback(initialFileId, initialFileTitle || "Episode");
-    }, 0);
+    };
+    frameId = requestAnimationFrame(tryAutoLoad);
     return () => {
-      clearTimeout(t);
+      cancelled = true;
+      cancelAnimationFrame(frameId);
       playbackLoadEpoch += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- auto-load once on mount

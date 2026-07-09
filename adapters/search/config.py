@@ -67,12 +67,15 @@ class SearchProfile:
         category: nova2 category to forward (``anime`` for this app).
         rank_results: When True, results are emitted in deterministic rank
             order rather than as they arrive. Useful for the REST API.
+        allow_nsfw: When False, NSFW engines are excluded and adult-looking
+            results are dropped before they reach the caller.
     """
 
     name: str
     limits: SearchLimits = field(default_factory=SearchLimits)
     allow_insecure_engines: bool = False
     allow_no_timeout_engines: bool = False
+    allow_nsfw: bool = False
     engines: Optional[tuple] = None
     category: str = "anime"
     rank_results: bool = False

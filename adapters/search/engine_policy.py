@@ -129,8 +129,8 @@ class EnginePolicy:
             return False, "requires_insecure_tls"
         if record.missing_timeout and not profile.allow_no_timeout_engines:
             return False, "missing_timeout"
-        if record.nsfw and profile.name == "strict":
-            return False, "nsfw_blocked_in_strict_profile"
+        if record.nsfw and not profile.allow_nsfw:
+            return False, "nsfw_blocked"
         return True, "ok"
 
 
