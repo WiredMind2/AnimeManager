@@ -92,8 +92,24 @@ class ClientSDK:
         )
         return {"items": [asdict(item) for item in response.items], "has_next": response.has_next}
 
+    def stop_hydration(self) -> None:
+        """Stop the background metadata hydration worker."""
+        hydration = getattr(self._facade, "hydration", None)
+        if hydration is None:
+            return
+        stopper = getattr(hydration, "stop", None)
+        if callable(stopper):
+            stopper()
+
     def get_anime(self, anime_id: int) -> dict[str, Any]:
-        return asdict(self._facade.get_anime_details(anime_id))
+        result = self._facade.get_anime_details(anime_id)
+        payload = asdict(result.entity)
+        payload["metadata_pending"] = result.metadata_pending
+        payload["metadata_refreshing"] = result.metadata_refreshing
+        return payload
+
+    def refresh_anime_details(self, anime_id: int) -> dict[str, Any]:
+        return self._facade.refresh_anime_details(anime_id)
 
     def start_download(
         self,
@@ -142,14 +158,18 @@ class ClientSDK:
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ) -> list[dict[str, Any]]:
-        return self._facade.search_torrents(terms, profile=profile, limit=limit)
+        return self._facade.search_torrents(
+            terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+        )
 
     def stream_torrents(
         self,
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ):
         """Iterate torrent results as soon as the underlying engines return them.
 
@@ -158,10 +178,12 @@ class ClientSDK:
         """
         streamer = getattr(self._facade, "stream_torrents", None)
         if callable(streamer):
-            yield from streamer(terms, profile=profile, limit=limit)
+            yield from streamer(
+                terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+            )
             return
         for row in self._facade.search_torrents(
-            terms, profile=profile, limit=limit
+            terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
         ):
             yield row
 

@@ -75,22 +75,16 @@ def _format_duration(value: Any) -> str:
 
 
 def _format_broadcast(value: Any) -> str | None:
-    """Render a ``weekday-hour-minute`` broadcast slot in plain English."""
-    if not value:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    parts = text.split("-")
-    if len(parts) != 3:
-        return text
-    try:
-        weekday, hour, minute = (int(p) for p in parts)
-    except ValueError:
-        return text
-    if not 0 <= weekday < 7:
-        return text
-    return f"{_WEEKDAY_NAMES[weekday]} {hour:02d}:{minute:02d}"
+    """Render a ``weekday-hour-minute`` JST broadcast slot in local time."""
+    from shared.utils.broadcast_schedule import format_broadcast_display, parse_broadcast
+
+    slot = parse_broadcast(value)
+    if slot is None:
+        if not value:
+            return None
+        text = str(value).strip()
+        return text or None
+    return format_broadcast_display(slot)
 
 
 def _join_list(values: Any, limit: int | None = None) -> str | None:

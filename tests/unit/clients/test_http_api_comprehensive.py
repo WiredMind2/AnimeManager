@@ -49,7 +49,20 @@ class RecordingSDK:
             "get_anime",
             (anime_id,),
             {},
-            default=lambda: {"id": anime_id, "title": "T"},
+            default=lambda: {
+                "id": anime_id,
+                "title": "T",
+                "metadata_pending": False,
+                "metadata_refreshing": False,
+            },
+        )
+
+    def refresh_anime_details(self, anime_id: int):
+        return self._invoke(
+            "refresh_anime_details",
+            (anime_id,),
+            {},
+            default=lambda: {"accepted": True, "anime_id": anime_id},
         )
 
     def get_anime_list(self, **kwargs):
@@ -269,6 +282,25 @@ class TestAnimeEndpoint:
         sdk.overrides["get_anime"] = exc
         resp = client.get("/anime/1")
         assert resp.status_code == expected_status
+
+    def test_refresh_returns_accepted(self, client, sdk):
+        sdk.overrides["refresh_anime_details"] = lambda aid: {
+            "accepted": True,
+            "anime_id": aid,
+        }
+        resp = client.post("/anime/7/refresh")
+        assert resp.status_code == 200
+        assert resp.json() == {"accepted": True, "anime_id": 7}
+        assert sdk.last_call("refresh_anime_details") == (
+            "refresh_anime_details",
+            (7,),
+            {},
+        )
+
+    def test_refresh_error_mapping(self, client, sdk):
+        sdk.overrides["refresh_anime_details"] = NotFoundError("nope")
+        resp = client.post("/anime/7/refresh")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

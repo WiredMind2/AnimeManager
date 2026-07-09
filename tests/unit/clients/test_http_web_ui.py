@@ -175,8 +175,14 @@ class FakeSDK:
             }
         ]
 
-    def search_torrents(self, terms, profile="interactive", limit=200):
-        self._record("search_torrents", terms, profile=profile, limit=limit)
+    def search_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=False):
+        self._record(
+            "search_torrents",
+            terms,
+            profile=profile,
+            limit=limit,
+            allow_nsfw=allow_nsfw,
+        )
         return [
             {
                 "name": "[SubsPlease] Bleach S01 - 01 [1080p].mkv",
@@ -188,10 +194,16 @@ class FakeSDK:
             }
         ]
 
-    def stream_torrents(self, terms, profile="interactive", limit=200):
+    def stream_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=False):
         """Yield results one-by-one so the streaming endpoint can exercise
         the SSE row/end framing without a real subprocess pool."""
-        self._record("stream_torrents", terms, profile=profile, limit=limit)
+        self._record(
+            "stream_torrents",
+            terms,
+            profile=profile,
+            limit=limit,
+            allow_nsfw=allow_nsfw,
+        )
         rows = [
             {
                 "name": "[SubsPlease] Bleach S01 - 01 [1080p].mkv",
@@ -367,6 +379,24 @@ def test_api_root_still_serves_json_status(client):
     resp = client.get("/", headers={"accept": "application/json"})
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+def test_episode_progress_non_htmx_returns_204(client):
+    resp = client.post(
+        "/ui/anime/1/episode-progress",
+        data={"file_id": "ep-001", "status": "IN_PROGRESS", "position_seconds": "120"},
+    )
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+
+def test_episode_delete_non_htmx_returns_204(client):
+    resp = client.post(
+        "/ui/anime/1/episode-delete",
+        data={"file_id": "ep-001"},
+    )
+    assert resp.status_code == 204
+    assert resp.content == b""
 
 
 def test_ui_alias_redirects_to_library(client):
