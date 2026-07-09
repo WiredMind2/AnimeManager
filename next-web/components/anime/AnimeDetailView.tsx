@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { useEffect, useMemo, useState, type RefObject } from "react";
 import type {
   AnimeCharacter,
   AnimeItem,
@@ -9,10 +10,12 @@ import type {
   TorrentSearchOptions,
   UserState,
 } from "@/lib/api";
+import type { AnimeDetailTabId } from "./AnimeDetailPageClient";
 import AnimeActions from "./AnimeActions";
 import AnimeCharactersSection from "./AnimeCharactersSection";
-import AnimeMetadataSection from "./AnimeMetadataSection";
-import { hasMetadataContent } from "./anime-metadata-utils";
+import AnimeRelationsSection from "./AnimeRelationsSection";
+import { buildDetailMetaRows } from "./anime-metadata-utils";
+import { mergeAiringLines } from "@/lib/broadcast-schedule";
 import AnimePictureGallery from "./AnimePictureGallery";
 import DownloadedEpisodesTable from "./DownloadedEpisodesTable";
 import EpisodePlayerTable from "./EpisodePlayerTable";
@@ -20,6 +23,7 @@ import TorrentSearchSection from "./TorrentSearchSection";
 
 type AnimeDetailViewProps = {
   anime: AnimeItem;
+  refreshing?: boolean;
   userState: UserState;
   torrentSearchOptions: TorrentSearchOptions;
   relations: AnimeRelation[];
@@ -28,24 +32,62 @@ type AnimeDetailViewProps = {
   characters: AnimeCharacter[];
   pictures: AnimePicture[];
   trailerEmbed?: string | null;
+  activeTab: AnimeDetailTabId;
+  onTabChange: (tab: AnimeDetailTabId) => void;
+  onRelationsUpdated?: (relations: AnimeRelation[]) => void;
+  torrentTabActivated: boolean;
+  tabsRef: RefObject<HTMLDivElement | null>;
+};
+
+type TabDef = {
+  id: AnimeDetailTabId;
+  label: string;
 };
 
 export default function AnimeDetailView({
   anime,
+  refreshing = false,
   userState,
   torrentSearchOptions,
   relations,
   episodeFiles,
   animeTorrents,
-  characters,
-  pictures,
+  characters = [],
+  pictures = [],
+  activeTab,
+  onTabChange,
+  onRelationsUpdated,
+  torrentTabActivated,
+  tabsRef,
 }: AnimeDetailViewProps) {
+  const [timeZone, setTimeZone] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  }, []);
+
   const genres = (anime.genres || []).slice(0, 6);
-  const showMetadataLink = hasMetadataContent(anime);
-  const showGalleryLink = pictures.length > 0;
-  const showCharactersLink = characters.length > 0;
-  const showQuickNav =
-    showMetadataLink || showGalleryLink || showCharactersLink;
+  const airingLines = useMemo(
+    () =>
+      mergeAiringLines(
+        anime.airing_lines || [],
+        anime.broadcast,
+        new Date(),
+        timeZone ?? "Asia/Tokyo",
+      ),
+    [anime.airing_lines, anime.broadcast, timeZone],
+  );
+  const metaRows = buildDetailMetaRows(anime, timeZone);
+  const externalUrls = anime.external_urls || [];
+
+  const tabs: TabDef[] = [
+    { id: "torrents", label: "Torrent search" },
+    { id: "player", label: "Episode player" },
+    { id: "downloads", label: "Downloads" },
+    ...(pictures.length > 0 ? [{ id: "pictures" as AnimeDetailTabId, label: "Pictures" }] : []),
+    ...(characters.length > 0 ? [{ id: "characters" as AnimeDetailTabId, label: "Characters" }] : []),
+    { id: "related" as AnimeDetailTabId, label: "Related anime" },
+  ];
 
   return (
     <>
@@ -68,9 +110,22 @@ export default function AnimeDetailView({
                 : "Anime"}{" "}
               · ID {anime.id}
             </span>
-            <h1 className="detail__title">{anime.title}</h1>
+            <h1 className="detail__title">{anime.title || `Anime #${anime.id}`}</h1>
+            {refreshing ? (
+              <span className="badge detail__refresh-badge" aria-live="polite">
+                Updating from API…
+              </span>
+            ) : null}
             {anime.title_synonyms && anime.title_synonyms.length > 0 ? (
               <p className="detail__synonyms">{anime.title_synonyms.join(" · ")}</p>
+            ) : null}
+
+            {airingLines.length > 0 ? (
+              <div className="detail__airing-callout" role="note" suppressHydrationWarning>
+                {airingLines.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </div>
             ) : null}
 
             <div className="detail__stats">
@@ -91,6 +146,35 @@ export default function AnimeDetailView({
               ) : null}
               {userState.liked ? <span className="badge badge--good">Liked</span> : null}
             </div>
+
+            {metaRows.length > 0 ? (
+              <dl className="detail__metadata-grid detail__metadata-grid--hero">
+                {metaRows.map((row) => (
+                  <div key={row.label} className="detail__metadata-item">
+                    <dt>{row.label}</dt>
+                    <dd suppressHydrationWarning={row.label === "Broadcast"}>
+                      {row.value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+
+            {externalUrls.length > 0 ? (
+              <div className="detail__external-links">
+                {externalUrls.map((link) => (
+                  <a
+                    key={link.url}
+                    className="btn btn--ghost"
+                    href={link.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {link.label}
+                  </a>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           {anime.synopsis ? (
@@ -110,80 +194,91 @@ export default function AnimeDetailView({
         </div>
       </section>
 
-      {showQuickNav ? (
-        <nav className="chip-row" aria-label="Jump to section">
-          <a className="chip" href="#anime-torrents">
-            Torrents
-          </a>
-          <a className="chip" href="#anime-downloaded-episodes">
-            Downloads
-          </a>
-          {showMetadataLink ? (
-            <a className="chip" href="#anime-metadata">
-              Metadata
-            </a>
-          ) : null}
-          {showGalleryLink ? (
-            <a className="chip" href="#anime-gallery">
-              Pictures
-            </a>
-          ) : null}
-          {showCharactersLink ? (
-            <a className="chip" href="#anime-characters">
-              Characters
-            </a>
-          ) : null}
-        </nav>
-      ) : null}
+      <div className="tabs" ref={tabsRef}>
+        <div className="tabs__list" role="tablist" aria-label="Anime sections">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              role="tab"
+              type="button"
+              className="tabs__tab"
+              aria-selected={activeTab === tab.id}
+              onClick={() => onTabChange(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
-      <TorrentSearchSection animeId={anime.id!} initialOptions={torrentSearchOptions} />
+        <div
+          className="tabs__panel"
+          role="tabpanel"
+          hidden={activeTab !== "torrents"}
+          id="panel-torrents"
+        >
+          <TorrentSearchSection
+            animeId={anime.id!}
+            initialOptions={torrentSearchOptions}
+            activated={torrentTabActivated}
+          />
+        </div>
 
-      <EpisodePlayerTable animeId={anime.id!} initialFiles={episodeFiles} />
+        <div
+          className="tabs__panel"
+          role="tabpanel"
+          hidden={activeTab !== "player"}
+          id="panel-player"
+        >
+          <EpisodePlayerTable animeId={anime.id!} initialFiles={episodeFiles} />
+        </div>
 
-      <DownloadedEpisodesTable animeId={anime.id!} initialTorrents={animeTorrents} />
+        <div
+          className="tabs__panel"
+          role="tabpanel"
+          hidden={activeTab !== "downloads"}
+          id="panel-downloads"
+        >
+          <DownloadedEpisodesTable animeId={anime.id!} initialTorrents={animeTorrents} />
+        </div>
 
-      <AnimeMetadataSection anime={anime} />
-
-      <AnimePictureGallery pictures={pictures} title={anime.title} />
-
-      <AnimeCharactersSection animeId={anime.id!} initialCharacters={characters} />
-
-      {relations.length > 0 ? (
-        <section className="detail__section">
-          <div className="detail__section-title">
-            <h3>Related</h3>
-            <span className="meta">{relations.length} entries</span>
+        {pictures.length > 0 ? (
+          <div
+            className="tabs__panel"
+            role="tabpanel"
+            hidden={activeTab !== "pictures"}
+            id="panel-pictures"
+          >
+            {activeTab === "pictures" ? (
+              <AnimePictureGallery pictures={pictures} title={anime.title} />
+            ) : null}
           </div>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Title</th>
-                  <th>Relation</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {relations.map((rel, idx) => (
-                  <tr key={rel.id ?? idx}>
-                    <td>{rel.title || rel.name || "—"}</td>
-                    <td>
-                      <span className="badge">{rel.type || "related"}</span>
-                    </td>
-                    <td className="num">
-                      {rel.id ? (
-                        <Link className="btn btn--ghost" href={`/anime/${rel.id}`}>
-                          Open
-                        </Link>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        ) : null}
+
+        {characters.length > 0 ? (
+          <div
+            className="tabs__panel"
+            role="tabpanel"
+            hidden={activeTab !== "characters"}
+            id="panel-characters"
+          >
+            <AnimeCharactersSection animeId={anime.id!} initialCharacters={characters} />
           </div>
-        </section>
-      ) : null}
+        ) : null}
+
+        <div
+          className="tabs__panel"
+          role="tabpanel"
+          hidden={activeTab !== "related"}
+          id="panel-related"
+        >
+          <AnimeRelationsSection
+            animeId={anime.id!}
+            currentAnime={anime}
+            initialRelations={relations}
+            onRelationsUpdated={onRelationsUpdated}
+          />
+        </div>
+      </div>
     </>
   );
 }

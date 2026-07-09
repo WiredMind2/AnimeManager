@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnimePicture } from "@/lib/api";
 import { useDialogBehavior } from "@/lib/use-dialog";
+import "./AnimePictureGallery.css";
 
 type AnimePictureGalleryProps = {
   pictures: AnimePicture[];
@@ -73,14 +74,21 @@ export default function AnimePictureGallery({ pictures, title }: AnimePictureGal
       </div>
 
       {hero ? (
-        <button
-          type="button"
+        <div
           className="detail__gallery-hero"
+          role="button"
+          tabIndex={0}
           onClick={() => setLightboxOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setLightboxOpen(true);
+            }
+          }}
           aria-label="View full-size image"
         >
           <img src={hero} alt={heroAlt} referrerPolicy="no-referrer" />
-        </button>
+        </div>
       ) : null}
 
       <div className="detail__gallery-thumbs">
@@ -92,12 +100,14 @@ export default function AnimePictureGallery({ pictures, title }: AnimePictureGal
             onClick={() => setActiveUrl(pic.url || null)}
           >
             {pic.url ? (
-              <img
-                src={pic.url}
-                alt={pic.size ? `${altBase} (${pic.size})` : altBase}
-                loading="lazy"
-                referrerPolicy="no-referrer"
-              />
+              <span className="detail__gallery-thumb-media">
+                <img
+                  src={pic.url}
+                  alt={pic.size ? `${altBase} (${pic.size})` : altBase}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+              </span>
             ) : null}
             <span>{pic.size || "image"}</span>
           </button>

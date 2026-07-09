@@ -1,10 +1,18 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import AppShell from "@/components/shell/AppShell";
-import AnimeDetailView from "@/components/anime/AnimeDetailView";
-import { api, ApiError } from "@/lib/api";
+
+import AnimeDetailPageClient from "@/components/anime/AnimeDetailPageClient";
+
+import {
+  api,
+  ApiError,
+  getAnimeForSSR,
+  requestWithSsrRetry,
+  type EpisodeFile,
+  type TorrentSearchOptions,
+  type UserState,
+} from "@/lib/api";
+
 import { DEFAULT_USER_ID } from "@/lib/config";
-import { truncateTitle } from "@/lib/format";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -17,57 +25,45 @@ export default async function AnimeDetailPage({ params }: PageProps) {
     notFound();
   }
 
+  const emptyTorrentSearchOptions: TorrentSearchOptions = {
+    catalog_title_states: [],
+    manual_terms: [],
+    active_terms: [],
+  };
+
   let anime;
+  let userState;
+  let initialTorrentSearchOptions: TorrentSearchOptions;
+  let initialEpisodeFiles;
+  let initialAnimeTorrents;
+
   try {
-    anime = await api.getAnime(animeId);
+    [anime, userState, initialTorrentSearchOptions, initialEpisodeFiles, initialAnimeTorrents] =
+      await Promise.all([
+        getAnimeForSSR(animeId),
+        requestWithSsrRetry<UserState>(`/state/${animeId}?user_id=${DEFAULT_USER_ID}`).catch(
+          () => ({}),
+        ),
+        api.getTorrentSearchOptions(animeId).catch(() => emptyTorrentSearchOptions),
+        requestWithSsrRetry<{ items: EpisodeFile[] }>(
+          `/anime/${animeId}/episode-files?user_id=${DEFAULT_USER_ID}`,
+        ).catch(() => ({ items: [] })),
+        api.getAnimeLibraryTorrents(animeId).catch(() => ({ items: [] })),
+      ]);
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) notFound();
     throw err;
   }
 
-  const [userState, torrentSearchOptions, relationsRes, episodeRes, torrentsRes, charactersRes, picturesRes] =
-    await Promise.all([
-      api.getUserState(animeId, DEFAULT_USER_ID).catch(() => ({})),
-      api.getTorrentSearchOptions(animeId).catch(() => ({
-        catalog_title_states: [],
-        manual_terms: [],
-        active_terms: [],
-      })),
-      api.getRelations(animeId).catch(() => ({ items: [] })),
-      api.getEpisodeFiles(animeId, DEFAULT_USER_ID).catch(() => ({ items: [] })),
-      api.getAnimeLibraryTorrents(animeId).catch(() => ({ items: [] })),
-      api.getCharacters(animeId).catch(() => ({ items: [] })),
-      api.getAnimePictures(animeId).catch(() => ({ items: [] })),
-    ]);
-
-  const title = anime.title || `Anime #${animeId}`;
-
   return (
-    <AppShell
-      activeNav="library"
-      pageTitle={truncateTitle(title)}
-      showSearch={false}
-      topbarActions={
-        <>
-          <Link className="btn btn--ghost" href="/library">
-            ← Library
-          </Link>
-          <a className="btn btn--ghost" href="#anime-torrents">
-            Find torrents
-          </a>
-        </>
-      }
-    >
-      <AnimeDetailView
-        anime={anime}
-        userState={userState}
-        torrentSearchOptions={torrentSearchOptions}
-        relations={relationsRes.items}
-        episodeFiles={episodeRes.items}
-        animeTorrents={torrentsRes.items}
-        characters={charactersRes.items}
-        pictures={picturesRes.items}
-      />
-    </AppShell>
+    <AnimeDetailPageClient
+      key={animeId}
+      animeId={animeId}
+      initialAnime={anime}
+      userState={userState}
+      initialTorrentSearchOptions={initialTorrentSearchOptions}
+      initialEpisodeFiles={initialEpisodeFiles.items ?? []}
+      initialAnimeTorrents={initialAnimeTorrents.items ?? []}
+    />
   );
 }

@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import type { TorrentTableRow } from "@/lib/api";
+import { isAdultTorrent } from "@/lib/adultContent";
 import TorrentFiltersBar, {
   EMPTY_FILTERS,
   type TorrentFilterState,
@@ -15,6 +16,7 @@ type TorrentResultsTableProps = {
   rows: TorrentTableRow[];
   animeId?: number;
   streamMode?: boolean;
+  hideNsfw?: boolean;
 };
 
 function rowMatchesFilters(row: TorrentTableRow, filters: TorrentFilterState): boolean {
@@ -68,6 +70,7 @@ export default function TorrentResultsTable({
   rows,
   animeId,
   streamMode = false,
+  hideNsfw = true,
 }: TorrentResultsTableProps) {
   const [filters, setFilters] = useState<TorrentFilterState>(EMPTY_FILTERS);
   const [sort, setSort] = useState<SortState>(null);
@@ -77,8 +80,12 @@ export default function TorrentResultsTable({
   const options = useMemo(() => harvestOptions(rows), [rows]);
 
   const filtered = useMemo(
-    () => rows.filter((r) => rowMatchesFilters(r, filters)),
-    [rows, filters],
+    () =>
+      rows.filter((r) => {
+        if (hideNsfw && isAdultTorrent(r.name)) return false;
+        return rowMatchesFilters(r, filters);
+      }),
+    [rows, filters, hideNsfw],
   );
 
   const sorted = useMemo(() => {

@@ -1,6 +1,6 @@
 import { FILTER_OPTIONS, PAGE_SIZE, type FilterValue } from "./config";
 
-export const PAGE_SIZE_OPTIONS = [24, 50] as const;
+export const PAGE_SIZE_OPTIONS = [24, 48] as const;
 
 export type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
 
@@ -20,7 +20,12 @@ export function filterFooterLabel(filter: string): string {
 }
 
 export function isPageSizeOption(value: number): value is PageSizeOption {
-  return value === 24 || value === 50;
+  return value === 24 || value === 48;
+}
+
+function normalizeLegacyPageSize(value: number): PageSizeOption | null {
+  if (value === 50) return 48;
+  return isPageSizeOption(value) ? value : null;
 }
 
 export function resolvePageSize(
@@ -28,10 +33,12 @@ export function resolvePageSize(
   settingsValue: unknown,
 ): PageSizeOption {
   const fromParam = Number.parseInt(param ?? "", 10);
-  if (isPageSizeOption(fromParam)) return fromParam;
+  const normalizedParam = normalizeLegacyPageSize(fromParam);
+  if (normalizedParam !== null) return normalizedParam;
 
   const fromSettings = Number.parseInt(String(settingsValue ?? ""), 10);
-  if (isPageSizeOption(fromSettings)) return fromSettings;
+  const normalizedSettings = normalizeLegacyPageSize(fromSettings);
+  if (normalizedSettings !== null) return normalizedSettings;
 
   return PAGE_SIZE;
 }

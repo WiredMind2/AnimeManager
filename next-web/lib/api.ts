@@ -48,6 +48,45 @@ async function request<T>(
   return undefined as T;
 }
 
+const SSR_RETRY_STATUSES = new Set([500, 502, 503]);
+const SSR_RETRY_ATTEMPTS = 3;
+const SSR_RETRY_DELAY_MS = 300;
+
+async function sleepMs(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Server-side fetch with short retries for transient backend startup errors. */
+export async function requestWithSsrRetry<T>(path: string): Promise<T> {
+  if (typeof window !== "undefined") {
+    return request<T>(path);
+  }
+
+  let lastError: ApiError | undefined;
+  for (let attempt = 0; attempt < SSR_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await request<T>(path);
+    } catch (err) {
+      if (!(err instanceof ApiError)) {
+        throw err;
+      }
+      lastError = err;
+      if (!SSR_RETRY_STATUSES.has(err.status) || attempt === SSR_RETRY_ATTEMPTS - 1) {
+        throw err;
+      }
+      await sleepMs(SSR_RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+  throw lastError ?? new ApiError(`Request failed: ${path}`, 500);
+}
+
+/** Server-side anime fetch with short retries for transient backend errors. */
+export async function getAnimeForSSR(id: number): Promise<AnimeItem> {
+  return requestWithSsrRetry<AnimeItem>(`/anime/${id}`);
+}
+
 export type AnimeItem = {
   id: number;
   title?: string;
@@ -72,6 +111,8 @@ export type AnimeItem = {
   producers?: string[];
   external_ids?: Record<string, number>;
   external_urls?: Array<{ label: string; url: string }>;
+  metadata_pending?: boolean;
+  metadata_refreshing?: boolean;
 };
 
 export type AnimeCharacter = {
@@ -167,9 +208,17 @@ export type WatchPageData = {
 
 export type AnimeRelation = {
   id?: number;
-  title?: string;
+  rel_id?: number;
+  anime_id?: number;
+  relation?: string;
   name?: string;
+  media_type?: string;
   type?: string;
+  title?: string;
+  picture?: string;
+  status?: string;
+  date_from?: string | number;
+  episodes?: number;
 };
 
 export type CatalogTitleState = {
@@ -300,7 +349,12 @@ export type LogRecord = {
 };
 
 export const api = {
-  getAnime: (id: number) => request<AnimeItem>(`/anime/${id}`),
+  getAnime: (id: number, init?: Pick<RequestInit, "signal">) =>
+    request<AnimeItem>(`/anime/${id}`, init),
+  refreshAnimeDetails: (id: number) =>
+    request<{ accepted: boolean; anime_id: number }>(`/anime/${id}/refresh`, {
+      method: "POST",
+    }),
   getAnimeList: (params: {
     filter?: string;
     list_start?: number;
@@ -388,9 +442,9 @@ export const api = {
       `/search-terms/${animeId}?term=${encodeURIComponent(term)}`,
       { method: "DELETE" },
     ),
-  searchTorrents: (term: string, limit = 200) =>
+  searchTorrents: (term: string, limit = 200, allowNsfw = false) =>
     request<TorrentRow[]>(
-      `/torrents/search?term=${encodeURIComponent(term)}&profile=interactive&limit=${limit}`,
+      `/torrents/search?term=${encodeURIComponent(term)}&profile=interactive&limit=${limit}&allow_nsfw=${allowNsfw ? "true" : "false"}`,
     ),
   startDownload: (animeId: number, opts: { url?: string; hash_value?: string; user_id?: number }) => {
     const qs = new URLSearchParams();
