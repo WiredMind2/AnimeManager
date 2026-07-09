@@ -13,6 +13,10 @@ except ImportError:  # pragma: no cover - packaged install fallback
     from AnimeManager.shared.telemetry.logger import log  # type: ignore
 
 
+# Metadata tables loaded via ``SELECT id, value FROM {table}`` in bulk fetch.
+_ID_VALUE_METADATA_TABLES = frozenset({"title_synonyms", "genres"})
+
+
 class ConnectionPool:
     """Database connection pool for improved performance and resource management"""
 
@@ -91,9 +95,30 @@ class ConnectionPool:
                 except queue.Empty:
                     raise RuntimeError("Connection pool timeout - no connections available")
 
-    def return_connection(self, conn):
+    def drain(self) -> None:
+        """Close every pooled connection and reset pool accounting."""
+        with self._lock:
+            while not self._pool.empty():
+                try:
+                    conn, _ = self._pool.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._created_connections = 0
+
+    def return_connection(self, conn, *, discard: bool = False):
         """Return a connection to the pool"""
         with self._lock:
+            if discard:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._created_connections = max(0, self._created_connections - 1)
+                return
             if self._pool.qsize() < self.pool_size and self._is_connection_valid(conn):
                 try:
                     self._pool.put_nowait((conn, time.time()))
@@ -210,11 +235,12 @@ class _PooledConnectionHandle:
     inside one logical operation.
     """
 
-    __slots__ = ("db", "cur")
+    __slots__ = ("db", "cur", "discard")
 
     def __init__(self, conn):
         self.db = conn
         self.cur = None
+        self.discard = False
 
     def get_cursor(self):
         if self.cur is not None:
@@ -247,7 +273,7 @@ class BaseDB:
         self.settings = settings or {}
         self.connection_pool = None
 
-        if not self.THREAD_SAFE:
+        if not self.THREAD_SAFE and not hasattr(self, "lock"):
             self.lock = threading.RLock()
 
         # Initialize connection pool if enabled
@@ -311,7 +337,8 @@ class BaseDB:
                 except Exception:
                     pass
             if conn is not None:
-                self.connection_pool.return_connection(conn)
+                discard = bool(getattr(handle, "discard", False))
+                self.connection_pool.return_connection(conn, discard=discard)
 
     def _get_cache_key(self, sql: str, params: tuple) -> str:
         """Generate a cache key for the query"""
@@ -591,11 +618,33 @@ class BaseDB:
 
         return items
 
+    def _postprocess_metadata_values(self, key: str, values: list) -> list:
+        if key == "genres" and values:
+            from adapters.persistence.genre_metadata import resolve_stored_genre_values
+
+            return resolve_stored_genre_values(self, values)
+        return values
+
+    def _preprocess_metadata_values(self, key: str, values) -> list:
+        if key == "genres" and values:
+            from adapters.persistence.genre_metadata import (
+                normalize_genre_values_for_store,
+            )
+
+            return normalize_genre_values_for_store(self, values)
+        return list(values)
+
+    def _fetch_metadata_storage_values(self, id, key: str) -> list:
+        """Return raw metadata ``value`` rows as stored in the database."""
+        raise NotImplementedError()
+
     def _fetch_bulk_metadata(self, item_ids, keys):
         """Fetch metadata for multiple items and keys in batch queries"""
         metadata = {}
 
         for key in keys:
+            if key not in _ID_VALUE_METADATA_TABLES:
+                continue
             # Build query for this metadata key
             placeholders = ','.join(['?' for _ in item_ids])
             sql = f"SELECT id, value FROM {key} WHERE id IN ({placeholders})"
@@ -610,6 +659,12 @@ class BaseDB:
                         if key not in metadata[item_id]:
                             metadata[item_id][key] = []
                         metadata[item_id][key].append(value)
+                    if key == "genres":
+                        for item_id, item_meta in metadata.items():
+                            if key in item_meta:
+                                item_meta[key] = self._postprocess_metadata_values(
+                                    key, item_meta[key]
+                                )
             except Exception as e:
                 # Log error but continue with other keys
                 self.log("ERROR", f"Failed to fetch bulk metadata for key {key}: {e}")

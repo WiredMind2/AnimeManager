@@ -11,6 +11,7 @@ from application.services.ingestion_pipeline import (
     IngestionPipeline,
     ProviderSpec,
     _deduplicate,
+    deduplicate_records,
 )
 from shared.contracts import AnimeRecord, IngestionStatus, ProviderName
 
@@ -202,3 +203,24 @@ class TestDeduplicate:
     def test_distinct_records_unchanged(self):
         records = [_rec(i) for i in range(5)]
         assert _deduplicate(records) == records
+
+    def test_deduplicate_records_collapses_shared_external_ids(self):
+        from shared.contracts import AnimeRecord, ProviderName
+
+        records = [
+            AnimeRecord(
+                id=2434,
+                title="Kitsu title",
+                external_ids={"kitsu_id": 50805, "anilist_id": 198709},
+                source_provider=ProviderName.KITSU,
+            ),
+            AnimeRecord(
+                id=1904,
+                title="MAL title",
+                external_ids={"mal_id": 62476, "anilist_id": 198709},
+                source_provider=ProviderName.JIKAN,
+            ),
+        ]
+        out = deduplicate_records(records)
+        assert len(out) == 1
+        assert out[0].id == 1904

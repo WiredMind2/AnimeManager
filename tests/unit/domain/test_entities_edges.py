@@ -93,9 +93,9 @@ class TestFromLegacyAnime:
         e = from_legacy_anime({"id": "42", "title": "x"})
         assert e.id == 42
 
-    def test_invalid_id_string_raises_value_error(self):
-        with pytest.raises(ValueError):
-            from_legacy_anime({"id": "not a number", "title": "x"})
+    def test_invalid_id_string_falls_back_to_zero(self):
+        e = from_legacy_anime({"id": "not a number", "title": "x"})
+        assert e.id == 0
 
     def test_title_none_becomes_empty_string(self):
         e = from_legacy_anime({"id": 1, "title": None})

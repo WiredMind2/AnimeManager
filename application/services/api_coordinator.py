@@ -23,13 +23,30 @@ diagram and operational runbook.
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Iterable, List, Optional
+from dataclasses import replace
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from shared.base_component import BaseComponent
-from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus, ProviderName
-from application.services.ingestion_pipeline import IngestionPipeline, ProviderSpec
-from application.services.catalog_identity import CatalogIdentityService
+from shared.contracts import (
+    AnimeRecord,
+    IngestionResult,
+    IngestionStatus,
+    ProviderName,
+)
+from application.services.ingestion_pipeline import (
+    IngestionPipeline,
+    ProviderSpec,
+    _deduplicate,
+    deduplicate_records,
+)
+from application.services.catalog_enrichment import expand_external_ids_with_mapping
+from application.services.catalog_identity import (
+    CatalogIdentityService,
+    _normalize_external_ids,
+)
+from domain.policies.schedule_recency import filter_recent_schedule_records
 from adapters.persistence.catalog_repository import CatalogIndexRepository
+from application.services.anime_write_service import WriteSource
 from shared.telemetry import get_telemetry
 from adapters.persistence.models import Anime, AnimeList
 
@@ -37,7 +54,7 @@ from adapters.persistence.models import Anime, AnimeList
 class APICoordinator(BaseComponent):
     """Bounded-concurrency, gateway-only multi-provider search coordinator."""
 
-    def __init__(self, *, max_workers: int = 4, provider_timeout_s: float = 20.0):
+    def __init__(self, *, max_workers: int = 4, provider_timeout_s: float = 45.0):
         super().__init__("APICoordinator")
         self._api = None
         self._database_manager = None
@@ -58,6 +75,7 @@ class APICoordinator(BaseComponent):
             executor=self._executor,
         )
         self._catalog_identity: Optional[CatalogIdentityService] = None
+        self._write_service = None
 
     def close(self) -> None:
         """Release the pipeline executor; safe to call more than once."""
@@ -82,6 +100,10 @@ class APICoordinator(BaseComponent):
     def set_catalog_identity(self, service: CatalogIdentityService) -> None:
         """Attach the catalogue identity service (optional; lazy-inited from DB)."""
         self._catalog_identity = service
+
+    def set_write_service(self, write_service: Any) -> None:
+        """Attach the centralized write gateway used by ingestion sinks."""
+        self._write_service = write_service
 
     def configure(self, flags: Dict[str, bool]) -> None:
         """Update feature flags. Unknown keys are ignored by the pipeline."""
@@ -183,7 +205,7 @@ class APICoordinator(BaseComponent):
             return
         specs = [self._spec_for(provider) for provider in providers]
         sink = (
-            self._build_sink()
+            self._build_sink(source=WriteSource.STREAM)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -232,16 +254,18 @@ class APICoordinator(BaseComponent):
             return None
 
         providers = [p for p in self._api.get_providers() if p is not None]
+        schedule_providers = [
+            provider for provider in providers if hasattr(provider, "schedule")
+        ]
         specs = [
             self._schedule_spec_for(provider)
-            for provider in providers
-            if hasattr(provider, "schedule")
+            for provider in schedule_providers
         ]
         if not specs:
             return None
 
-        sink = (
-            self._build_sink()
+        persist_sink = (
+            self._build_sink(enrich=True, source=WriteSource.SCHEDULE)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -252,27 +276,62 @@ class APICoordinator(BaseComponent):
         )
         pipeline = self._pipeline
         original_timeout = pipeline._provider_timeout
+        window_days = self._read_schedule_recency_days()
+        fetch_limit = max(int(limit) * 3, int(limit))
+        self._set_schedule_light_mode(schedule_providers, True)
         try:
             pipeline._provider_timeout = timeout
             result: IngestionResult = pipeline.run(
                 specs,
                 "",
-                limit=limit,
-                sink=sink,
+                limit=fetch_limit,
+                sink=None,
                 limit_per_provider=per_provider,
+                parallel=True,
             )
+            records = self._batch_assign_catalog_ids(result.records)
+            records = deduplicate_records(records)
+            pre_filter_count = len(records)
+            records = filter_recent_schedule_records(
+                records,
+                window_days=window_days,
+                limit=limit,
+            )
+            filtered_out = pre_filter_count - len(records)
+            if filtered_out:
+                self.log(
+                    "API_COORDINATOR",
+                    f"Schedule recency filter dropped {filtered_out} row(s); "
+                    f"kept {len(records)} within {window_days} day(s)",
+                )
+            if not records and pre_filter_count:
+                self.log(
+                    "API_COORDINATOR",
+                    f"Schedule recency filter removed all {pre_filter_count} "
+                    f"candidate row(s) (window_days={window_days})",
+                )
+            persisted_count = 0
+            if persist_sink is not None and records:
+                persisted_count = persist_sink(records)
+            result.records = records
+            result.persisted_count = persisted_count
         finally:
             pipeline._provider_timeout = original_timeout
+            self._set_schedule_light_mode(schedule_providers, False)
         self._telemetry.set_gauge(
             "coordinator.last_schedule_records", float(len(result.records))
         )
         self._telemetry.set_gauge(
             "coordinator.last_schedule_failed", float(result.failed_providers)
         )
+        self._telemetry.set_gauge(
+            "coordinator.last_schedule_persisted", float(result.persisted_count)
+        )
         self.log(
             "API_COORDINATOR",
             f"Schedule fetch completion={result.status.value} "
-            f"records={len(result.records)} failed={result.failed_providers}/"
+            f"records={len(result.records)} persisted={result.persisted_count} "
+            f"failed={result.failed_providers}/"
             f"{result.total_providers} elapsed_ms={result.elapsed_ms}",
         )
         return result
@@ -297,7 +356,7 @@ class APICoordinator(BaseComponent):
                 return provider.schedule(lim)
 
         def adapter(raw: Any) -> Optional[AnimeRecord]:
-            return self._legacy_adapter(raw, provider_name=provider_name)
+            return self._schedule_light_adapter(raw, provider_name=provider_name)
 
         return ProviderSpec(
             name=provider_name,
@@ -368,7 +427,7 @@ class APICoordinator(BaseComponent):
         if not specs:
             return
         sink = (
-            self._build_sink()
+            self._build_sink(source=WriteSource.SEASON)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -410,7 +469,7 @@ class APICoordinator(BaseComponent):
         if not specs:
             return None
         sink = (
-            self._build_sink()
+            self._build_sink(source=WriteSource.SEASON)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -523,7 +582,7 @@ class APICoordinator(BaseComponent):
         if not specs:
             return
         sink = (
-            self._build_sink()
+            self._build_sink(source=WriteSource.GENRE)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -564,7 +623,7 @@ class APICoordinator(BaseComponent):
         if not specs:
             return None
         sink = (
-            self._build_sink()
+            self._build_sink(source=WriteSource.GENRE)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -622,7 +681,7 @@ class APICoordinator(BaseComponent):
             return None
         specs = [self._spec_for(provider) for provider in providers if provider is not None]
         sink = (
-            self._build_sink()
+            self._build_sink(source=WriteSource.SEARCH)
             if self._feature_flags.get("db_gateway_writes_only", True)
             else None
         )
@@ -673,6 +732,88 @@ class APICoordinator(BaseComponent):
         )
         return self._catalog_identity
 
+    @staticmethod
+    def _set_schedule_light_mode(providers: Iterable[Any], enabled: bool) -> None:
+        for provider in providers:
+            if hasattr(provider, "schedule_light"):
+                provider.schedule_light = enabled
+
+    def _read_schedule_recency_days(self) -> int:
+        """Return configured schedule recency window from attached API settings."""
+        api = self._api
+        settings = getattr(api, "settings", None) if api is not None else None
+        if not isinstance(settings, dict):
+            getters = getattr(api, "_getters", None) if api is not None else None
+            settings = getattr(getters, "settings", None)
+        anime_cfg = settings.get("anime") if isinstance(settings, dict) else None
+        if not isinstance(anime_cfg, dict):
+            return 90
+        try:
+            days = int(anime_cfg.get("scheduleRecencyDays", 90))
+        except (TypeError, ValueError):
+            return 90
+        return max(1, days)
+
+    def _schedule_light_adapter(
+        self,
+        raw: Any,
+        *,
+        provider_name: str = "",
+    ) -> Optional[AnimeRecord]:
+        """Project schedule rows without per-row DB lookups or side writes."""
+        return self._project_legacy_anime(raw, provider_name=provider_name)
+
+    def _batch_assign_catalog_ids(
+        self, records: List[AnimeRecord]
+    ) -> List[AnimeRecord]:
+        if not records:
+            return []
+
+        identity = self._ensure_catalog_identity()
+        if identity is None:
+            return records
+
+        mapping_port = None
+        db_manager = self._database_manager
+        if db_manager is not None:
+            mapping_port = getattr(db_manager, "_mapping_port", None)
+
+        pending_indices: List[int] = []
+        payloads: List[Dict[str, int]] = []
+        mapping_cache: Dict[tuple[str, int], Dict[str, int]] = {}
+        for idx, record in enumerate(records):
+            normalized = _normalize_external_ids(record.external_ids or {})
+            if normalized and record.id < 0:
+                normalized = expand_external_ids_with_mapping(
+                    normalized,
+                    mapping_port,
+                    cache=mapping_cache,
+                )
+                pending_indices.append(idx)
+                payloads.append(normalized)
+
+        if not payloads:
+            return records
+
+        try:
+            resolved = identity.resolve_external_ids_batch(payloads)
+        except Exception as exc:
+            self.log(
+                "API_COORDINATOR",
+                f"Batch catalog resolve failed: {type(exc).__name__}: {exc}",
+            )
+            self._telemetry.increment("coordinator.batch_resolve_errors")
+            return records
+
+        updated = list(records)
+        for idx, entry in zip(pending_indices, resolved):
+            updated[idx] = replace(
+                updated[idx],
+                id=entry.catalog_id,
+                external_ids=dict(entry.external_ids),
+            )
+        return updated
+
     def _legacy_adapter(
         self,
         raw: Any,
@@ -693,35 +834,47 @@ class APICoordinator(BaseComponent):
         if db is None:
             return record
 
-        external_ids = CatalogIndexRepository(db).get_external_ids(record.id)
-        if not external_ids:
-            return record
+        pinned_ctx = getattr(db, "pinned_pool_connection", None)
+        use_pool = bool(getattr(db, "USE_CONNECTION_POOL", False))
 
-        resolved = identity.resolve_external_ids(
-            external_ids,
-            source_provider=record.source_provider.value,
-        )
-        if resolved.catalog_id == record.id and resolved.external_ids == record.external_ids:
-            return record
+        def _resolve_identity() -> Optional[AnimeRecord]:
+            external_ids = CatalogIndexRepository(db).get_external_ids(record.id)
+            if not external_ids:
+                return record
 
-        return AnimeRecord(
-            id=resolved.catalog_id,
-            title=record.title,
-            title_synonyms=record.title_synonyms,
-            synopsis=record.synopsis,
-            episodes=record.episodes,
-            duration=record.duration,
-            status=record.status,
-            rating=record.rating,
-            date_from=record.date_from,
-            date_to=record.date_to,
-            picture=record.picture,
-            trailer=record.trailer,
-            broadcast=record.broadcast,
-            genres=record.genres,
-            external_ids=dict(resolved.external_ids),
-            source_provider=record.source_provider,
-        )
+            resolved = identity.resolve_external_ids(
+                external_ids,
+                source_provider=record.source_provider.value,
+            )
+            if (
+                resolved.catalog_id == record.id
+                and resolved.external_ids == record.external_ids
+            ):
+                return record
+
+            return AnimeRecord(
+                id=resolved.catalog_id,
+                title=record.title,
+                title_synonyms=record.title_synonyms,
+                synopsis=record.synopsis,
+                episodes=record.episodes,
+                duration=record.duration,
+                status=record.status,
+                rating=record.rating,
+                date_from=record.date_from,
+                date_to=record.date_to,
+                picture=record.picture,
+                trailer=record.trailer,
+                broadcast=record.broadcast,
+                genres=record.genres,
+                external_ids=dict(resolved.external_ids),
+                source_provider=record.source_provider,
+            )
+
+        if pinned_ctx is not None and use_pool:
+            with pinned_ctx():
+                return _resolve_identity()
+        return _resolve_identity()
 
     @staticmethod
     def _project_legacy_anime(
@@ -732,6 +885,12 @@ class APICoordinator(BaseComponent):
         if raw is None:
             return None
         rid = getattr(raw, "id", None)
+        pending_external = getattr(raw, "_schedule_external_ids", None)
+        normalized_external = (
+            _normalize_external_ids(pending_external) if pending_external else {}
+        )
+        if rid is None and normalized_external:
+            rid = _provisional_id_from_external_ids(normalized_external)
         if rid is None:
             return None
         try:
@@ -741,12 +900,12 @@ class APICoordinator(BaseComponent):
         title = getattr(raw, "title", None) or ""
         source = _provider_name_from_spec(provider_name)
         genres = getattr(raw, "genres", None) or ()
-        if isinstance(genres, list):
+        if isinstance(genres, (list, tuple)):
             genres = tuple(str(g) for g in genres if g)
         else:
             genres = ()
         synonyms = getattr(raw, "title_synonyms", None) or ()
-        if isinstance(synonyms, list):
+        if isinstance(synonyms, (list, tuple)):
             synonyms = tuple(str(s) for s in synonyms if s)
         elif synonyms:
             synonyms = (str(synonyms),)
@@ -767,7 +926,7 @@ class APICoordinator(BaseComponent):
             trailer=_safe_str(getattr(raw, "trailer", None)),
             broadcast=_safe_str(getattr(raw, "broadcast", None)),
             genres=genres,
-            external_ids={},
+            external_ids=normalized_external or {},
             source_provider=source,
         )
 
@@ -796,9 +955,21 @@ class APICoordinator(BaseComponent):
                 except Exception:
                     # Some attributes are managed by the legacy class; ignore.
                     pass
+        for meta_key in ("title_synonyms", "genres"):
+            meta_value = getattr(record, meta_key, None)
+            if meta_value:
+                try:
+                    setattr(anime, meta_key, list(meta_value))
+                except Exception:
+                    pass
         return anime
 
-    def _build_sink(self):
+    def _build_sink(
+        self,
+        *,
+        enrich: bool = True,
+        source: WriteSource = WriteSource.SEARCH,
+    ):
         """Return a persistence sink bound to the configured DatabaseManager."""
         db_manager = self._database_manager
         if db_manager is None:
@@ -806,14 +977,37 @@ class APICoordinator(BaseComponent):
 
         def sink(records: List[AnimeRecord]) -> int:
             try:
-                animes = [self._record_to_anime(r) for r in records]
-                return db_manager.upsert_anime_batch(animes)
+                write_service = self._write_service
+                if write_service is not None:
+                    result = write_service.persist_records(records, source=source)
+                    persisted = int(result.persisted)
+                    if result.errors:
+                        self._telemetry.increment("coordinator.persist_errors")
+                else:
+                    animes = [self._record_to_anime(r) for r in records]
+                    persisted = db_manager.upsert_anime_batch(animes)
+                if enrich and persisted:
+                    ids = [r.id for r in records]
+                    threading.Thread(
+                        target=lambda: db_manager.enrich_catalog_identities_for_ids(
+                            ids
+                        ),
+                        name="catalog-enrich-search",
+                        daemon=True,
+                    ).start()
+                return persisted
             except Exception as exc:
                 self.log("API_COORDINATOR", f"Failed persisting search results: {exc}")
                 self._telemetry.increment("coordinator.persist_errors")
                 return 0
 
         return sink
+
+
+def _provisional_id_from_external_ids(external_ids: Mapping[str, int]) -> int:
+    fingerprint = tuple(sorted(external_ids.items()))
+    value = abs(hash(fingerprint)) & 0x7FFFFFFF
+    return -value if value else -1
 
 
 def _provider_name_from_spec(provider_name: str) -> ProviderName:

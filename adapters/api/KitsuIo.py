@@ -91,19 +91,34 @@ class KitsuIoWrapper(APIUtils):
 
     @error_wrapper
     def animePictures(self, id):
-        modifier = Filter(id=id)
+        kitsu_id = self.getId(id)
+        if kitsu_id is None:
+            return []
+        modifier = Filter(id=kitsu_id)
         rep = self.s.get("anime", modifier).resources
-        if len(rep) >= 1:
-            a = [rep[0].posterImage]
-        else:
-            a = []
-        return a
+        if len(rep) < 1:
+            return []
+        pictures = []
+        try:
+            poster = rep[0].posterImage
+            for size in ("small", "medium", "large", "original"):
+                img_url = poster.get(size) if hasattr(poster, "get") else None
+                if img_url:
+                    pictures.append({"url": img_url, "size": size})
+        except Exception:
+            pass
+        return pictures
+
+    _ANIME_INCLUSION = Inclusion(
+        "genres",
+        "mediaRelationships",
+        "mediaRelationships.destination",
+        "mappings",
+    )
 
     @error_wrapper
     def season(self, year, season, limit=50):
-        modifier = Filter(seasonYear=year, season=season) + Inclusion(
-            "genres", "mediaRelationships", "mediaRelationships.destination"
-        )
+        modifier = Filter(seasonYear=year, season=season) + self._ANIME_INCLUSION
         count = 0
         for a in self.s.iterate("anime", modifier):
             data = self._convertAnime(a)
@@ -116,9 +131,7 @@ class KitsuIoWrapper(APIUtils):
 
     @error_wrapper
     def genre(self, name, limit=50):
-        modifier = Filter(genres=name) + Inclusion(
-            "genres", "mediaRelationships", "mediaRelationships.destination"
-        )
+        modifier = Filter(genres=name) + self._ANIME_INCLUSION
         count = 0
         for a in self.s.iterate("anime", modifier):
             data = self._convertAnime(a)
@@ -134,6 +147,19 @@ class KitsuIoWrapper(APIUtils):
         seen_ids: set[int] = set()
         count = 0
 
+        def _schedule_row_id(data):
+            data_id = None
+            if isinstance(data, dict):
+                data_id = data.get("id")
+            if data_id is None:
+                data_id = getattr(data, "id", None)
+            if data_id is None:
+                ext = getattr(data, "_schedule_external_ids", None) or {}
+                data_id = ext.get("kitsu_id")
+            if data_id is None:
+                return None
+            return int(data_id)
+
         def convert_unique(raw):
             nonlocal count
             if count >= limit:
@@ -146,12 +172,10 @@ class KitsuIoWrapper(APIUtils):
                 raise
             if not data:
                 return None
-            data_id = (
-                data.get("id") if isinstance(data, dict) else getattr(data, "id", None)
-            )
-            if data_id is None or int(data_id) in seen_ids:
+            data_id = _schedule_row_id(data)
+            if data_id is None or data_id in seen_ids:
                 return None
-            seen_ids.add(int(data_id))
+            seen_ids.add(data_id)
             count += 1
             return data
 
@@ -161,16 +185,6 @@ class KitsuIoWrapper(APIUtils):
             "mediaRelationships.destination",
             "mappings",
         )
-        trending = self.s.iterate(
-            "trending/anime", inclusion + Modifier("page[limit]=20")
-        )
-        for raw in trending:
-            item = convert_unique(raw)
-            if item is False:
-                return
-            if item:
-                yield item
-
         modifier = inclusion + Modifier("page[limit]=20") + Modifier(
             "sort=-startDate,-endDate"
         )
@@ -232,13 +246,24 @@ class KitsuIoWrapper(APIUtils):
             if item:
                 yield item
 
+        if count >= limit:
+            return
+
+        trending = self.s.iterate(
+            "trending/anime", inclusion + Modifier("page[limit]=20")
+        )
+        for raw in trending:
+            item = convert_unique(raw)
+            if item is False:
+                return
+            if item:
+                yield item
+
     @error_wrapper
     def searchAnime(self, search, limit=50):
         modifier = (
             Filter(text=search)
-            + Inclusion(
-                "genres", "mediaRelationships", "mediaRelationships.destination"
-            )
+            + self._ANIME_INCLUSION
             # Modifier("sort=-endDate") doesn't work for some reasons
         )
 
@@ -271,6 +296,61 @@ class KitsuIoWrapper(APIUtils):
             return None
 
         external_ids = {"kitsu_id": int(a.id)}
+        if getattr(self, "schedule_light", False):
+            data = Anime()
+            data._schedule_external_ids = external_ids
+            try:
+                if a.canonicalTitle and a.canonicalTitle[-1] == ".":
+                    data["title"] = a.canonicalTitle[:-1]
+                else:
+                    data["title"] = a.canonicalTitle
+            except Exception:
+                data["title"] = None
+            try:
+                if hasattr(a.posterImage, "large"):
+                    data["picture"] = a.posterImage.large
+                else:
+                    data["picture"] = a.posterImage.original
+            except Exception:
+                pass
+            data["title_synonyms"] = list(a.titles.values()) + [data["title"]]
+            if a.startDate is None:
+                data["date_from"] = None
+            else:
+                try:
+                    dt = datetime.fromisoformat(a.startDate)
+                    timestamp = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                    if timestamp > -62135596800 and timestamp < 253402300800:
+                        data["date_from"] = timestamp
+                    else:
+                        data["date_from"] = None
+                except Exception:
+                    data["date_from"] = None
+            if a.endDate is None:
+                data["date_to"] = None
+            else:
+                try:
+                    dt = datetime.fromisoformat(a.endDate)
+                    timestamp = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                    if timestamp > -62135596800 and timestamp < 253402300800:
+                        data["date_to"] = timestamp
+                    else:
+                        data["date_to"] = None
+                except Exception:
+                    data["date_to"] = None
+            data["synopsis"] = a.synopsis
+            data["episodes"] = (
+                int(a.episodeCount) if a.episodeCount is not None else None
+            )
+            data["duration"] = (
+                int(a.episodeLength) if a.episodeLength is not None else None
+            )
+            data["rating"] = a.ageRating
+            data["status"] = self.getStatusFromData(data)
+            if a.youtubeVideoId:
+                data["trailer"] = "https://www.youtube.com/watch?v=" + a.youtubeVideoId
+            return data
+
         try:
             id = self.resolve_catalog_id(external_ids)
         except Exception:

@@ -115,10 +115,14 @@ def from_legacy_anime(anime: Any) -> AnimeEntity:
     anime_id = field("id")
     if anime_id is None:
         anime_id = 0
+    try:
+        resolved_id = int(anime_id)
+    except (TypeError, ValueError):
+        resolved_id = 0
 
     title = field("title") or ""
     return AnimeEntity(
-        id=int(anime_id),
+        id=resolved_id,
         title=str(title),
         picture=field("picture"),
         title_synonyms=_to_list(field("title_synonyms")),

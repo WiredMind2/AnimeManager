@@ -82,6 +82,9 @@ class Item(dict):
         if key in ("data_keys", "metadata_keys", "default_values"):
             return self.__dict__[key]
 
+        if key.startswith("_") and key in self.__dict__:
+            return self.__dict__[key]
+
         if key in self.data_keys:
             if key not in self.keys():
                 if key in self.default_values:
@@ -104,8 +107,11 @@ class Item(dict):
             return
         if key in self.data_keys:
             self[key] = value
-        else:
-            log(type(self), "has not key", key, "value", value)
+            return
+        if key.startswith("_"):
+            object.__setattr__(self, key, value)
+            return
+        log(type(self), "has not key", key, "value", value)
 
     def __add__(self, *args: Any, **kwargs: Any) -> 'Item':
         data = None
@@ -232,7 +238,8 @@ class Anime(Item):
             "trailer",
             "torrents",
         )
-        self.metadata_keys = ("title_synonyms", "genres", "torrents")
+        # ``torrents`` is keyed by hash via ``torrentsIndex``, not (id, value) metadata.
+        self.metadata_keys = ("title_synonyms", "genres")
         self.default_values = {"tag": "NONE", "like": 0}
         super().__init__(*args, **kwargs)
 
@@ -447,6 +454,35 @@ class Episode(Item):
         super().__init__(*args, **kwargs)
 
 
+def _coerce_hashable_identifier(value: Any) -> Any:
+    """Return a hashable identifier derived from *value*, or ``None``."""
+    if value is None:
+        return None
+
+    try:
+        hash(value)
+        return value
+    except TypeError:
+        pass
+
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        nested = getter("id")
+        if nested is not None and nested is not value:
+            coerced = _coerce_hashable_identifier(nested)
+            if coerced is not None:
+                return coerced
+
+    items = getattr(value, "items", None)
+    if callable(items):
+        try:
+            return json.dumps(value, sort_keys=True, default=str)
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    return None
+
+
 class ItemList:
     """
     A thread-safe list that manages data sources and provides asynchronous iteration.
@@ -522,6 +558,7 @@ class ItemList:
             except Exception as exc:  # pragma: no cover - defensive
                 log("ItemList identifier raised, using synthetic id", exc)
                 value = None
+            value = _coerce_hashable_identifier(value)
             if value is None:
                 with self._id_lock:
                     self._unidentified_counter += 1

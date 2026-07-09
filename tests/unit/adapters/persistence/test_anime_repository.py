@@ -22,12 +22,24 @@ class _SqliteDB:
         self._lock = threading.RLock()
         self.conn.executescript(
             """
-            CREATE TABLE anime (id INTEGER PRIMARY KEY, title TEXT);
+            CREATE TABLE anime (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                picture TEXT,
+                status TEXT,
+                date_from TEXT,
+                episodes INTEGER
+            );
             CREATE TABLE title_synonyms (id INTEGER, value TEXT);
             CREATE TABLE torrents (hash TEXT PRIMARY KEY, name TEXT, trackers TEXT,
                                    save_path TEXT, status TEXT);
             CREATE TABLE torrentsIndex (id INTEGER, value TEXT);
-            CREATE TABLE animeRelations (id INTEGER, type TEXT, related_id INTEGER);
+            CREATE TABLE animeRelations (
+                id INTEGER,
+                rel_id INTEGER,
+                type TEXT,
+                name TEXT
+            );
             CREATE TABLE characters (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
@@ -53,6 +65,14 @@ class _SqliteDB:
     def get_lock(self):
         with self._lock:
             yield self
+
+    def exists(self, item_id: int, *, table: str = "anime") -> bool:
+        if table == "anime":
+            row = self.conn.execute(
+                "SELECT 1 FROM anime WHERE id=?", (item_id,)
+            ).fetchone()
+            return row is not None
+        return False
 
     def get(self, item_id: int, *, table: str = "anime"):
         if table == "anime":
@@ -97,6 +117,7 @@ class _FakeDBManager:
         self.search_results: list[Any] = []
         self.list_results: tuple[list[Any], Any] = ([], None)
         self.season_results: list[Any] = []
+        self.genre_results: list[Any] = []
 
     def get_database(self):
         return self._db
@@ -109,6 +130,9 @@ class _FakeDBManager:
 
     def list_anime_by_airing_season(self, year, season, *, limit: int = 50):
         return self.season_results
+
+    def list_anime_by_genre(self, genre, *, limit: int = 50):
+        return self.genre_results
 
 
 class _FakeConfig:
@@ -196,12 +220,43 @@ def test_list_by_airing_season(repo):
     assert results[0].title == "Seasonal"
 
 
+def test_list_by_genre(repo):
+    adapter, db_manager, _, _ = repo
+    db_manager.genre_results = [{"id": 4, "title": "Comedy Show"}]
+    results = adapter.list_by_genre("Comedy")
+    assert results[0].title == "Comedy Show"
+
+
 def test_get_anime_returns_entity(repo):
     adapter, _, _, _ = repo
     entity = adapter.get_anime(1)
     assert entity is not None
     assert entity.id == 1
     assert entity.title == "Naruto"
+    assert isinstance(entity.airing_lines, list)
+
+
+def test_get_anime_enriches_metadata(repo):
+    adapter, _, db, _ = repo
+    db.get = lambda anime_id, table="anime": {  # type: ignore[method-assign]
+        "id": anime_id,
+        "title": "One Piece",
+        "date_from": 852076800,
+        "date_to": None,
+        "status": "AIRING",
+        "episodes": 1000,
+        "broadcast": "0-9-0",
+        "popularity": 42,
+        "studios": ["Toei"],
+        "producers": ["Fuji TV"],
+    }
+    entity = adapter.get_anime(1)
+    assert entity is not None
+    assert entity.broadcast == "0-9-0"
+    assert entity.popularity == 42
+    assert entity.studios == ["Toei"]
+    assert entity.producers == ["Fuji TV"]
+    assert len(entity.airing_lines) >= 1
 
 
 def test_get_anime_missing_returns_none(repo):
@@ -279,11 +334,27 @@ def test_settings_get_and_update(repo):
 def test_get_relations(repo):
     adapter, _, db, _ = repo
     db.conn.execute(
-        "INSERT INTO animeRelations (id, type, related_id) VALUES (1, 'anime', 2)"
+        (
+            "INSERT INTO anime (id, title, picture, status, date_from, episodes) "
+            "VALUES (2, 'Naruto Shippuden', 'http://img/2.jpg', 'finished', '2007-02-15', 500)"
+        ),
+    )
+    db.conn.execute(
+        (
+            "INSERT INTO animeRelations (id, rel_id, type, name) "
+            "VALUES (1, 2, 'anime', 'sequel')"
+        ),
     )
     db.conn.commit()
     rows = adapter.get_relations(1, "anime")
     assert len(rows) == 1
+    assert rows[0]["rel_id"] == 2
+    assert rows[0]["anime_id"] == 2
+    assert rows[0]["title"] == "Naruto Shippuden"
+    assert rows[0]["picture"] == "http://img/2.jpg"
+    assert rows[0]["relation"] == "sequel"
+    assert rows[0]["name"] == "sequel"
+    assert rows[0]["media_type"] == "anime"
 
 
 def test_get_relations_no_db():
@@ -365,6 +436,16 @@ def test_get_anime_pictures(repo):
     _seed_character_data(db)
     pictures = adapter.get_anime_pictures(1)
     assert pictures == [{"url": "https://example.com/l.jpg", "size": "large"}]
+
+
+def test_get_anime_pictures_returns_empty_on_lock(repo):
+    adapter, _, db, _ = repo
+
+    def locked_sql(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    db.sql = locked_sql  # type: ignore[method-assign]
+    assert adapter.get_anime_pictures(1) == []
 
 
 def test_refresh_anime_characters_upserts_and_returns(repo):

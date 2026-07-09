@@ -4,7 +4,7 @@ Provides repository pattern for data access with connection pooling and transact
 """
 
 import threading
-from typing import Any, Dict, List, Optional, Tuple, Union, Callable
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Callable
 from contextlib import contextmanager
 import json
 
@@ -20,7 +20,7 @@ from domain.policies.genre import normalize_genre
 from domain.policies.season import normalize_airing_season, season_date_range, validate_season_year
 from shared.telemetry import get_telemetry
 from adapters.persistence.models import Anime, AnimeList
-from adapters.persistence import databases
+from ports.interfaces import CatalogMappingPort
 
 
 class DatabaseManager(BaseComponent):
@@ -37,6 +37,7 @@ class DatabaseManager(BaseComponent):
         self._telemetry = get_telemetry()
         self._write_queue: Optional[PersistenceQueue] = None
         self._write_queue_enabled = False
+        self._mapping_port: Optional[CatalogMappingPort] = None
 
     def close(self) -> None:
         """Drain the optional write queue and release the DB connection."""
@@ -86,6 +87,18 @@ class DatabaseManager(BaseComponent):
         if self._write_queue is None:
             return {}
         return self._write_queue.stats()
+
+    def db_io_stats(self) -> Dict[str, Any]:
+        """Snapshot DB write/read counters for diagnostics."""
+        stats: Dict[str, Any] = {
+            "write_queue": self.write_queue_stats(),
+            "telemetry": self._telemetry.snapshot(),
+        }
+        db = self._database
+        if db is not None:
+            stats["commits"] = int(getattr(db, "_commit_count", 0))
+            stats["queries"] = int(getattr(db, "_query_count", 0))
+        return stats
 
     def _flush_write_batch(self, batch: List[Any]) -> None:
         """Internal: flush a batch from the persistence queue."""
@@ -691,35 +704,41 @@ class DatabaseManager(BaseComponent):
             raise
 
     def upsert_anime_batch(self, records: List[Anime]) -> int:
-        """Persist anime objects, committing each row inline.
+        """Persist anime objects, using one pooled connection for the whole batch.
 
-        The natural shape here is "open a transaction, INSERT every
-        record, commit once at the end". The MariaDB backend uses a
-        per-call connection pool though (``USE_CONNECTION_POOL``), so
-        the ``db.set(..., save=False)`` calls each run on a pool
-        connection that is recycled before the trailing ``db.save()``
-        on the long-lived main connection ever fires -- the writes are
-        then effectively rolled back. Until the persistence layer
-        exposes "checkout a connection for the whole batch" we commit
-        each row inline. The throughput hit is negligible for the
-        startup-jobs use case (tens of records) and the alternative is
-        silent data loss.
+        MariaDB's connection pool hands every standalone ``db.set(...)`` call
+        a fresh checkout. Schedule fetch conversion already holds several pool
+        connections; batch upsert must pin one connection for all rows or the
+        pool exhausts and ``persisted=0``.
         """
         if not records:
             return 0
         saved = 0
         with self._telemetry.time("db.upsert_anime_batch_ms"):
             with self.get_connection() as db:
-                for anime in records:
-                    try:
-                        self._persist_anime_record(db, anime, commit=True)
-                        saved += 1
-                    except Exception as exc:
-                        self.log(
-                            "DB_ERROR",
-                            f"Failed upserting anime {getattr(anime, 'id', None)}: {exc}",
-                        )
+                pinned_ctx = getattr(db, "pinned_pool_connection", None)
+                if pinned_ctx is not None and getattr(db, "USE_CONNECTION_POOL", False):
+                    with pinned_ctx():
+                        saved = self._upsert_anime_records(db, records)
+                else:
+                    saved = self._upsert_anime_records(db, records)
         self._telemetry.increment("db.upserts_committed", saved)
+        return saved
+
+    def _upsert_anime_records(self, db, records: List[Anime]) -> int:
+        saved = 0
+        total = len(records)
+        pinned = getattr(db, "_pinned_sql_conn", None) is not None
+        for idx, anime in enumerate(records):
+            commit = (not pinned) or (idx == total - 1)
+            try:
+                self._persist_anime_record(db, anime, commit=commit)
+                saved += 1
+            except Exception as exc:
+                self.log(
+                    "DB_ERROR",
+                    f"Failed upserting anime {getattr(anime, 'id', None)}: {exc}",
+                )
         return saved
 
     def _persist_anime_record(self, db, anime: Anime, *, commit: bool) -> None:
@@ -757,7 +776,8 @@ class DatabaseManager(BaseComponent):
         if "id" not in data:
             data["id"] = anime_id
 
-        db.set(anime_id, data, "anime", save=commit)
+        pinned = getattr(db, "_pinned_sql_conn", None) is not None
+        db.set(anime_id, data, "anime", save=commit and not pinned)
 
         if metadata:
             try:
@@ -768,20 +788,72 @@ class DatabaseManager(BaseComponent):
                     f"Failed saving metadata for {anime_id}: {exc}",
                 )
 
+        if commit and pinned:
+            commit_pinned = getattr(db, "commit_pinned_connection", None)
+            if callable(commit_pinned):
+                commit_pinned()
+
+    def set_mapping_port(self, mapping_port: CatalogMappingPort) -> None:
+        """Attach cross-provider lookup adapter used for catalogue enrichment."""
+        self._mapping_port = mapping_port
+
+    def enrich_catalog_identities(self, *, limit: int = 200):
+        """Backfill single-provider rows from external mapping APIs."""
+        from application.services.catalog_enrichment import (
+            CatalogEnrichmentService,
+            EnrichmentResult,
+        )
+
+        if self._mapping_port is None:
+            return EnrichmentResult()
+        try:
+            with self.get_connection() as db:
+                return CatalogEnrichmentService(
+                    db,
+                    self._mapping_port,
+                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                ).enrich_single_provider_rows(limit=limit)
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed enriching catalogue identities: {exc}")
+            return EnrichmentResult()
+
+    def enrich_catalog_identities_for_ids(self, catalog_ids: Sequence[int]):
+        """Enrich specific catalogue rows after an ingest batch."""
+        from application.services.catalog_enrichment import (
+            CatalogEnrichmentService,
+            EnrichmentResult,
+        )
+
+        if self._mapping_port is None or not catalog_ids:
+            return EnrichmentResult()
+        unique_ids = sorted({int(catalog_id) for catalog_id in catalog_ids})
+        try:
+            with self.get_connection() as db:
+                return CatalogEnrichmentService(
+                    db,
+                    self._mapping_port,
+                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                ).enrich_ids(unique_ids)
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed enriching ingest batch identities: {exc}")
+            return EnrichmentResult()
+
     def repair_duplicate_anime_entries(
         self,
         *,
         include_title_merge: bool = False,
+        title_only: bool = False,
     ) -> int:
         """Merge catalogue rows that share a provider id (optional title heuristic)."""
         from application.services.catalog_merge import CatalogMergeService
         from shared.contracts import RepairStrategy
 
-        strategy = (
-            RepairStrategy.ALL
-            if include_title_merge
-            else RepairStrategy.PROVIDER_ID
-        )
+        if title_only:
+            strategy = RepairStrategy.TITLE
+        elif include_title_merge:
+            strategy = RepairStrategy.ALL
+        else:
+            strategy = RepairStrategy.PROVIDER_ID
         try:
             with self.get_connection() as db:
                 merged = CatalogMergeService(

@@ -53,3 +53,8 @@ def test_schedule_respects_limit(AnilistCoWrapper):
 
     out = list(inst.schedule(limit=2))
     assert len(out) == 2
+
+
+def test_anime_characters_returns_empty_list(AnilistCoWrapper):
+    inst = _make(AnilistCoWrapper)
+    assert inst.animeCharacters(42) == []

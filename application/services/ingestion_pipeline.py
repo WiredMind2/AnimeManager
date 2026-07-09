@@ -12,8 +12,8 @@ from __future__ import annotations
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
-from typing import Any, Callable, Iterable, List, Optional, Sequence
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus
 from shared.telemetry import get_telemetry
@@ -131,6 +131,7 @@ class IngestionPipeline:
         limit: int = 50,
         sink: Optional[PersistenceSink] = None,
         limit_per_provider: bool = False,
+        parallel: bool = True,
     ) -> IngestionResult:
         if not providers:
             return IngestionResult(status=IngestionStatus.COMPLETE, total_providers=0)
@@ -140,33 +141,47 @@ class IngestionPipeline:
         else:
             per_provider_limit = max(1, limit // max(1, len(providers)))
         start_ns = time.perf_counter()
-        futures = {
-            self._executor.submit(self._run_one, spec, terms, per_provider_limit): spec
-            for spec in providers
-        }
         collected: List[AnimeRecord] = []
         errors: List[str] = []
         failed = 0
         partial = False
-        try:
-            for future in as_completed(futures, timeout=self._provider_timeout):
-                spec = futures[future]
+
+        if parallel:
+            futures = {
+                self._executor.submit(
+                    self._run_one, spec, terms, per_provider_limit
+                ): spec
+                for spec in providers
+            }
+            try:
+                for future in as_completed(futures, timeout=self._provider_timeout):
+                    spec = futures[future]
+                    try:
+                        collected.extend(future.result(timeout=0))
+                    except FutureTimeoutError:
+                        failed += 1
+                        partial = True
+                        errors.append(f"{spec.name}:timeout")
+                    except Exception as exc:
+                        failed += 1
+                        errors.append(f"{spec.name}:{type(exc).__name__}")
+            except FutureTimeoutError:
+                partial = True
+                for future, spec in futures.items():
+                    if not future.done():
+                        failed += 1
+                        errors.append(f"{spec.name}:deadline")
+                self._cancel_pending(futures)
+        else:
+            for spec in providers:
                 try:
-                    collected.extend(future.result(timeout=0))
-                except FutureTimeoutError:
-                    failed += 1
-                    partial = True
-                    errors.append(f"{spec.name}:timeout")
+                    collected.extend(
+                        self._run_one(spec, terms, per_provider_limit)
+                    )
                 except Exception as exc:
                     failed += 1
+                    partial = True
                     errors.append(f"{spec.name}:{type(exc).__name__}")
-        except FutureTimeoutError:
-            partial = True
-            for future, spec in futures.items():
-                if not future.done():
-                    failed += 1
-                    errors.append(f"{spec.name}:deadline")
-            self._cancel_pending(futures)
 
         deduped = _deduplicate(collected)
         persisted_count = 0
@@ -198,6 +213,7 @@ class IngestionPipeline:
             total_providers=len(providers),
             elapsed_ms=elapsed_ms,
             errors=errors,
+            persisted_count=persisted_count,
         )
 
     def _run_one(self, spec: ProviderSpec, terms: str, limit: int) -> List[AnimeRecord]:
@@ -233,3 +249,45 @@ def _deduplicate(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
         seen.add(rid)
         out.append(record)
     return out
+
+
+def deduplicate_records(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
+    """Dedupe by catalog id, then collapse rows sharing provider external ids."""
+    by_id = _deduplicate(records)
+    if len(by_id) <= 1:
+        return by_id
+
+    parent: Dict[int, int] = {record.id: record.id for record in by_id}
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[node]
+            node = parent[node]
+        return node
+
+    def union(a: int, b: int) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:
+            parent[max(root_a, root_b)] = min(root_a, root_b)
+
+    ext_index: Dict[tuple[str, int], int] = {}
+    for record in by_id:
+        for key, value in (record.external_ids or {}).items():
+            pair = (str(key), int(value))
+            if pair in ext_index:
+                union(record.id, ext_index[pair])
+            else:
+                ext_index[pair] = record.id
+
+    winners: Dict[int, AnimeRecord] = {}
+    order: List[int] = []
+    for record in by_id:
+        root = find(record.id)
+        candidate = record if record.id == root else replace(record, id=root)
+        existing = winners.get(root)
+        if existing is None or candidate.id < existing.id:
+            winners[root] = candidate
+        if root not in order:
+            order.append(root)
+
+    return [winners[root] for root in order]

@@ -2,33 +2,51 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from shared.contracts import INDEX_PROVIDER_KEYS, RepairStrategy
 
-_REPOINT_ID_TABLES = (
-    "title_synonyms",
-    "genres",
-    "pictures",
-    "broadcasts",
-    "torrentsIndex",
-    "torrents",
-    "animeRelations",
-)
-
 _DELETE_ID_TABLES = (
-    "anime",
     "title_synonyms",
     "torrentsIndex",
     "genres",
     "pictures",
     "broadcasts",
-    "torrents",
     "animeRelations",
+    "anime",
     "indexList",
 )
 
 _INDEX_COLUMNS = ("mal_id", "kitsu_id", "anilist_id", "anidb_id")
+
+
+def _commit_deferred(db: Any) -> None:
+    """Flush a deferred write batch on pooled or single-connection backends."""
+    pinned = getattr(db, "_pinned_sql_conn", None)
+    if pinned is not None and getattr(pinned, "db", None) is not None:
+        commit_pinned = getattr(db, "commit_pinned_connection", None)
+        if callable(commit_pinned):
+            commit_pinned()
+        else:
+            pinned.db.commit()
+    elif hasattr(db, "save"):
+        db.save()
+
+
+@contextmanager
+def _batched_writes(db: Any) -> Iterator[None]:
+    """Hold one transaction open; callers use ``save=False`` on ``sql()``."""
+    pinned_ctx = getattr(db, "pinned_pool_connection", None)
+    use_pool = bool(getattr(db, "USE_CONNECTION_POOL", False))
+    if pinned_ctx is not None and use_pool:
+        with pinned_ctx():
+            yield
+            _commit_deferred(db)
+    else:
+        with db.get_lock():
+            yield
+            _commit_deferred(db)
 
 
 class CatalogIndexRepository:
@@ -52,6 +70,29 @@ class CatalogIndexRepository:
             return None
         return int(rows[0][0])
 
+    def find_by_external_batch(
+        self, pairs: Sequence[Tuple[str, int]]
+    ) -> Dict[Tuple[str, int], int]:
+        """Resolve many external ids with one query per provider column."""
+        grouped: Dict[str, List[int]] = {}
+        for provider_key, external_id in pairs:
+            key = self._validate_key(provider_key)
+            grouped.setdefault(key, []).append(int(external_id))
+
+        out: Dict[Tuple[str, int], int] = {}
+        for key, external_ids in grouped.items():
+            unique_ids = list(dict.fromkeys(external_ids))
+            if not unique_ids:
+                continue
+            placeholders = ",".join("?" * len(unique_ids))
+            rows = self._db.sql(
+                f"SELECT {key}, id FROM indexList WHERE {key} IN ({placeholders})",
+                tuple(unique_ids),
+            )
+            for row in rows or []:
+                out[(key, int(row[0]))] = int(row[1])
+        return out
+
     def get_external_ids(self, internal_id: int) -> Dict[str, int]:
         rows = self._db.sql(
             "SELECT mal_id, kitsu_id, anilist_id, anidb_id FROM indexList WHERE id=?",
@@ -70,6 +111,13 @@ class CatalogIndexRepository:
         self, internal_id: int, external_ids: Mapping[str, int]
     ) -> None:
         internal_id = int(internal_id)
+        pinned = getattr(self._db, "_pinned_sql_conn", None)
+        # Pooled backends run each sql() on a checkout connection; without
+        # save=True those UPDATEs never commit and can leave row locks open.
+        commit_each = pinned is None and bool(
+            getattr(self._db, "USE_CONNECTION_POOL", False)
+        )
+        pending = False
         with self._db.get_lock():
             for key, value in external_ids.items():
                 if key not in INDEX_PROVIDER_KEYS or value is None:
@@ -77,8 +125,11 @@ class CatalogIndexRepository:
                 self._db.sql(
                     f"UPDATE indexList SET {key}=? WHERE id=? AND {key} IS NULL",
                     (int(value), internal_id),
-                    save=True,
+                    save=commit_each,
                 )
+                pending = True
+            if pending and not commit_each and pinned is None:
+                _commit_deferred(self._db)
 
     def allocate(self, external_ids: Mapping[str, int]) -> int:
         normalized = {
@@ -127,6 +178,184 @@ class CatalogMergeRepository:
         if self._log:
             self._log(message)
 
+    def _repoint_torrents_index(self, duplicate_id: int, canonical_id: int) -> None:
+        """Repoint anime→hash links; dedupe when canonical already owns the hash."""
+        try:
+            rows = self._db.sql(
+                "SELECT value FROM torrentsIndex WHERE id=?",
+                (duplicate_id,),
+            )
+        except Exception as exc:
+            self._warn(f"merge scan torrentsIndex: {exc}")
+            return
+
+        for row in rows or []:
+            hash_value = row[0]
+            if hash_value is None:
+                continue
+            try:
+                exists = self._db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM torrentsIndex "
+                    "WHERE id=? AND value=?)",
+                    (canonical_id, hash_value),
+                )
+                if exists and exists[0][0]:
+                    self._db.sql(
+                        "DELETE FROM torrentsIndex WHERE id=? AND value=?",
+                        (duplicate_id, hash_value),
+                        save=False,
+                    )
+                else:
+                    self._db.sql(
+                        "UPDATE torrentsIndex SET id=? WHERE id=? AND value=?",
+                        (canonical_id, duplicate_id, hash_value),
+                        save=False,
+                    )
+            except Exception as exc:
+                self._warn(f"merge repoint torrentsIndex: {exc}")
+
+    def _repoint_id_value_rows(
+        self, duplicate_id: int, canonical_id: int, table: str
+    ) -> None:
+        """Repoint ``(id, value)`` metadata rows; drop duplicates canonical already has."""
+        try:
+            rows = self._db.sql(
+                f"SELECT value FROM {table} WHERE id=?",
+                (duplicate_id,),
+            )
+        except Exception as exc:
+            self._warn(f"merge scan {table}: {exc}")
+            return
+
+        for row in rows or []:
+            value = row[0]
+            if value is None:
+                continue
+            try:
+                exists = self._db.sql(
+                    f"SELECT EXISTS(SELECT 1 FROM {table} WHERE id=? AND value=?)",
+                    (canonical_id, value),
+                )
+                if exists and exists[0][0]:
+                    self._db.sql(
+                        f"DELETE FROM {table} WHERE id=? AND value=?",
+                        (duplicate_id, value),
+                        save=False,
+                    )
+                else:
+                    self._db.sql(
+                        f"UPDATE {table} SET id=? WHERE id=? AND value=?",
+                        (canonical_id, duplicate_id, value),
+                        save=False,
+                    )
+            except Exception as exc:
+                self._warn(f"merge repoint {table}: {exc}")
+
+    def _repoint_pictures(self, duplicate_id: int, canonical_id: int) -> None:
+        """Repoint picture rows keyed by ``(id, size)``."""
+        try:
+            rows = self._db.sql(
+                "SELECT size FROM pictures WHERE id=?",
+                (duplicate_id,),
+            )
+        except Exception as exc:
+            self._warn(f"merge scan pictures: {exc}")
+            return
+
+        for row in rows or []:
+            size = row[0]
+            try:
+                exists = self._db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM pictures WHERE id=? AND size=?)",
+                    (canonical_id, size),
+                )
+                if exists and exists[0][0]:
+                    self._db.sql(
+                        "DELETE FROM pictures WHERE id=? AND size=?",
+                        (duplicate_id, size),
+                        save=False,
+                    )
+                else:
+                    self._db.sql(
+                        "UPDATE pictures SET id=? WHERE id=? AND size=?",
+                        (canonical_id, duplicate_id, size),
+                        save=False,
+                    )
+            except Exception as exc:
+                self._warn(f"merge repoint pictures: {exc}")
+
+    def _repoint_broadcasts(self, duplicate_id: int, canonical_id: int) -> None:
+        """Repoint broadcast row when canonical has none; otherwise drop duplicate."""
+        try:
+            dup_rows = self._db.sql(
+                "SELECT 1 FROM broadcasts WHERE id=? LIMIT 1",
+                (duplicate_id,),
+            )
+            if not dup_rows:
+                return
+            exists = self._db.sql(
+                "SELECT EXISTS(SELECT 1 FROM broadcasts WHERE id=?)",
+                (canonical_id,),
+            )
+            if exists and exists[0][0]:
+                self._db.sql(
+                    "DELETE FROM broadcasts WHERE id=?",
+                    (duplicate_id,),
+                    save=False,
+                )
+            else:
+                self._db.sql(
+                    "UPDATE broadcasts SET id=? WHERE id=?",
+                    (canonical_id, duplicate_id),
+                    save=False,
+                )
+        except Exception as exc:
+            self._warn(f"merge repoint broadcasts: {exc}")
+
+    def _repoint_anime_relations(self, duplicate_id: int, canonical_id: int) -> None:
+        """Repoint relation rows; dedupe on ``(type, rel_id)``."""
+        rel_col: Optional[str] = None
+        rows = None
+        for candidate in ("rel_id", "related_id"):
+            try:
+                rows = self._db.sql(
+                    f"SELECT type, {candidate} FROM animeRelations WHERE id=?",
+                    (duplicate_id,),
+                )
+                rel_col = candidate
+                break
+            except Exception:
+                continue
+        if rel_col is None:
+            self._warn("merge scan animeRelations: unsupported schema")
+            return
+
+        for row in rows or []:
+            rel_type, rel_id = row[0], row[1]
+            if rel_id is None:
+                continue
+            try:
+                exists = self._db.sql(
+                    f"SELECT EXISTS(SELECT 1 FROM animeRelations "
+                    f"WHERE id=? AND type=? AND {rel_col}=?)",
+                    (canonical_id, rel_type, rel_id),
+                )
+                if exists and exists[0][0]:
+                    self._db.sql(
+                        f"DELETE FROM animeRelations WHERE id=? AND type=? AND {rel_col}=?",
+                        (duplicate_id, rel_type, rel_id),
+                        save=False,
+                    )
+                else:
+                    self._db.sql(
+                        f"UPDATE animeRelations SET id=? "
+                        f"WHERE id=? AND type=? AND {rel_col}=?",
+                        (canonical_id, duplicate_id, rel_type, rel_id),
+                        save=False,
+                    )
+            except Exception as exc:
+                self._warn(f"merge repoint animeRelations: {exc}")
+
     def merge(self, duplicate_id: int, canonical_id: int) -> int:
         duplicate_id = int(duplicate_id)
         canonical_id = int(canonical_id)
@@ -134,19 +363,15 @@ class CatalogMergeRepository:
             return canonical_id
 
         index_repo = CatalogIndexRepository(self._db)
-        with self._db.get_lock():
+        with _batched_writes(self._db):
             dup_ids = index_repo.get_external_ids(duplicate_id)
             index_repo.backfill_external_ids(canonical_id, dup_ids)
-
-            for table in _REPOINT_ID_TABLES:
-                try:
-                    self._db.sql(
-                        f"UPDATE {table} SET id=? WHERE id=?",
-                        (canonical_id, duplicate_id),
-                        save=True,
-                    )
-                except Exception as exc:
-                    self._warn(f"merge repoint {table}: {exc}")
+            self._repoint_torrents_index(duplicate_id, canonical_id)
+            self._repoint_id_value_rows(duplicate_id, canonical_id, "title_synonyms")
+            self._repoint_id_value_rows(duplicate_id, canonical_id, "genres")
+            self._repoint_pictures(duplicate_id, canonical_id)
+            self._repoint_broadcasts(duplicate_id, canonical_id)
+            self._repoint_anime_relations(duplicate_id, canonical_id)
 
             for sql, params in (
                 (
@@ -159,7 +384,7 @@ class CatalogMergeRepository:
                 ),
             ):
                 try:
-                    self._db.sql(sql[0], params, save=True)
+                    self._db.sql(sql, params, save=False)
                 except Exception as exc:
                     self._warn(f"merge repoint relations: {exc}")
 
@@ -168,7 +393,7 @@ class CatalogMergeRepository:
                     self._db.sql(
                         f"DELETE FROM {table} WHERE id=?",
                         (duplicate_id,),
-                        save=True,
+                        save=False,
                     )
                 except Exception as exc:
                     self._warn(f"merge delete {table}: {exc}")
@@ -177,16 +402,10 @@ class CatalogMergeRepository:
                 self._db.sql(
                     "DELETE FROM characterRelations WHERE anime_id=?",
                     (duplicate_id,),
-                    save=True,
+                    save=False,
                 )
             except Exception as exc:
                 self._warn(f"merge delete characterRelations: {exc}")
-
-            if hasattr(self._db, "save"):
-                try:
-                    self._db.save()
-                except Exception as exc:
-                    self._warn(f"merge commit: {exc}")
 
         return canonical_id
 

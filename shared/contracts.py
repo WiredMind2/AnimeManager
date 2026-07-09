@@ -89,6 +89,7 @@ class IngestionResult:
     total_providers: int = 0
     elapsed_ms: int = 0
     errors: List[str] = field(default_factory=list)
+    persisted_count: int = 0
 
     @property
     def successful_providers(self) -> int:

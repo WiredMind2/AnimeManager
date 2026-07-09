@@ -216,6 +216,18 @@ class TestCachedRequestDecorator:
         assert example(obj, 5) == 5
         assert called == [5]
 
+    def test_schedule_light_skips_cached_request(self):
+        called = []
+
+        @cached_request
+        def example(self, x):
+            called.append(x)
+            return x
+
+        obj = SimpleNamespace(schedule_light=True, defer_writes=False, queue=queue.Queue())
+        assert example(obj, 5) is None
+        assert called == []
+
 
 # ---------------------------------------------------------------------------
 # APIUtils queue handling

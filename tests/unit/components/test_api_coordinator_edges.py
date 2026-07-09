@@ -417,6 +417,23 @@ class TestRecordToAnime:
         assert anime.id == 1
         assert anime.title == "x"
 
+    def test_copies_metadata_fields(self, APICoordinator):
+        from shared.contracts import AnimeRecord, ProviderName
+
+        rec = AnimeRecord(
+            id=1,
+            title="Cowboy Bebop",
+            title_synonyms=("Cowboy Bebop", "CB"),
+            genres=("Action", "Sci-Fi"),
+            source_provider=ProviderName.JIKAN,
+        )
+        anime = APICoordinator._record_to_anime(rec)
+        assert anime.title_synonyms == ["Cowboy Bebop", "CB"]
+        assert anime.genres == ["Action", "Sci-Fi"]
+        _data, meta = anime.save_format()
+        assert meta["title_synonyms"] == ["Cowboy Bebop", "CB"]
+        assert meta["genres"] == ["Action", "Sci-Fi"]
+
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -497,6 +514,26 @@ class TestSink:
             sink = c._build_sink()
             rec = AnimeRecord(id=1, title="x", source_provider=ProviderName.UNKNOWN)
             assert sink([rec]) == 0
+        finally:
+            c.close()
+
+    def test_build_sink_schedules_enrichment_in_background(self, APICoordinator):
+        from shared.contracts import AnimeRecord, ProviderName
+
+        db = MagicMock()
+        db.upsert_anime_batch.return_value = 1
+        c = _coord(APICoordinator, db=db)
+        try:
+            sink = c._build_sink()
+            rec = AnimeRecord(id=5, title="Naruto", source_provider=ProviderName.JIKAN)
+            with patch("application.services.api_coordinator.threading.Thread") as thread_cls:
+                thread = MagicMock()
+                thread_cls.return_value = thread
+                count = sink([rec])
+            assert count == 1
+            thread_cls.assert_called_once()
+            thread.start.assert_called_once()
+            db.enrich_catalog_identities_for_ids.assert_not_called()
         finally:
             c.close()
 

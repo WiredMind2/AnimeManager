@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
-from adapters.persistence.catalog_repository import CatalogIndexRepository
+from adapters.persistence.catalog_repository import CatalogIndexRepository, _batched_writes
 from application.services.catalog_merge import CatalogMergeService
 from shared.contracts import (
     INDEX_PROVIDER_KEYS,
@@ -64,6 +64,74 @@ class CatalogIdentityService:
         found: set[int] = set()
         for key, ext in normalized.items():
             internal_id = self._index.find_by_external(key, ext)
+            if internal_id is not None:
+                found.add(internal_id)
+
+        merged_from: list[int] = []
+        if len(found) > 1:
+            canonical = min(found)
+            for duplicate in sorted(found):
+                if duplicate == canonical:
+                    continue
+                self._merge.merge(duplicate, canonical)
+                merged_from.append(duplicate)
+            self._telemetry.increment("catalog.identity.conflict")
+            self._index.backfill_external_ids(canonical, normalized)
+            return ResolvedCatalogEntry(
+                catalog_id=canonical,
+                external_ids=dict(normalized),
+                merged_from=tuple(merged_from),
+            )
+
+        if len(found) == 1:
+            canonical = next(iter(found))
+            self._index.backfill_external_ids(canonical, normalized)
+            return ResolvedCatalogEntry(
+                catalog_id=canonical,
+                external_ids=dict(normalized),
+            )
+
+        catalog_id = self._index.allocate(normalized)
+        return ResolvedCatalogEntry(
+            catalog_id=catalog_id,
+            external_ids=dict(normalized),
+        )
+
+    def resolve_external_ids_batch(
+        self,
+        entries: Sequence[Mapping[str, Any]],
+    ) -> List[ResolvedCatalogEntry]:
+        """Resolve many catalogue identities under one batched transaction."""
+        normalized_list = [_normalize_external_ids(entry) for entry in entries]
+        pairs = [
+            (key, ext)
+            for normalized in normalized_list
+            for key, ext in normalized.items()
+        ]
+        lookup = self._index.find_by_external_batch(pairs)
+        results: List[ResolvedCatalogEntry] = []
+        with _batched_writes(self._db):
+            for normalized in normalized_list:
+                if not normalized:
+                    raise ValueError(
+                        "Cannot resolve catalogue identity without external ids"
+                    )
+                entry = self._resolve_with_lookup(normalized, lookup)
+                results.append(entry)
+                for key, ext in entry.external_ids.items():
+                    lookup[(key, int(ext))] = entry.catalog_id
+        return results
+
+    def _resolve_with_lookup(
+        self,
+        normalized: Dict[str, int],
+        lookup: Mapping[tuple[str, int], int],
+    ) -> ResolvedCatalogEntry:
+        found: set[int] = set()
+        for key, ext in normalized.items():
+            internal_id = lookup.get((key, ext))
+            if internal_id is None:
+                internal_id = self._index.find_by_external(key, ext)
             if internal_id is not None:
                 found.add(internal_id)
 

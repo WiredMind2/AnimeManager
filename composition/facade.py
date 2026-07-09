@@ -10,7 +10,7 @@ compatibility shim that re-exports from here.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from application.services.anime_service import AnimeApplicationService
 from application.services.startup_jobs import (
@@ -28,9 +28,16 @@ class EmbeddedClientFacade:
         service: AnimeApplicationService,
         *,
         startup_jobs: Optional[StartupJobsService] = None,
+        hydration: Optional[Any] = None,
     ) -> None:
         self._service = service
         self._startup_jobs = startup_jobs
+        self._hydration = hydration
+
+    @property
+    def hydration(self):
+        """Background metadata hydration queue, when wired."""
+        return self._hydration
 
     @property
     def startup_jobs(self) -> Optional[StartupJobsService]:
@@ -148,6 +155,9 @@ class EmbeddedClientFacade:
     def get_anime_details(self, anime_id: int):
         return self._service.get_anime_details(anime_id)
 
+    def refresh_anime_details(self, anime_id: int) -> dict:
+        return self._service.refresh_anime_details(anime_id)
+
     def start_download(
         self,
         anime_id: int,
@@ -181,16 +191,22 @@ class EmbeddedClientFacade:
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ) -> list[dict]:
-        return self._service.search_torrents(terms, profile=profile, limit=limit)
+        return self._service.search_torrents(
+            terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+        )
 
     def stream_torrents(
         self,
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ):
-        return self._service.stream_torrents(terms, profile=profile, limit=limit)
+        return self._service.stream_torrents(
+            terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+        )
 
     def set_tag(self, anime_id: int, tag: str, user_id: int) -> None:
         self._service.set_tag(anime_id, tag, user_id)

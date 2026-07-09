@@ -31,8 +31,10 @@
     "new_ingestion_pipeline": true,
     "db_gateway_writes_only": true,
     "strict_download_url_validation": true,
-    "secure_db_bootstrap": true
+    "secure_db_bootstrap": true,
+    "batched_db_writes": true
   },
+  "startup_migrations": {},
   "api_credentials": {
     "myanimelist": {
       "client_id": "",
@@ -116,13 +118,15 @@
   },
   "anime": {
     "animePerRow": 4,
-    "animePerPage": 50,
+    "animePerPage": 48,
     "apiHost": "kitsu.io",
     "hideRated": true,
     "maxTimeout": 30,
     "scheduleTimeout": 86400,
     "lastSchedule": 0,
-    "maxTrendingAnime": 100,
+    "scheduleRecencyDays": 90,
+    "enrichCatalogLimit": 200,
+    "maxTrendingAnime": 50,
     "topPublishers": [
       "SubsPlease",
       "SSA",
@@ -161,7 +165,10 @@
       "database": "",
       "password": "",
       "port": 3307,
-      "user": ""
+      "user": "",
+      "relaxed_durability": true,
+      "innodb_flush_log_at_trx_commit": 2,
+      "innodb_buffer_pool_size": "256M"
     },
     "MySQL": {
       "host": "",

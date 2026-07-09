@@ -10,9 +10,13 @@ from composition.bootstrap import EmbeddedDeps, _BootstrapHost, bootstrap_embedd
 
 def test_bootstrap_embedded_deps_returns_wired_collaborators():
     with patch("composition.bootstrap.AnimeAPI") as api_cls:
-        api_cls.return_value = object()
-        deps = bootstrap_embedded_deps(api=api_cls.return_value)
+        with patch("composition.bootstrap.Getters.getDatabase", return_value=object()) as get_db:
+            deps = bootstrap_embedded_deps()
 
+    get_db.assert_called()
+    api_cls.assert_called_once()
+    call_kwargs = api_cls.call_args.kwargs
+    assert call_kwargs.get("getters") is not None
     assert isinstance(deps, EmbeddedDeps)
     assert deps.config is not None
     assert deps.db_manager is not None
@@ -31,7 +35,6 @@ def test_bootstrap_host_set_settings_updates_config():
             constants=constants,
             config=config,
             logger=logger,
-            api=object(),
         )
     result = host.setSettings({"foo": "bar"})
     config.update_settings.assert_called_once_with({"foo": "bar"})
@@ -46,7 +49,6 @@ def test_bootstrap_host_log_delegates_to_logger():
             constants=SimpleNamespace(settings={"database_managers": {"last_db_used": "SQLite"}}),
             config=MagicMock(),
             logger=logger,
-            api=object(),
         )
     host.log("hello", level="info")
     logger.log.assert_called_once_with("hello", level="info")
@@ -59,6 +61,5 @@ def test_bootstrap_host_log_swallows_logger_errors():
             constants=SimpleNamespace(settings={"database_managers": {"last_db_used": "SQLite"}}),
             config=MagicMock(),
             logger=logger,
-            api=object(),
         )
     assert host.log("x") is None

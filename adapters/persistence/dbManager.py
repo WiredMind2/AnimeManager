@@ -128,6 +128,11 @@ def db(*args, **kwargs):
     return thread_safe_db(*args, **kwargs)
 
 
+def _configure_sqlite_connection(con: sqlite3.Connection, *, busy_timeout_ms: int = 5000) -> None:
+    """Apply SQLite pragmas that reduce transient lock failures under load."""
+    con.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+
+
 class db_instance(BaseDB):
     """Database manager using sqlite3"""
 
@@ -145,6 +150,18 @@ class db_instance(BaseDB):
 
         # Initialize query cache for performance optimization
         self.query_cache = QueryCache(max_size=1000, ttl=300)  # 5 minute TTL
+
+    def _ensure_connection(self) -> None:
+        if getattr(self, "con", None) is not None and getattr(self, "cur", None) is not None:
+            return
+        if self.path != ":memory:" and not os.path.exists(self.path):
+            self.createNewDb()
+            return
+        self.con = sqlite3.connect(self.path)
+        sqlite3.register_adapter(bool, int)
+        sqlite3.register_converter("BOOLEAN", lambda v: bool(int(v)))
+        _configure_sqlite_connection(self.con)
+        self.cur = self.con.cursor()
 
     def _invalidate_cache_for_sql(self, sql):
         """Invalidate cache entries related to modified tables"""
@@ -196,6 +213,9 @@ class db_instance(BaseDB):
         open(self.path, "w")
         self.con = sqlite3.connect(self.path)
         # self.con.row_factory = sqlite3.Row
+        sqlite3.register_adapter(bool, int)
+        sqlite3.register_converter("BOOLEAN", lambda v: bool(int(v)))
+        _configure_sqlite_connection(self.con)
         self.cur = self.con.cursor()
 
         cwd = os.path.dirname(os.path.abspath(__file__))
@@ -375,6 +395,7 @@ class db_instance(BaseDB):
             return globals()["db_lock"]
 
     def execute(self, sql, *args):
+        self._ensure_connection()
         try:
             with self.get_lock():
                 if self.log_commands:
@@ -384,7 +405,13 @@ class db_instance(BaseDB):
                 with open("sql_requests.log", "a") as f:
                     f.write(sql + " // " + str(args) + "\n\n\n")
 
-                self.cur.execute(sql, *args)
+                try:
+                    self.cur.execute(sql, *args)
+                except sqlite3.OperationalError as locked:
+                    if locked.args != ("database is locked",):
+                        raise
+                    time.sleep(0.05)
+                    self.cur.execute(sql, *args)
                 if any(map(lambda e: e in sql, ("INSERT", "UPDATE", "DELETE"))):
                     values = iter(*args)
                     out = ""
@@ -600,7 +627,10 @@ class db_instance(BaseDB):
             keys = [e[0] for e in self.cur.description]
 
         return AnimeList(
-            [self.get_all_metadata(Anime(keys=keys, values=data)) for data in data_list]
+            self.get_all_metadata_bulk(
+                [Anime(keys=keys, values=data) for data in data_list],
+                use_eager_loading=True,
+            )
         )
         # return (Anime(keys=keys, values=data) for data in data_list)
 
@@ -654,7 +684,13 @@ class db_instance(BaseDB):
         key = self._validate_table_name(key)
         data = self.sql(f"SELECT value FROM {key} WHERE id=?;", (id,))
         if data is not None:
-            return [e[0] for e in data]
+            return self._postprocess_metadata_values(key, [e[0] for e in data])
+        return []
+
+    def _fetch_metadata_storage_values(self, id, key: str) -> list:
+        key = self._validate_table_name(key)
+        data = self.sql(f"SELECT value FROM {key} WHERE id=?;", (id,))
+        return [e[0] for e in data or []]
 
     def save_metadata(self, id, meta):
         if not meta:
@@ -665,6 +701,7 @@ class db_instance(BaseDB):
                 key = self._validate_table_name(key)
                 if type(values) not in {list, set, tuple}:
                     raise TypeError("Values must be of type list, not", type(values))
+                values = self._preprocess_metadata_values(key, values)
                 data = self.sql(f"SELECT value FROM {key} WHERE id=?", (id,))
                 db_values = [e[0] for e in data or []]
 

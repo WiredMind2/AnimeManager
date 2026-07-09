@@ -16,10 +16,13 @@ class ApiCoordinatorAdapter:
         self,
         api: Any,
         db_manager: DatabaseManager,
+        write_service: Any = None,
     ) -> None:
         self._api_coordinator = APICoordinator()
         self._api_coordinator.set_api(api)
         self._api_coordinator.set_database_manager(db_manager)
+        if write_service is not None:
+            self._api_coordinator.set_write_service(write_service)
 
     @property
     def api_coordinator(self) -> APICoordinator:
@@ -55,4 +58,19 @@ class ApiCoordinatorAdapter:
                 yield from_legacy_anime(item)
             return
         for item in self.browse_season(year, season, limit=limit):
+            yield item
+
+    def browse_genre(self, genre: str, limit: int = 50) -> list[AnimeEntity]:
+        results = self._api_coordinator.browse_genre(genre, limit=limit)
+        if not results:
+            return []
+        return [from_legacy_anime(item) for item in results]
+
+    def stream_browse_genre(self, genre: str, limit: int = 50):
+        streamer = getattr(self._api_coordinator, "stream_browse_genre", None)
+        if callable(streamer):
+            for item in streamer(genre, limit=limit):
+                yield from_legacy_anime(item)
+            return
+        for item in self.browse_genre(genre, limit=limit):
             yield item
