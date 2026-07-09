@@ -149,6 +149,51 @@ class TestGettersInstanceMethods:
             assert result == mock_instance
 
     @pytest.mark.timeout(30)
+    def test_getDatabase_singleton_under_concurrent_access(self):
+        """Concurrent getDatabase calls must construct only one backend instance."""
+        import threading
+
+        import shared.config.getters as getters_mod
+
+        getters_mod._database_instances.clear()
+
+        mock_getters = MagicMock(spec=Getters)
+        mock_getters.settings = {
+            "database_managers": {
+                "last_db_used": "sqlite",
+                "sqlite": {"path": ":memory:"},
+            }
+        }
+
+        construct_count = {"n": 0}
+
+        class _Sentinel:
+            pass
+
+        with patch("shared.config.getters.db_managers") as mock_db_managers:
+
+            def _factory(_args):
+                construct_count["n"] += 1
+                return _Sentinel()
+
+            mock_db_managers.databases = {"sqlite": _factory}
+
+            results = []
+
+            def _worker():
+                results.append(Getters.getDatabase(mock_getters))
+
+            threads = [threading.Thread(target=_worker) for _ in range(20)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5.0)
+
+        assert construct_count["n"] == 1
+        assert len(results) == 20
+        assert all(result is results[0] for result in results)
+
+    @pytest.mark.timeout(30)
     def test_getDatabase_no_self(self):
         """Test getDatabase with None self uses Constants."""
         with patch("shared.config.getters.Constants") as mock_constants:
