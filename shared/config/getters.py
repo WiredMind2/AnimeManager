@@ -17,6 +17,12 @@ from typing import Any, Dict, List, Optional, Union
 import requests
 from PIL import Image, ImageTk
 
+from shared.utils.broadcast_schedule import (
+    latest_episode_label,
+    next_episode_datetime,
+    parse_broadcast,
+)
+
 try:
     import adapters.persistence as db_managers  # type: ignore
     import adapters.file as file_managers  # type: ignore
@@ -41,6 +47,8 @@ if "database_threads" not in globals().keys():
     globals()["database_threads"] = {}
 if "_database_instances" not in globals().keys():
     globals()["_database_instances"] = {}
+if "_database_instances_lock" not in globals().keys():
+    globals()["_database_instances_lock"] = threading.Lock()
 
 
 class LRUCache:
@@ -171,10 +179,12 @@ class Getters:
         # Reuse a single DB manager instance per db backend to keep
         # connection lifecycle and locks coherent across components/wrappers.
         cache_key = f"{db_name}:{hash(json.dumps(args, sort_keys=True, default=str))}"
-        instance = globals()["_database_instances"].get(cache_key)
-        if instance is None:
-            instance = db(args)
-            globals()["_database_instances"][cache_key] = instance
+        lock = globals()["_database_instances_lock"]
+        with lock:
+            instance = globals()["_database_instances"].get(cache_key)
+            if instance is None:
+                instance = db(args)
+                globals()["_database_instances"][cache_key] = instance
 
         return instance
 
@@ -527,36 +537,15 @@ class Getters:
                     )
                 )
 
-            if anime.broadcast is not None:
-                weekday, hour, minute = map(int, anime.broadcast.split("-"))
-
-                daysLeft = (weekday - today.weekday()) % 7
-                dateObj = datetime.today() + timedelta(days=daysLeft)
-
-                # Depends on timezone - TODO
-                tz = (
-                    datetime.now().astimezone().utcoffset().seconds // 3600  # type: ignore
-                )  # Get current UTC offset in hours
-                hourDateObj = timedelta(
-                    hours=hour - 9 + tz, minutes=minute
-                )  # Compare to Japan's UTC offset (UTC+9)
-                dateObj = (
-                    datetime.combine(dateObj.date(), datetime.min.time()) + hourDateObj
+            slot = parse_broadcast(anime.broadcast)
+            if slot is not None:
+                next_local = next_episode_datetime(slot, now=today)
+                datetext.append(
+                    next_local.strftime("Next episode on %a %d at %H:%M")
                 )
-                text = dateObj.strftime("Next episode on %a %d at %H:%M")
-                datetext.append(text)
-
-                daysSince = (today.weekday() - weekday) % 7
-                text = "Latest episode: {}"
-                if daysSince == 0:
-                    text = text.format("Today")
-                elif daysSince == 1:
-                    text = text.format("Yesterday")
-                elif daysSince > 1:
-                    text = text.format(str(daysSince) + " days ago")
-                else:
-                    text = text.format("uhh?")
-                datetext.append(text)
+                datetext.append(
+                    f"Latest episode: {latest_episode_label(slot, now=today)}"
+                )
             else:
                 daysSince = (delta.days - 1) % 7
                 dateObj = date.today() - timedelta(days=daysSince)

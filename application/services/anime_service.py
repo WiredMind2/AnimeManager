@@ -15,6 +15,11 @@ from application.commands import (
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
 from application.playback import PlaybackService
+from application.services.anime_hydration import (
+    PRIORITY_PREFETCH,
+    AnimeDetailsResult,
+    AnimeHydrationService,
+)
 from domain.dto import (
     AnimeListRequest,
     AnimeListResponse,
@@ -26,6 +31,7 @@ from domain.dto import (
 from domain.entities import AnimeEntity
 from domain.errors import NotFoundError, ValidationError
 from domain.policies import (
+    is_anime_metadata_missing,
     normalize_airing_season,
     normalize_genre,
     normalize_search_query,
@@ -49,12 +55,33 @@ class AnimeApplicationService:
         download_port: DownloadPort,
         user_actions_port: UserActionsPort,
         media_streaming_service: PlaybackService | None = None,
+        hydration_service: AnimeHydrationService | None = None,
     ) -> None:
         self._anime_repository = anime_repository
         self._metadata_provider = metadata_provider
         self._download_port = download_port
         self._user_actions_port = user_actions_port
         self._media_streaming = media_streaming_service
+        self._hydration = hydration_service
+
+    def _prefetch_metadata(
+        self,
+        entities,
+        *,
+        priority: int = PRIORITY_PREFETCH,
+    ) -> None:
+        if self._hydration is None:
+            return
+        self._hydration.schedule_entities(entities, priority=priority)
+
+    def _prefetch_entity(
+        self, entity: AnimeEntity, *, priority: int = PRIORITY_PREFETCH
+    ) -> None:
+        if entity is None:
+            return
+        if not is_anime_metadata_missing(entity, catalog_id=entity.id):
+            return
+        self._prefetch_metadata([entity], priority=priority)
 
     def search_anime(self, request: SearchRequest) -> list[AnimeEntity]:
         query = normalize_search_query(request.query)
@@ -80,6 +107,7 @@ class AnimeApplicationService:
                 seen_ids.add(entity.id)
                 merged.append(entity)
                 if len(merged) >= limit:
+                    self._prefetch_metadata(merged)
                     return merged
 
         for entity in self._anime_repository.search(query, limit):
@@ -88,6 +116,7 @@ class AnimeApplicationService:
             seen_ids.add(entity.id)
             merged.append(entity)
             if len(merged) >= limit:
+                self._prefetch_metadata(merged)
                 return merged
 
         for entity in self._metadata_provider.search(query, limit):
@@ -96,8 +125,10 @@ class AnimeApplicationService:
             seen_ids.add(entity.id)
             merged.append(entity)
             if len(merged) >= limit:
-                break
+                self._prefetch_metadata(merged)
+                return merged
 
+        self._prefetch_metadata(merged)
         return merged
 
     def stream_search_anime(self, request: SearchRequest):
@@ -134,6 +165,7 @@ class AnimeApplicationService:
                 if entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
 
         local_results = self._anime_repository.search(query, request.limit)
@@ -142,6 +174,7 @@ class AnimeApplicationService:
                 if entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
 
         streamer = getattr(self._metadata_provider, "stream_search", None)
@@ -150,6 +183,7 @@ class AnimeApplicationService:
                 if entity is None or entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
             return
 
@@ -157,6 +191,7 @@ class AnimeApplicationService:
             if entity is None or entity.id in seen_ids:
                 continue
             seen_ids.add(entity.id)
+            self._prefetch_entity(entity)
             yield entity
 
     def browse_season(self, request: SeasonBrowseRequest) -> list[AnimeEntity]:
@@ -174,6 +209,7 @@ class AnimeApplicationService:
             seen_ids.add(entity.id)
             merged.append(entity)
             if len(merged) >= limit:
+                self._prefetch_metadata(merged)
                 return merged
 
         browser = getattr(self._metadata_provider, "browse_season", None)
@@ -185,6 +221,7 @@ class AnimeApplicationService:
                 merged.append(entity)
                 if len(merged) >= limit:
                     break
+            self._prefetch_metadata(merged)
             return merged
 
         for entity in self._metadata_provider.search(f"{season} {year}", limit):
@@ -194,6 +231,7 @@ class AnimeApplicationService:
             merged.append(entity)
             if len(merged) >= limit:
                 break
+        self._prefetch_metadata(merged)
         return merged
 
     def stream_browse_season(self, request: SeasonBrowseRequest):
@@ -208,6 +246,7 @@ class AnimeApplicationService:
             if entity.id in seen_ids:
                 continue
             seen_ids.add(entity.id)
+            self._prefetch_entity(entity)
             yield entity
 
         streamer = getattr(self._metadata_provider, "stream_browse_season", None)
@@ -216,6 +255,7 @@ class AnimeApplicationService:
                 if entity is None or entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
             return
 
@@ -225,6 +265,7 @@ class AnimeApplicationService:
                 if entity is None or entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
             return
 
@@ -232,6 +273,7 @@ class AnimeApplicationService:
             if entity is None or entity.id in seen_ids:
                 continue
             seen_ids.add(entity.id)
+            self._prefetch_entity(entity)
             yield entity
 
     def browse_genre(self, request: GenreBrowseRequest) -> list[AnimeEntity]:
@@ -246,6 +288,7 @@ class AnimeApplicationService:
             seen_ids.add(entity.id)
             merged.append(entity)
             if len(merged) >= limit:
+                self._prefetch_metadata(merged)
                 return merged
 
         browser = getattr(self._metadata_provider, "browse_genre", None)
@@ -257,6 +300,7 @@ class AnimeApplicationService:
                 merged.append(entity)
                 if len(merged) >= limit:
                     break
+            self._prefetch_metadata(merged)
             return merged
 
         for entity in self._metadata_provider.search(genre, limit):
@@ -266,6 +310,7 @@ class AnimeApplicationService:
             merged.append(entity)
             if len(merged) >= limit:
                 break
+        self._prefetch_metadata(merged)
         return merged
 
     def stream_browse_genre(self, request: GenreBrowseRequest):
@@ -277,6 +322,7 @@ class AnimeApplicationService:
             if entity.id in seen_ids:
                 continue
             seen_ids.add(entity.id)
+            self._prefetch_entity(entity)
             yield entity
 
         streamer = getattr(self._metadata_provider, "stream_browse_genre", None)
@@ -285,6 +331,7 @@ class AnimeApplicationService:
                 if entity is None or entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
             return
 
@@ -294,6 +341,7 @@ class AnimeApplicationService:
                 if entity is None or entity.id in seen_ids:
                     continue
                 seen_ids.add(entity.id)
+                self._prefetch_entity(entity)
                 yield entity
             return
 
@@ -301,6 +349,7 @@ class AnimeApplicationService:
             if entity is None or entity.id in seen_ids:
                 continue
             seen_ids.add(entity.id)
+            self._prefetch_entity(entity)
             yield entity
 
     def get_anime_list(self, request: AnimeListRequest) -> AnimeListResponse:
@@ -311,13 +360,53 @@ class AnimeApplicationService:
             hide_rated=request.hide_rated,
             user_id=request.user_id,
         )
+        self._prefetch_metadata(items)
         return AnimeListResponse(items=items, has_next=has_next)
 
-    def get_anime_details(self, anime_id: int) -> AnimeEntity:
-        anime = self._anime_repository.get_anime(anime_id)
-        if anime is None:
+    def get_anime_details(self, anime_id: int) -> AnimeDetailsResult:
+        anime_id = int(anime_id)
+        entity = self._anime_repository.get_anime(anime_id)
+        if entity is None:
+            if (
+                self._hydration is None
+                or not self._hydration.catalog_id_exists(anime_id)
+            ):
+                raise NotFoundError(f"Anime with id={anime_id} not found")
+            entity = AnimeEntity(id=anime_id, title="")
+
+        pending = is_anime_metadata_missing(entity, catalog_id=anime_id)
+        refreshing = (
+            self._hydration.is_detail_refreshing(anime_id)
+            if self._hydration is not None
+            else False
+        )
+        return AnimeDetailsResult(
+            entity=entity,
+            metadata_pending=pending,
+            metadata_refreshing=refreshing,
+        )
+
+    def refresh_anime_details(self, anime_id: int) -> dict:
+        anime_id = int(anime_id)
+        if self._hydration is None:
+            return {"accepted": False, "anime_id": anime_id}
+        if not self._hydration.catalog_id_exists(anime_id):
             raise NotFoundError(f"Anime with id={anime_id} not found")
-        return anime
+        self._hydration.kickoff_detail_refresh(
+            anime_id,
+            after_hydrate=self._refresh_detail_extras,
+        )
+        return {"accepted": True, "anime_id": anime_id}
+
+    def _refresh_detail_extras(self, anime_id: int) -> None:
+        try:
+            self.refresh_anime_characters(anime_id)
+        except Exception:
+            pass
+        try:
+            self.refresh_anime_pictures(anime_id)
+        except Exception:
+            pass
 
     def start_download(self, request: DownloadRequest) -> bool:
         if request.url is None and request.hash_value is None:
@@ -376,10 +465,11 @@ class AnimeApplicationService:
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ) -> list[dict]:
         sanitized = self._sanitize_terms(terms)
         return self._download_port.search_torrents(
-            sanitized, profile=profile, limit=limit
+            sanitized, profile=profile, limit=limit, allow_nsfw=allow_nsfw
         )
 
     def stream_torrents(
@@ -387,6 +477,7 @@ class AnimeApplicationService:
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ):
         """Yield torrent dicts progressively as engines emit them.
 
@@ -398,10 +489,12 @@ class AnimeApplicationService:
         sanitized = self._sanitize_terms(terms)
         streamer = getattr(self._download_port, "stream_torrents", None)
         if callable(streamer):
-            yield from streamer(sanitized, profile=profile, limit=limit)
+            yield from streamer(
+                sanitized, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+            )
             return
         for row in self._download_port.search_torrents(
-            sanitized, profile=profile, limit=limit
+            sanitized, profile=profile, limit=limit, allow_nsfw=allow_nsfw
         ):
             yield row
 
@@ -472,8 +565,29 @@ class AnimeApplicationService:
             raise ValidationError("Settings updates must be a non-empty object.")
         return self._anime_repository.update_settings(updates)
 
+    @staticmethod
+    def _normalize_relation_row(row: dict) -> dict:
+        rel_id = row.get("rel_id") or row.get("anime_id")
+        relation_name = row.get("relation") or row.get("name")
+        media_type = row.get("media_type") or row.get("type") or "anime"
+        return {
+            "id": row.get("id"),
+            "rel_id": rel_id,
+            "anime_id": rel_id,
+            "type": media_type,
+            "media_type": media_type,
+            "name": relation_name,
+            "relation": relation_name,
+            "title": row.get("title"),
+            "picture": row.get("picture"),
+            "status": row.get("status"),
+            "date_from": row.get("date_from"),
+            "episodes": row.get("episodes"),
+        }
+
     def get_relations(self, anime_id: int, relation_type: str = "anime") -> list[dict]:
-        return self._anime_repository.get_relations(anime_id, relation_type)
+        rows = self._anime_repository.get_relations(anime_id, relation_type)
+        return [self._normalize_relation_row(row) for row in rows if isinstance(row, dict)]
 
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         getter = getattr(self._anime_repository, "get_anime_torrents", None)

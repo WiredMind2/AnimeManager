@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterable, List, Optional
 
 from adapters.persistence.models import Anime
 from application.services.api_coordinator import APICoordinator
+from application.services.anime_write_service import WriteSource
 from application.services.database_manager import DatabaseManager
 from shared.contracts import IngestionResult, IngestionStatus
 from shared.telemetry import get_telemetry
@@ -76,14 +77,24 @@ class StartupJobsService:
     ``UpdateUtils.updateAllProgression`` chain. It fans the work across
     short, well-scoped jobs that each survive their own errors.
 
-    Jobs currently implemented:
+    Jobs run on startup (lean pipeline):
 
+    * ``repair_date_from`` -- one-shot ordinal date migration (skipped
+      after ``startup_migrations.repair_date_from``).
     * ``fetch_latest_anime`` -- pull the current season / trending
       lists from every metadata provider that exposes a ``schedule``
-      endpoint and persist them through the canonical ingestion
-      pipeline (at most once per :attr:`_SCHEDULE_MIN_INTERVAL_S`).
+      endpoint (at most once per :attr:`_SCHEDULE_MIN_INTERVAL_S`).
     * ``update_status`` -- transition stale lifecycle rows
       (``UPCOMING`` / ``AIRING``) based on airing dates.
+    * ``restore_libtorrent_sessions`` -- wait for embedded LibTorrent
+      session restore when that backend is active.
+    * ``reconcile_deleted_torrents`` -- mark completed torrents whose
+      files are missing as ``deleted``.
+
+    Heavy backlog work (catalog enrichment, synonym backfill, duplicate
+    repair) is intentionally **not** run here; it is handled by post-
+    ingest enrichment, :class:`~application.services.anime_hydration.AnimeHydrationService`,
+    and the daily schedule refresh loop.
 
     The orchestrator never raises; callers inspect
     :class:`StartupJobReport` if they need to react to failures.
@@ -110,6 +121,7 @@ class StartupJobsService:
         torrent_manager: Any,
         logger: Any,
         download_adapter: Any = None,
+        write_service: Any = None,
         schedule_limit: int = 50,
     ) -> None:
         self._api_coordinator = api_coordinator
@@ -118,6 +130,7 @@ class StartupJobsService:
         self._torrent_manager = torrent_manager
         self._logger = logger
         self._download_adapter = download_adapter
+        self._write_service = write_service
         self._schedule_limit = max(1, int(schedule_limit))
         self._telemetry = get_telemetry()
         self._lock = threading.Lock()
@@ -337,9 +350,20 @@ class StartupJobsService:
         self, job: StartupJob, report: StartupJobReport
     ) -> None:
         start = time.perf_counter()
+        db = self._database_manager.get_database()
+        commits_before = int(getattr(db, "_commit_count", 0) or 0) if db else 0
+        queries_before = int(getattr(db, "_query_count", 0) or 0) if db else 0
         try:
             detail = job.fn()
             elapsed = int((time.perf_counter() - start) * 1000)
+            commits_after = int(getattr(db, "_commit_count", 0) or 0) if db else 0
+            queries_after = int(getattr(db, "_query_count", 0) or 0) if db else 0
+            self._telemetry.increment(
+                f"startup.job.{job.name}_commits", max(0, commits_after - commits_before)
+            )
+            self._telemetry.increment(
+                f"startup.job.{job.name}_queries", max(0, queries_after - queries_before)
+            )
             report.add(
                 StartupJobOutcome(
                     name=job.name,
@@ -352,7 +376,9 @@ class StartupJobsService:
                 f"startup.job.{job.name}_ms", elapsed
             )
             self._log(
-                f"Startup job '{job.name}' ok: {detail} ({elapsed} ms)"
+                f"Startup job '{job.name}' ok: {detail} ({elapsed} ms, "
+                f"{commits_after - commits_before} commits, "
+                f"{queries_after - queries_before} queries)"
             )
         except Exception as exc:  # noqa: BLE001 - jobs must not abort the pipeline
             elapsed = int((time.perf_counter() - start) * 1000)
@@ -374,9 +400,6 @@ class StartupJobsService:
 
     def _jobs(self) -> Iterable[StartupJob]:
         yield StartupJob("repair_date_from", self._job_repair_date_from)
-        yield StartupJob(
-            "repair_duplicate_anime", self._job_repair_duplicate_anime
-        )
         if self._should_fetch_schedule():
             yield StartupJob("fetch_latest_anime", self._job_fetch_latest)
         else:
@@ -422,12 +445,122 @@ class StartupJobsService:
         count = len(getattr(tm, "handles", {}) or {})
         return f"session ready ({count} torrent(s))"
 
+    def _read_enrich_catalog_limit(self) -> int:
+        anime_cfg = self._anime_settings()
+        try:
+            limit = int(anime_cfg.get("enrichCatalogLimit", 200))
+        except (TypeError, ValueError):
+            limit = 200
+        return max(1, limit)
+
+    def _job_enrich_catalog_ids(self) -> str:
+        """Backfill cross-provider ids for legacy single-provider index rows."""
+        # Defer heavy enrichment so first HTTP/SSR requests are not competing
+        # with hundreds of catalog lookups immediately after process start.
+        time.sleep(8)
+        result = self._database_manager.enrich_catalog_identities(
+            limit=self._read_enrich_catalog_limit()
+        )
+        if result.looked_up == 0:
+            return "no single-provider rows to enrich"
+        return (
+            f"enriched {result.enriched} row(s), merged {result.merged} duplicate(s)"
+        )
+
+    def _job_backfill_title_synonyms(self) -> str:
+        """Hydrate catalogue rows that have a title but no saved synonyms."""
+        api = getattr(self._api_coordinator, "_api", None)
+        anime_fn = getattr(api, "anime", None) if api is not None else None
+        if not callable(anime_fn):
+            return "skipped (no API)"
+        if self._write_service is None:
+            return "skipped (no write service)"
+
+        db = self._database_manager.get_database()
+        if db is None:
+            return "skipped (database not initialized)"
+
+        limit = 50
+        try:
+            rows = db.sql(
+                "SELECT a.id FROM anime a "
+                "WHERE a.title IS NOT NULL AND TRIM(a.title) <> '' "
+                "AND NOT EXISTS (SELECT 1 FROM title_synonyms ts WHERE ts.id = a.id) "
+                "ORDER BY a.id DESC LIMIT ?",
+                (limit,),
+            )
+        except Exception as exc:
+            return f"scan failed: {exc}"
+
+        ids = [int(row[0]) for row in rows or []]
+        if not ids:
+            return "no rows to backfill"
+
+        hydrated = 0
+        for catalog_id in ids:
+            try:
+                result = anime_fn(catalog_id, _persist=False)
+            except Exception:
+                continue
+            if not result:
+                continue
+            persisted = self._write_service.persist_legacy_anime(
+                result,
+                source=WriteSource.BACKFILL,
+                catalog_id=catalog_id,
+            )
+            if not persisted:
+                continue
+            try:
+                synonyms = db.sql(
+                    "SELECT 1 FROM title_synonyms WHERE id=? LIMIT 1",
+                    (catalog_id,),
+                )
+            except Exception:
+                synonyms = []
+            if synonyms:
+                hydrated += 1
+
+        return f"hydrated {hydrated}/{len(ids)} row(s) missing synonyms"
+
+    def _migration_done(self, key: str) -> bool:
+        settings = getattr(self._config, "settings", None) or {}
+        migrations = settings.get("startup_migrations") or {}
+        if not isinstance(migrations, dict):
+            return False
+        return bool(migrations.get(key))
+
+    def _mark_migration_done(self, key: str) -> None:
+        updater = getattr(self._config, "update_settings", None)
+        if not callable(updater):
+            return
+        try:
+            updater({"startup_migrations": {key: True}})
+        except Exception as exc:  # noqa: BLE001
+            self._log(
+                f"Failed persisting startup migration '{key}': "
+                f"{type(exc).__name__}: {exc}"
+            )
+
     def _job_repair_duplicate_anime(self) -> str:
         """Collapse duplicate ``indexList`` / ``anime`` rows left from pre-merge ingest."""
         merged = self._database_manager.repair_duplicate_anime_entries()
-        if merged == 0:
+        if self._migration_done("repair_duplicate_anime"):
+            if merged == 0:
+                return "no provider duplicate rows to repair"
+            return f"merged {merged} provider duplicate row(s)"
+
+        title_merged = self._database_manager.repair_duplicate_anime_entries(
+            title_only=True
+        )
+        self._mark_migration_done("repair_duplicate_anime")
+        total = merged + title_merged
+        if total == 0:
             return "no duplicate rows to repair"
-        return f"merged {merged} duplicate row(s)"
+        return (
+            f"merged {total} duplicate row(s) "
+            f"(provider={merged}, title={title_merged})"
+        )
 
     # Any ``date_from`` / ``date_to`` value smaller than this threshold
     # is treated as a legacy ``datetime.toordinal()`` value (days since
@@ -437,6 +570,8 @@ class StartupJobsService:
     # being orders of magnitude below the smallest plausible Unix
     # timestamp the codebase ever stored (1.0e8 ~ 1973).
     _ORDINAL_THRESHOLD = 2_000_000
+
+    _DATE_REPAIR_BATCH_SIZE = 100
 
     def _job_repair_date_from(self) -> str:
         """One-shot migration: turn ordinal ``date_from`` values into Unix.
@@ -455,6 +590,9 @@ class StartupJobsService:
         and ordinal values are re-interpreted through
         :meth:`datetime.fromordinal` -> ``timestamp()``.
         """
+        if self._migration_done("repair_date_from"):
+            return "skipped (migration complete)"
+
         db = self._database_manager.get_database()
         if db is None:
             return "skipped (database not initialized)"
@@ -473,10 +611,39 @@ class StartupJobsService:
             ) from exc
 
         if not rows:
+            self._mark_migration_done("repair_date_from")
             return "no rows to repair"
 
         repaired_from = 0
         repaired_to = 0
+        pending: list[tuple[list[str], list[Any]]] = []
+        pinned_ctx = getattr(db, "pinned_pool_connection", None)
+        use_pool = bool(getattr(db, "USE_CONNECTION_POOL", False))
+
+        def _flush_repairs(batch: list[tuple[list[str], list[Any]]]) -> None:
+            if not batch:
+                return
+
+            def _apply() -> None:
+                for sets, params in batch:
+                    db.sql(
+                        f"UPDATE anime SET {', '.join(sets)} WHERE id=%s",
+                        params,
+                        save=False,
+                    )
+                commit_pinned = getattr(db, "commit_pinned_connection", None)
+                if callable(commit_pinned):
+                    commit_pinned()
+                elif hasattr(db, "save"):
+                    db.save()
+
+            if pinned_ctx is not None and use_pool:
+                with pinned_ctx():
+                    _apply()
+            else:
+                with db.get_lock():
+                    _apply()
+
         for row in rows:
             anime_id, date_from, date_to = row[0], row[1], row[2]
             new_from = self._ordinal_to_unix(date_from)
@@ -494,20 +661,28 @@ class StartupJobsService:
             if not sets:
                 continue
             params.append(int(anime_id))
+            pending.append((sets, params))
+            if len(pending) >= self._DATE_REPAIR_BATCH_SIZE:
+                try:
+                    _flush_repairs(pending)
+                except Exception as exc:
+                    self._log(
+                        f"date_from repair batch failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    pending.clear()
+
+        if pending:
             try:
-                db.sql(
-                    f"UPDATE anime SET {', '.join(sets)} WHERE id=%s",
-                    params,
-                    save=True,
-                )
+                _flush_repairs(pending)
             except Exception as exc:
-                # Skip-and-keep-going: a single bad row should not
-                # poison the migration for the rest of the table.
                 self._log(
-                    f"date_from repair skipped id={anime_id}: "
+                    f"date_from repair batch failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
 
+        self._mark_migration_done("repair_date_from")
         return f"repaired date_from={repaired_from} date_to={repaired_to}"
 
     @classmethod
@@ -532,36 +707,46 @@ class StartupJobsService:
         except (ValueError, OverflowError):
             return None
 
+    def _db_gateway_writes_only(self) -> bool:
+        settings = getattr(self._config, "settings", None) or {}
+        flags = settings.get("feature_flags") or {}
+        if not isinstance(flags, dict):
+            return True
+        return bool(flags.get("db_gateway_writes_only", True))
+
     def _job_fetch_latest(self) -> str:
         """Pull the latest anime data from every provider's schedule."""
+        self._wait_for_api_providers_ready()
         _, _, limit = self._read_schedule_config()
         effective_limit = max(limit, self._schedule_limit)
         result: Optional[IngestionResult] = (
             self._api_coordinator.fetch_latest(
                 limit=effective_limit,
-                per_provider=True,
+                per_provider=False,
             )
         )
         if result is None:
             return "skipped (no providers / API unavailable)"
 
-        # The ingestion pipeline auto-persists when the
-        # ``db_gateway_writes_only`` flag is on; the legacy fallback
-        # path (flag off) still relies on the caller to drive a sink.
-        # We explicitly persist here too, so the behaviour is the same
-        # in either configuration. Records are already deduplicated by
-        # the pipeline.
-        persisted_extra = 0
         records = result.records or []
-        if records and self._database_manager is not None:
+        persisted = int(getattr(result, "persisted_count", 0) or 0)
+
+        # When ``db_gateway_writes_only`` is on the ingestion pipeline
+        # sink already persisted the deduplicated batch. Re-running
+        # ``upsert_anime_batch`` here doubled pool pressure and, under
+        # MariaDB's small connection pool, caused every row to fail with
+        # ``pool exhausted`` while still marking ``lastSchedule``.
+        if (
+            records
+            and self._database_manager is not None
+            and not self._db_gateway_writes_only()
+        ):
             try:
-                animes = [self._record_to_anime(record) for record in records]
-                persisted_extra = self._database_manager.upsert_anime_batch(
-                    animes
-                )
+                animes = [
+                    APICoordinator._record_to_anime(record) for record in records
+                ]
+                persisted = self._database_manager.upsert_anime_batch(animes)
             except Exception as exc:  # noqa: BLE001 - logged at top level
-                # Surface the persistence failure but keep the pipeline
-                # status -- the schedule fetch itself succeeded.
                 raise RuntimeError(
                     f"Schedule persistence failed: {type(exc).__name__}: {exc}"
                 ) from exc
@@ -572,12 +757,38 @@ class StartupJobsService:
                 f"{result.failed_providers} records=0"
             )
 
+        if records and persisted <= 0:
+            return (
+                f"providers={result.total_providers} failed="
+                f"{result.failed_providers} records={len(records)} "
+                f"persisted=0 (will retry on next startup)"
+            )
+
         self._mark_schedule_fetched()
         return (
             f"providers={result.total_providers} failed="
             f"{result.failed_providers} records={len(records)} "
-            f"persisted={persisted_extra}"
+            f"persisted={persisted}"
         )
+
+    def _wait_for_api_providers_ready(self, *, timeout: float = 120.0) -> None:
+        """Block until background API provider loading finishes."""
+        api = getattr(self._api_coordinator, "_api", None)
+        if api is None:
+            return
+        init_thread = getattr(api, "init_thread", None)
+        if init_thread is not None and init_thread.is_alive():
+            init_thread.join(timeout=timeout)
+            if init_thread.is_alive():
+                self._log(
+                    f"API provider init still running after {timeout:.0f}s timeout"
+                )
+                return
+        providers = []
+        if hasattr(api, "get_providers"):
+            providers = [p for p in api.get_providers() if p is not None]
+        if providers:
+            self._log(f"API providers ready: {len(providers)}")
 
     def _job_update_status(self) -> str:
         """Transition stale ``UPCOMING`` / ``AIRING`` rows by airing dates."""
@@ -684,34 +895,6 @@ class StartupJobsService:
             f"{status}={len(ids)}" for status, ids in transitions.items()
         )
         return f"updated={updated} ({breakdown})"
-
-    @staticmethod
-    def _record_to_anime(record: Any) -> Anime:
-        """Project an :class:`AnimeRecord` back into a legacy ``Anime``."""
-        anime = Anime()
-        for key in (
-            "id",
-            "title",
-            "synopsis",
-            "episodes",
-            "duration",
-            "status",
-            "rating",
-            "date_from",
-            "date_to",
-            "picture",
-            "trailer",
-            "broadcast",
-        ):
-            value = getattr(record, key, None)
-            if value is None:
-                continue
-            try:
-                setattr(anime, key, value)
-            except Exception:
-                # Some attributes are managed by the legacy class; ignore.
-                pass
-        return anime
 
     # ``MAIN_STATE`` is the legacy "lifecycle" category that the shared
     # logger is already configured to surface to the console (see

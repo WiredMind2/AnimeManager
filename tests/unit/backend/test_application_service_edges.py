@@ -39,6 +39,10 @@ class FakeRepository:
                 return entity
         return None
 
+    def anime_row_exists(self, anime_id):
+        entity = self.get_anime(anime_id)
+        return entity is not None and bool((entity.title or "").strip())
+
     def get_search_terms(self, anime_id):
         self.calls.append(("get_search_terms", anime_id))
         return list(self.return_search_terms)
@@ -183,12 +187,54 @@ class TestGetAnimeDetailsEdges:
     def test_returns_entity_when_found(self, service):
         repo, _, _, _ = service._fakes
         repo.items = [AnimeEntity(id=1, title="x")]
-        assert service.get_anime_details(1).title == "x"
+        assert service.get_anime_details(1).entity.title == "x"
+
+    def test_returns_non_blocking_without_await(self, service):
+        repo, _, _, _ = service._fakes
+        repo.items = [AnimeEntity(id=1, title="")]
+        result = service.get_anime_details(1)
+        assert result.entity.title == ""
+        assert result.metadata_pending is True
 
     @pytest.mark.parametrize("anime_id", [0, -1, 999999, 10**12])
     def test_not_found_raises(self, service, anime_id):
         with pytest.raises(NotFoundError):
             service.get_anime_details(anime_id)
+
+
+class TestRefreshAnimeDetailsEdges:
+    def test_refresh_without_hydration_returns_not_accepted(self, service):
+        result = service.refresh_anime_details(1)
+        assert result == {"accepted": False, "anime_id": 1}
+
+    def test_refresh_with_hydration_accepts(self, service):
+        class FakeHydration:
+            catalog_ids = {1}
+            kickoff_calls: list[int] = []
+
+            def catalog_id_exists(self, catalog_id: int) -> bool:
+                return int(catalog_id) in self.catalog_ids
+
+            def kickoff_detail_refresh(self, catalog_id, *, after_hydrate=None):
+                self.kickoff_calls.append(int(catalog_id))
+
+        hydration = FakeHydration()
+        service._hydration = hydration
+        result = service.refresh_anime_details(1)
+        assert result == {"accepted": True, "anime_id": 1}
+        assert hydration.kickoff_calls == [1]
+
+    def test_refresh_not_found_raises(self, service):
+        class FakeHydration:
+            def catalog_id_exists(self, catalog_id: int) -> bool:
+                return False
+
+            def kickoff_detail_refresh(self, *_args, **_kwargs):
+                raise AssertionError("should not be called")
+
+        service._hydration = FakeHydration()
+        with pytest.raises(NotFoundError):
+            service.refresh_anime_details(999)
 
 
 # ---------------------------------------------------------------------------

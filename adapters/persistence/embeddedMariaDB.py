@@ -11,11 +11,14 @@ import sys
 import tempfile
 import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import mysql.connector
 from mysql.connector.errors import (InterfaceError, OperationalError,
                                     ProgrammingError)
+
+from shared.telemetry import get_telemetry
 
 if os.name == "nt":
     # Lightweight Job Object helper so child processes are killed when the parent exits.
@@ -146,7 +149,7 @@ def handle_sql_error(func):
             elif (
                 e.errno == 4031
             ):  # The client was disconnected by the server because of inactivity
-                self.__init__(self.settings)
+                self._recover_connections()
                 return wrapper(self, *args, loops=loops, **kwargs)
 
             elif e.errno == 1040:  # Too many connections
@@ -159,7 +162,7 @@ def handle_sql_error(func):
                     self.close()
                     self.get_cursor()
                 except OperationalError:
-                    self.__init__(self.settings)
+                    self._recover_connections()
 
                 if loops < 5:
                     return wrapper(self, *args, loops=loops + 1, **kwargs)
@@ -173,7 +176,7 @@ def handle_sql_error(func):
                 try:
                     self.get_cursor()
                 except OperationalError:
-                    self.__init__(self.settings)
+                    self._recover_connections()
 
                 if loops < 5:
                     return wrapper(self, *args, loops=loops + 1, **kwargs)
@@ -209,12 +212,30 @@ def handle_sql_error(func):
             else:
                 raise
         except InterfaceError as e:
-            # Usually is 'Failed calling stored routine;'
+            # Discard bad pool checkouts in ``_execute_sql``; only rebuild the
+            # pool after repeated transport failures so concurrent readers are
+            # not torn down mid-request.
             if loops < 5:
+                if loops >= 2 and (
+                    "OK packet" in str(e)
+                    or "Connection not available" in str(e)
+                ):
+                    self._recover_connections()
                 time.sleep(0.05 * (loops + 1))
                 return wrapper(self, *args, loops=loops + 1, **kwargs)
             else:
                 raise
+        except IndexError:
+            # mysql-connector raises this on empty/malformed server packets.
+            pinned = getattr(self, "_pinned_sql_conn", None)
+            if pinned is not None:
+                self._mark_pool_connection_bad(pinned)
+            if loops < 5:
+                if loops >= 1:
+                    self._recover_connections()
+                time.sleep(0.05 * (loops + 1))
+                return wrapper(self, *args, loops=loops + 1, **kwargs)
+            raise
         except AttributeError as e:
             if "'NoneType' object has no attribute 'get_warnings'" in str(
                 e
@@ -229,7 +250,7 @@ def handle_sql_error(func):
                         self.cur.close()
                     self.get_cursor()
                 except OperationalError:
-                    self.__init__(self.settings)
+                    self._recover_connections()
 
                 if loops < 5:
                     return wrapper(self, *args, loops=loops + 1, **kwargs)
@@ -241,6 +262,10 @@ def handle_sql_error(func):
     return wrapper
 
 
+# Serialize embedded server startup across threads/process races during bootstrap.
+_MARIADB_START_LOCK = threading.Lock()
+
+
 class EmbeddedMariaDB(BaseDB):
     """Embedded MariaDB database manager"""
 
@@ -248,15 +273,21 @@ class EmbeddedMariaDB(BaseDB):
     USE_CONNECTION_POOL = True  # Enable connection pooling for MariaDB
 
     def __init__(self, settings=None) -> None:
-        super().__init__()
-
-        # Default settings for embedded MariaDB
+        # Connection credentials must exist before BaseDB.__init__ warms the
+        # pool (``_create_connection`` reads ``self.port``).
         self.settings = settings or {}
         self.port = self.settings.get("port", 3307)
         self.user = self.settings.get("user", "animemanager")
         self.password = self.settings.get("password", "animemanager")
         self.database = self.settings.get("database", "anime_manager")
         self.allow_root_fallback = bool(self.settings.get("allow_root_fallback", False))
+        self._pinned_sql_conn = None
+        self._io_stats_lock = threading.Lock()
+        self._commit_count = 0
+        self._query_count = 0
+        self._telemetry = get_telemetry()
+
+        super().__init__(settings=self.settings)
 
         # Paths setup
         self.appdata = Constants.getAppdata()
@@ -352,7 +383,7 @@ class EmbeddedMariaDB(BaseDB):
 
     def _init_connection_pool(self):
         """Initialize the MariaDB connection pool"""
-        pool_size = self.settings.get("pool_size", 10)
+        pool_size = self.settings.get("pool_size", 20)
         max_idle_time = self.settings.get("max_idle_time", 300)
 
         self.connection_pool = ConnectionPool(
@@ -374,7 +405,6 @@ class EmbeddedMariaDB(BaseDB):
                 buffered=True,
                 autocommit=False,
                 connection_timeout=30,
-                pool_reset_session=True  # Reset session variables on connection return
             )
             return conn
         except Exception as e:
@@ -703,6 +733,13 @@ FLUSH PRIVILEGES;
             "--default-authentication-plugin=mysql_native_password",
             "--console",
         ]
+        if self.settings.get("relaxed_durability", True):
+            flush_mode = self.settings.get("innodb_flush_log_at_trx_commit", 2)
+            cmd.append(f"--innodb_flush_log_at_trx_commit={int(flush_mode)}")
+            cmd.append("--sync_binlog=0")
+        buffer_pool = self.settings.get("innodb_buffer_pool_size")
+        if buffer_pool:
+            cmd.append(f"--innodb-buffer-pool-size={buffer_pool}")
 
         popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if os.name == "nt":
@@ -757,52 +794,55 @@ FLUSH PRIVILEGES;
 
     def _start_mariadb_server(self):
         """Start the MariaDB server, recovering from Aria corruption if needed."""
-        if self._is_mariadb_running():
-            self.log("DB_MAIN", "MariaDB is already running")
-            return True
+        with _MARIADB_START_LOCK:
+            if self._is_mariadb_running():
+                self.log("DB_MAIN", "MariaDB is already running")
+                return True
 
-        self.log("DB_MAIN", "Starting MariaDB server...")
-        # Check data files and try to fix common permission problems before init/start
-        try:
-            self._check_data_files_writable()
-        except Exception as e:
-            # Surface a clearer error to the caller
-            raise Exception(f"Pre-start check failed: {e}")
+            self.log("DB_MAIN", "Starting MariaDB server...")
+            # Check data files and try to fix common permission problems before init/start
+            try:
+                self._check_data_files_writable()
+            except Exception as e:
+                # Surface a clearer error to the caller
+                raise Exception(f"Pre-start check failed: {e}") from e
 
-        self._initialize_database()
-
-        try:
-            return self._launch_mariadb_process()
-        except Exception as first_error:
-            err_text = str(first_error)
-
-            # Aria log corruption is automatically recoverable: clear the
-            # bad log files and retry once. Anything else propagates.
-            if not self._is_aria_corruption(err_text):
-                self.stop_server()
-                raise Exception(f"Failed to start MariaDB server: {first_error}")
-
-            self.log(
-                "DB_MAIN",
-                "Detected Aria storage engine corruption; attempting automatic recovery...",
-            )
-            # Make sure the failed mysqld is fully gone before touching files.
-            self.stop_server()
-
-            if not self._attempt_aria_recovery():
-                raise Exception(
-                    f"Failed to start MariaDB server and Aria recovery could not "
-                    f"reclaim any log files: {first_error}"
-                )
+            self._initialize_database()
 
             try:
-                self.log("DB_MAIN", "Retrying MariaDB start after Aria recovery...")
                 return self._launch_mariadb_process()
-            except Exception as second_error:
-                self.stop_server()
-                raise Exception(
-                    f"Failed to start MariaDB server after Aria recovery: {second_error}"
+            except Exception as first_error:
+                err_text = str(first_error)
+
+                # Aria log corruption is automatically recoverable: clear the
+                # bad log files and retry once. Anything else propagates.
+                if not self._is_aria_corruption(err_text):
+                    self.stop_server()
+                    raise Exception(
+                        f"Failed to start MariaDB server: {first_error}"
+                    ) from first_error
+
+                self.log(
+                    "DB_MAIN",
+                    "Detected Aria storage engine corruption; attempting automatic recovery...",
                 )
+                # Make sure the failed mysqld is fully gone before touching files.
+                self.stop_server()
+
+                if not self._attempt_aria_recovery():
+                    raise Exception(
+                        f"Failed to start MariaDB server and Aria recovery could not "
+                        f"reclaim any log files: {first_error}"
+                    ) from first_error
+
+                try:
+                    self.log("DB_MAIN", "Retrying MariaDB start after Aria recovery...")
+                    return self._launch_mariadb_process()
+                except Exception as second_error:
+                    self.stop_server()
+                    raise Exception(
+                        f"Failed to start MariaDB server after Aria recovery: {second_error}"
+                    ) from second_error
 
     def _setup_database_security(self):
         """Setup the database user and security after initial start"""
@@ -930,6 +970,54 @@ FLUSH PRIVILEGES;
                 cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.database}")
                 cursor.execute(f"USE {self.database}")
                 cursor.close()
+
+    def _recover_connections(self) -> None:
+        """Reconnect after transport/protocol errors without replacing ``self.lock``.
+
+        ``handle_sql_error`` used to call ``__init__`` here, which allocated a
+        fresh :class:`threading.RLock` while other threads were still inside
+        ``with self`` blocks that acquired the previous lock. Their ``__exit__``
+        then raised ``cannot release un-acquired lock``.
+
+        Only idle pool connections are drained; in-flight checkouts are left to
+        finish and are discarded on return via :attr:`_PooledConnectionHandle.discard`.
+        """
+        with self.lock:
+            self.log("DB_MAIN", "Recovering MariaDB connections after transport error")
+            self._pinned_sql_conn = None
+            try:
+                self.close()
+            except Exception:
+                pass
+            if getattr(self, "db", None) is not None:
+                try:
+                    self.db.close()
+                except Exception:
+                    pass
+                self.db = None
+            pool = getattr(self, "connection_pool", None)
+            if pool is not None:
+                pool.drain()
+            self._connect_to_database()
+            self.get_cursor()
+
+    @staticmethod
+    def _pool_connection_is_usable(db_conn) -> bool:
+        if db_conn is None:
+            return False
+        try:
+            if hasattr(db_conn, "is_connected") and not db_conn.is_connected():
+                return False
+            if hasattr(db_conn, "ping"):
+                db_conn.ping(reconnect=False, attempts=1, delay=0)
+        except Exception:
+            return False
+        return True
+
+    def _mark_pool_connection_bad(self, conn_mgr) -> None:
+        conn_mgr.discard = True
+        if getattr(self, "_pinned_sql_conn", None) is conn_mgr:
+            self._pinned_sql_conn = None
 
     def stop_server(self):
         """Stop the MariaDB server"""
@@ -1408,12 +1496,10 @@ FLUSH PRIVILEGES;
             # Get column descriptions from the query
             keys = [d[0] for d in desc] if desc else []
 
-        return AnimeList(
-            [
-                self.get_all_metadata(Anime(keys=keys, values=data))
-                for data in result or []
-            ]
-        )
+        items = [
+            Anime(keys=keys, values=data) for data in (result or [])
+        ]
+        return AnimeList(self.get_all_metadata_bulk(items, use_eager_loading=True))
 
     def get_metadata(self, id, key):
         """Get metadata for a specific id and key. Should not return a generator."""
@@ -1426,6 +1512,15 @@ FLUSH PRIVILEGES;
         sql = f"SELECT value FROM {key} WHERE {arg};"
 
         data = self.sql(sql, list(id.values()))
+        return self._postprocess_metadata_values(key, [e[0] for e in data or []])
+
+    def _fetch_metadata_storage_values(self, id, key: str) -> list:
+        if not isinstance(id, dict):
+            id = {"id": id}
+        key = self._validate_table_name(key)
+        arg = " AND ".join(map(lambda e: f"{e}=%s", id.keys()))
+        sql = f"SELECT value FROM {key} WHERE {arg};"
+        data = self.sql(sql, list(id.values()))
         return [e[0] for e in data or []]
 
     def save_metadata(self, id, metadata):
@@ -1433,19 +1528,18 @@ FLUSH PRIVILEGES;
         if not metadata:
             return
 
-        # ``self.save()`` only commits the long-lived main connection,
-        # but every ``self.sql(...)`` call inside the loop runs on a
-        # pool connection that is released as soon as the call returns
-        # (see :meth:`insert` for the full explanation). Committing
-        # inline on each statement is the only way to keep metadata
-        # writes durable under :data:`USE_CONNECTION_POOL`.
+        # Unpinned pool checkouts are released immediately after each
+        # ``sql()`` call, so commits must be inline unless a caller
+        # holds a :meth:`pinned_pool_connection` (batch upsert).
+        persist_now = self._pinned_sql_conn is None
         with self:
             for key, values in metadata.items():
                 key = self._validate_table_name(key)
                 if not isinstance(values, (list, set, tuple)):
                     raise TypeError("Values must be of type list, not", type(values))
 
-                existing_data = self.get_metadata(id, key)
+                values = self._preprocess_metadata_values(key, values)
+                existing_data = self._fetch_metadata_storage_values(id, key)
                 new_values = set(values) - set(existing_data)
                 removed_values = set(existing_data) - set(values)
 
@@ -1453,14 +1547,14 @@ FLUSH PRIVILEGES;
                     self.sql(
                         f"DELETE FROM {key} WHERE id=%s AND value=%s",
                         [id, value],
-                        save=True,
+                        save=persist_now,
                     )
 
                 for value in new_values:
                     self.sql(
                         f"INSERT INTO {key} (id, value) VALUES (%s, %s)",
                         [id, value],
-                        save=True,
+                        save=persist_now,
                     )
 
     # Include all the same SQL methods as the MySQL class
@@ -1468,12 +1562,38 @@ FLUSH PRIVILEGES;
     def sql(self, sql, params=[], save=False, to_dict=False, get_description=False):
         """Execute SQL command and return results"""
         if self.USE_CONNECTION_POOL:
-            # Use pooled connection
+            pinned = self._pinned_sql_conn
+            if pinned is not None:
+                return self._execute_sql(
+                    pinned, sql, params, save, to_dict, get_description
+                )
             with self.pooled_connection() as conn_mgr:
-                return self._execute_sql(conn_mgr, sql, params, save, to_dict, get_description)
+                return self._execute_sql(
+                    conn_mgr, sql, params, save, to_dict, get_description
+                )
         else:
             # Use regular connection
             return self._execute_sql(self, sql, params, save, to_dict, get_description)
+
+    @contextmanager
+    def pinned_pool_connection(self):
+        """Hold one pooled connection across multiple ``sql()`` / ``set()`` calls."""
+        with self.pooled_connection() as conn_mgr:
+            previous = self._pinned_sql_conn
+            self._pinned_sql_conn = conn_mgr
+            try:
+                yield conn_mgr
+            finally:
+                self._pinned_sql_conn = previous
+
+    def commit_pinned_connection(self) -> None:
+        """Commit the currently pinned pool connection, if any."""
+        pinned = self._pinned_sql_conn
+        if pinned is not None and pinned.db is not None:
+            pinned.db.commit()
+            with self._io_stats_lock:
+                self._commit_count += 1
+            self._telemetry.increment("db.commits")
 
     def _execute_sql(self, conn_mgr, sql, params=[], save=False, to_dict=False, get_description=False):
         """Execute SQL command with the given connection manager"""
@@ -1482,6 +1602,10 @@ FLUSH PRIVILEGES;
 
         if conn_mgr.db is None:
             raise RuntimeError("Database connection not established")
+
+        if not self._pool_connection_is_usable(conn_mgr.db):
+            self._mark_pool_connection_bad(conn_mgr)
+            raise InterfaceError("MySQL Connection not available.")
 
         # After get_cursor(), cur should not be None
         assert conn_mgr.cur is not None, "Cursor should be initialized"
@@ -1494,6 +1618,10 @@ FLUSH PRIVILEGES;
             return []
 
         try:
+            with self._io_stats_lock:
+                self._query_count += 1
+            self._telemetry.increment("db.queries")
+
             # Handle parameter substitution - MySQL style to MariaDB style
             if params:
                 # Convert MySQL-style parameters to MariaDB format
@@ -1509,14 +1637,19 @@ FLUSH PRIVILEGES;
             else:
                 conn_mgr.cur.execute(sql)
 
-            if save:
-                conn_mgr.db.commit()
-
-            if (
+            is_read = (
                 sql.strip()
                 .upper()
                 .startswith(("SELECT", "SHOW", "DESCRIBE", "EXPLAIN"))
-            ):
+            )
+
+            if save:
+                conn_mgr.db.commit()
+                with self._io_stats_lock:
+                    self._commit_count += 1
+                self._telemetry.increment("db.commits")
+
+            if is_read:
                 results = conn_mgr.cur.fetchall()
                 description = conn_mgr.cur.description if get_description else None
                 if to_dict and conn_mgr.cur.description:
@@ -1525,15 +1658,24 @@ FLUSH PRIVILEGES;
                 if get_description:
                     return results or [], description
                 return results or []
-            else:
-                if save:
-                    conn_mgr.db.commit()
-                if get_description:
-                    return [], None
-                return []
+            if get_description:
+                return [], None
+            return []
 
         except Exception as e:
-            conn_mgr.db.rollback()
+            try:
+                if conn_mgr.db is not None:
+                    conn_mgr.db.rollback()
+            except Exception:
+                pass
+            if isinstance(e, IndexError):
+                self._mark_pool_connection_bad(conn_mgr)
+            elif isinstance(e, InterfaceError) or "OK packet" in str(e):
+                self._mark_pool_connection_bad(conn_mgr)
+            elif isinstance(e, mysql.connector.errors.DatabaseError):
+                errno = getattr(e, "errno", None)
+                if errno in {2013, 2014, 2027, 2055}:
+                    self._mark_pool_connection_bad(conn_mgr)
             raise e
 
     @handle_sql_error

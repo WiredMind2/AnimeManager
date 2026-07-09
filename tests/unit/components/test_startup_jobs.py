@@ -54,6 +54,7 @@ class _FakeAPI:
 class _RecordingDBManager:
     def __init__(self):
         self.upserts = []
+        self.enrich_calls = []
 
     def get_database(self):
         return None  # disables the update_status job in these tests
@@ -62,8 +63,21 @@ class _RecordingDBManager:
         self.upserts.append(list(records))
         return len(records)
 
+    def enrich_catalog_identities(self, *, limit=50):
+        self.enrich_calls.append(("startup", limit))
+        return SimpleNamespace(looked_up=0, enriched=0, merged=0)
 
-def _anime_like(rid, title="t"):
+    def enrich_catalog_identities_for_ids(self, catalog_ids):
+        self.enrich_calls.append(("batch", list(catalog_ids)))
+        return SimpleNamespace(looked_up=0, enriched=0, merged=0)
+
+    def repair_duplicate_anime_entries(self, **kwargs):
+        return 0
+
+
+def _anime_like(rid, title="t", date_from=None):
+    if date_from is None:
+        date_from = int(time.time()) - 5 * 86_400
     return SimpleNamespace(
         id=rid,
         title=title,
@@ -72,7 +86,7 @@ def _anime_like(rid, title="t"):
         duration=None,
         status=None,
         rating=None,
-        date_from=None,
+        date_from=date_from,
         date_to=None,
         picture=None,
         trailer=None,
@@ -100,7 +114,7 @@ def _build_service(api, db, *, settings=None) -> StartupJobsService:
             anime_settings.update(updates["anime"])
 
     config = SimpleNamespace(
-        settings={"anime": anime_settings},
+        settings={"anime": anime_settings, "startup_migrations": {}},
         update_settings=update_settings,
         _saved_settings=saved,
     )
@@ -119,6 +133,40 @@ def _build_service(api, db, *, settings=None) -> StartupJobsService:
 # ---------------------------------------------------------------------------
 
 
+def test_startup_pipeline_runs_lean_jobs_only():
+    """Heavy backlog jobs must not run on every boot."""
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    try:
+        report = service.run()
+    finally:
+        service._api_coordinator.close()
+
+    names = [o.name for o in report.outcomes]
+    assert names == [
+        "repair_date_from",
+        "fetch_latest_anime",
+        "update_status",
+        "restore_libtorrent_sessions",
+        "reconcile_deleted_torrents",
+    ]
+    assert report.total == 5
+    assert db.enrich_calls == []
+
+
+def test_removed_backlog_job_methods_remain_callable(monkeypatch):
+    """Job helpers stay available for manual/post-ingest use."""
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    try:
+        assert service._job_enrich_catalog_ids().startswith("no single-provider")
+        assert service._job_repair_duplicate_anime().startswith("no duplicate")
+    finally:
+        service._api_coordinator.close()
+
 def test_fetch_latest_persists_deduped_batch():
     api = _FakeAPI(
         [
@@ -134,12 +182,12 @@ def test_fetch_latest_persists_deduped_batch():
         service._api_coordinator.close()
 
     assert isinstance(report, StartupJobReport)
-    # ``repair_date_from`` + ``repair_duplicate_anime`` +
-    # ``fetch_latest_anime`` + ``update_status`` +
-    # ``restore_libtorrent_sessions`` + ``reconcile_deleted_torrents``.
-    # Non-fetch repair jobs short-circuit cleanly here because
-    # ``_RecordingDBManager.get_database()`` returns ``None``.
-    assert report.total == 6
+    # Lean pipeline: ``repair_date_from``, ``fetch_latest_anime``,
+    # ``update_status``, ``restore_libtorrent_sessions``,
+    # ``reconcile_deleted_torrents``. Non-fetch jobs short-circuit
+    # cleanly here because ``_RecordingDBManager.get_database()`` returns
+    # ``None``.
+    assert report.total == 5
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
@@ -328,7 +376,50 @@ def test_fetch_marks_last_schedule(monkeypatch):
         service._api_coordinator.close()
 
     assert "records=" in detail
+    assert "persisted=1" in detail
     assert service._config._saved_settings.get("anime", {}).get("lastSchedule") == fixed
+
+
+def test_fetch_does_not_mark_schedule_when_persistence_fails():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+
+    def _fail_batch(records):
+        return 0
+
+    db.upsert_anime_batch = _fail_batch  # type: ignore[method-assign]
+    service = _build_service(api, db)
+    try:
+        detail = service._job_fetch_latest()
+    finally:
+        service._api_coordinator.close()
+
+    assert "persisted=0" in detail
+    assert "will retry" in detail
+    assert service._config._saved_settings.get("anime", {}).get("lastSchedule") is None
+
+
+def test_fetch_waits_for_api_init_thread():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    gate = threading.Event()
+    init_thread = threading.Thread(target=gate.wait)
+    init_thread.start()
+    api.init_thread = init_thread  # type: ignore[attr-defined]
+
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+
+    def _release_and_fetch():
+        time.sleep(0.05)
+        gate.set()
+        return service._job_fetch_latest()
+
+    worker = threading.Thread(target=_release_and_fetch)
+    worker.start()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive()
+    init_thread.join(timeout=1.0)
+    service._api_coordinator.close()
 
 
 class _StatusDB:
@@ -360,7 +451,7 @@ class _StatusDBManager(_RecordingDBManager):
     def get_database(self):
         return self._db
 
-    def repair_duplicate_anime_entries(self):
+    def repair_duplicate_anime_entries(self, **kwargs):
         return 0
 
 
@@ -406,3 +497,52 @@ def test_schedule_loop_sleep_is_bounded(settings, expect_max):
         service._api_coordinator.close()
 
     assert 60.0 <= sleep_s <= expect_max
+
+
+def test_backfill_title_synonyms_hydrates_missing_rows():
+    class _BackfillDB:
+        def __init__(self):
+            self.synonym_ids = set()
+
+        def sql(self, query, params=()):
+            if "NOT EXISTS" in query:
+                return [(101,), (102,)]
+            if "FROM title_synonyms" in query:
+                catalog_id = int(params[0])
+                return [(1,)] if catalog_id in self.synonym_ids else []
+            return []
+
+    class _HydratingAPI:
+        def anime(self, catalog_id, _persist=False):
+            return SimpleNamespace(title=f"Title {catalog_id}")
+
+    class _WriteService:
+        def __init__(self, db):
+            self._db = db
+            self.calls = []
+
+        def persist_legacy_anime(self, anime, *, source, catalog_id=None):
+            self.calls.append((getattr(anime, "title", ""), source, catalog_id))
+            self._db.synonym_ids.add(int(catalog_id))
+            return True
+
+    db = _BackfillDB()
+    db_manager = SimpleNamespace(get_database=lambda: db)
+    coord = APICoordinator(max_workers=1, provider_timeout_s=2.0)
+    coord._api = _HydratingAPI()
+    write_service = _WriteService(db)
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db_manager,
+        config=SimpleNamespace(settings={"anime": {}}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+        write_service=write_service,
+    )
+    try:
+        detail = service._job_backfill_title_synonyms()
+    finally:
+        coord.close()
+
+    assert detail == "hydrated 2/2 row(s) missing synonyms"
+    assert len(write_service.calls) == 2

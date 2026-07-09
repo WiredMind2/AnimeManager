@@ -18,6 +18,9 @@ class FakeRepository:
     def get_anime(self, anime_id: int):
         return self.items[0] if anime_id == 1 else None
 
+    def anime_row_exists(self, anime_id: int):
+        return self.get_anime(anime_id) is not None
+
     def get_search_terms(self, anime_id: int):
         _ = anime_id
         return ["foo"]
@@ -66,8 +69,8 @@ class FakeDownload:
     def get_active_downloads(self):
         return [{"anime_id": 1, "elapsed_time": 1.0}]
 
-    def search_torrents(self, terms, profile="interactive", limit=200):
-        _ = (profile, limit)
+    def search_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=False):
+        _ = (profile, limit, allow_nsfw)
         return [{"name": "result", "terms": terms}]
 
 
