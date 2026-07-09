@@ -100,6 +100,8 @@ class APICache:
 def cached_request(func):
     def wrapper(*args, **kwargs):
         self = args[0]
+        if getattr(self, "schedule_light", False):
+            return None
         if getattr(self, "defer_writes", False):
             self.queue.put((func, args, kwargs))
             return None
@@ -175,6 +177,7 @@ class APIUtils:
         self.database = self.getDatabase()
         self.queue = queue.Queue()
         self.defer_writes = False
+        self.schedule_light = False
 
         # Initialize API response cache for performance optimization
         self.api_cache = APICache(max_size=1000, default_ttl=3600)  # 1 hour TTL

@@ -50,6 +50,13 @@ from domain.policies.genre import (  # noqa: E402
     format_genre_label,
     normalize_genre,
 )
+from domain.policies.adult_content import is_adult_torrent  # noqa: E402
+from domain.policies.anime_metadata import is_anime_metadata_missing  # noqa: E402
+from domain.policies.schedule_recency import (  # noqa: E402
+    filter_recent_schedule_records,
+    is_recent_schedule_start,
+    schedule_recency_cutoff_ts,
+)
 from domain.policies.season import (  # noqa: E402
     AIRING_SEASONS,
     format_season_label,
@@ -62,11 +69,16 @@ __all__ = [
     "AIRING_SEASONS",
     "GENRES",
     "derive_status",
+    "filter_recent_schedule_records",
     "format_genre_label",
     "format_season_label",
+    "is_adult_torrent",
+    "is_anime_metadata_missing",
+    "is_recent_schedule_start",
     "normalize_airing_season",
     "normalize_genre",
     "normalize_search_query",
+    "schedule_recency_cutoff_ts",
     "season_date_range",
     "validate_season_year",
 ]

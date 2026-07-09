@@ -174,8 +174,9 @@ def build_genre_list_query(
     safe_range = (start, stop)
     uid = int(user_id)
     clause = (
-        f"EXISTS (SELECT 1 FROM genres g WHERE g.id = anime.id "
-        f"AND g.value = '{genre}') "
+        "EXISTS (SELECT 1 FROM genres g "
+        "LEFT JOIN genresindex gi ON gi.id = g.value "
+        f"WHERE g.id = anime.id AND (gi.name = '{genre}' OR g.value = '{genre}')) "
         "AND anime.status != 'UPCOMING' AND anime.status != 'UNKNOWN'"
     )
     if hide_rated:

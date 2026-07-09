@@ -5,6 +5,12 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
+from shared.utils.broadcast_schedule import (
+    latest_episode_label,
+    next_episode_datetime,
+    parse_broadcast,
+)
+
 
 def _resolve_status(
     *,
@@ -99,33 +105,13 @@ def build_airing_lines(
                 )
             )
 
-        if broadcast is not None:
-            try:
-                weekday, hour, minute = map(int, str(broadcast).split("-"))
-            except ValueError:
-                weekday = hour = minute = 0
-            else:
-                days_left = (weekday - today.weekday()) % 7
-                date_obj = datetime.today() + timedelta(days=days_left)
-                tz = datetime.now().astimezone().utcoffset()
-                tz_hours = (tz.seconds // 3600) if tz is not None else 0
-                hour_date_obj = timedelta(hours=hour - 9 + tz_hours, minutes=minute)
-                date_obj = (
-                    datetime.combine(date_obj.date(), datetime.min.time())
-                    + hour_date_obj
-                )
-                datetext.append(date_obj.strftime("Next episode on %a %d at %H:%M"))
-
-                days_since = (today.weekday() - weekday) % 7
-                if days_since == 0:
-                    latest = "Today"
-                elif days_since == 1:
-                    latest = "Yesterday"
-                elif days_since > 1:
-                    latest = f"{days_since} days ago"
-                else:
-                    latest = "uhh?"
-                datetext.append(f"Latest episode: {latest}")
+        slot = parse_broadcast(broadcast)
+        if slot is not None:
+            next_local = next_episode_datetime(slot, now=today)
+            datetext.append(
+                next_local.strftime("Next episode on %a %d at %H:%M")
+            )
+            datetext.append(f"Latest episode: {latest_episode_label(slot, now=today)}")
         else:
             days_since = (delta.days - 1) % 7
             date_obj = date.today() - timedelta(days=days_since)

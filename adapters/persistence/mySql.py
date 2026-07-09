@@ -504,9 +504,8 @@ class MySQL(BaseDB):
 
         if data_list is None:
             data_list = []
-        return AnimeList(
-            [self.get_all_metadata(Anime(keys=keys, values=data)) for data in data_list]
-        )
+        items = [Anime(keys=keys, values=data) for data in data_list]
+        return AnimeList(self.get_all_metadata_bulk(items, use_eager_loading=True))
         # return (Anime(keys=keys, values=data) for data in data_list)
 
     def get_metadata(self, id, key):
@@ -518,7 +517,7 @@ class MySQL(BaseDB):
 
         arg = " AND ".join(map(lambda e: f"{e}=:{e}", id.keys()))
         data = self.sql(f"SELECT value FROM {key} WHERE {arg};", id)
-        return [e[0] for e in data or []]
+        return self._postprocess_metadata_values(key, [e[0] for e in data or []])
 
     def save_metadata(self, id, metadata):
         """Save metadata for the given id."""
@@ -531,6 +530,7 @@ class MySQL(BaseDB):
             if not isinstance(values, (list, set, tuple)):
                 raise TypeError("Values must be of type list, not", type(values))
 
+            values = self._preprocess_metadata_values(key, values)
             arg = " AND ".join(map(lambda e: f"{e}=:{e}", id.keys()))
             db_values = [
                 e[0] for e in self.sql(f"SELECT value FROM {key} WHERE {arg}", id) or []

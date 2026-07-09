@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple
+from contextlib import contextmanager
 
 import pytest
 
@@ -94,6 +95,29 @@ class BaseDBLikeStub:
         return None
 
 
+class _PooledDBStub(BaseDBLikeStub):
+    """Stub mimicking EmbeddedMariaDB pooled batch writes."""
+
+    USE_CONNECTION_POOL = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.checkout_count = 0
+        self._pinned_sql_conn = None
+
+    @contextmanager
+    def pinned_pool_connection(self):
+        self.checkout_count += 1
+        self._pinned_sql_conn = self
+        try:
+            yield self
+        finally:
+            self._pinned_sql_conn = None
+
+    def commit_pinned_connection(self) -> None:
+        self.commit_count += 1
+
+
 # ---------------------------------------------------------------------------
 # Reproduction tests for the production crash
 # ---------------------------------------------------------------------------
@@ -129,16 +153,7 @@ class TestUpsertAnimeBatchAgainstRealContract:
         assert len(db.set_calls) == 2
 
     def test_upsert_batch_commits_each_row_inline(self, DatabaseManager):
-        """One commit per row is the contract; batching does not work
-        on the real MariaDB backend because ``USE_CONNECTION_POOL``
-        hands every ``db.set(...)`` call a fresh pool connection that
-        is recycled (effectively rolled back) before any trailing
-        ``db.save()`` on the long-lived main connection ever fires.
-        Until the persistence layer exposes "check out one connection
-        per batch", every row commits inline so writes survive the
-        pool. See :meth:`DatabaseManager.upsert_anime_batch` for the
-        full rationale.
-        """
+        """Non-pooled backends still commit every row inline."""
         mgr = DatabaseManager()
         mgr.log = _silent_logger
         db = BaseDBLikeStub()
@@ -150,6 +165,48 @@ class TestUpsertAnimeBatchAgainstRealContract:
 
         assert db.commit_count == 5
         assert len(db.rows) == 5
+
+    def test_upsert_batch_uses_single_pool_checkout(self, DatabaseManager):
+        """Pooled backends pin one connection for the entire batch."""
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _PooledDBStub()
+        mgr.set_database(db)
+
+        mgr.upsert_anime_batch(
+            [SimpleNamespace(id=i, title=f"t{i}") for i in range(5)]
+        )
+
+        assert db.checkout_count == 1
+        assert db.commit_count == 1
+        assert len(db.rows) == 5
+
+    def test_upsert_batch_single_commit_with_metadata(self, DatabaseManager):
+        """Metadata writes defer commits when the pool connection is pinned."""
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _PooledDBStub()
+        mgr.set_database(db)
+
+        class _AnimeWithMeta:
+            def __init__(self, anime_id: int, title: str, genres: list[str]) -> None:
+                self.id = anime_id
+                self.title = title
+                self._genres = genres
+
+            def save_format(self):
+                return {"id": self.id, "title": self.title}, {"genres": self._genres}
+
+        mgr.upsert_anime_batch(
+            [
+                _AnimeWithMeta(1, "a", ["Action", "Drama"]),
+                _AnimeWithMeta(2, "b", ["Comedy"]),
+            ]
+        )
+
+        assert db.commit_count == 1
+        assert db.metadata[1]["genres"] == ["Action", "Drama"]
+        assert db.metadata[2]["genres"] == ["Comedy"]
 
     def test_upsert_batch_skips_individual_failures(self, DatabaseManager):
         mgr = DatabaseManager()

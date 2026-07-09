@@ -43,6 +43,19 @@ class CatalogMergePort(Protocol):
         ...
 
 
+class CatalogMappingPort(Protocol):
+    """Cross-provider id lookups for catalogue enrichment."""
+
+    def lookup_kitsu_mappings(self, kitsu_id: int) -> Dict[str, int]:
+        ...
+
+    def lookup_anilist_cross_ids(self, anilist_id: int) -> Dict[str, int]:
+        ...
+
+    def lookup_mal_cross_ids(self, mal_id: int) -> Dict[str, int]:
+        ...
+
+
 class AnimeRepositoryPort(Protocol):
     def search(self, query: str, limit: int = 50) -> list[AnimeEntity]:
         ...
@@ -73,6 +86,9 @@ class AnimeRepositoryPort(Protocol):
         ...
 
     def get_anime(self, anime_id: int) -> Optional[AnimeEntity]:
+        ...
+
+    def anime_row_exists(self, anime_id: int) -> bool:
         ...
 
     def get_search_terms(self, anime_id: int) -> list[str]:
@@ -121,6 +137,16 @@ class AnimeRepositoryPort(Protocol):
         ...
 
     def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
+        ...
+
+
+class AnimeHydrationPort(Protocol):
+    """Fetch and persist metadata for orphan catalogue rows."""
+
+    def hydrate_anime(self, catalog_id: int) -> bool:
+        ...
+
+    def catalog_id_exists(self, catalog_id: int) -> bool:
         ...
 
 
@@ -182,6 +208,7 @@ class DownloadPort(Protocol):
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ) -> list[dict]:
         ...
 
@@ -190,6 +217,7 @@ class DownloadPort(Protocol):
         terms: list[str],
         profile: str = "interactive",
         limit: int = 200,
+        allow_nsfw: bool = False,
     ):
         """Optional streaming variant of :meth:`search_torrents`.
 
@@ -297,7 +325,9 @@ class MediaTranscoderPort(Protocol):
 __all__ = [
     "CatalogIndexPort",
     "CatalogMergePort",
+    "CatalogMappingPort",
     "AnimeRepositoryPort",
+    "AnimeHydrationPort",
     "MetadataProviderPort",
     "DownloadPort",
     "UserActionsPort",

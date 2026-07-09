@@ -7,9 +7,11 @@ with in-memory fakes; they neither touch the network nor the DB.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 from ....application.services.api_coordinator import APICoordinator
+from ....adapters.persistence.models import Anime
 
 
 class _FakeProvider:
@@ -53,8 +55,9 @@ class _FakeProvider:
 
 
 class _FakeAPI:
-    def __init__(self, providers):
+    def __init__(self, providers, settings=None):
         self._providers = providers
+        self.settings = settings or {"anime": {"scheduleRecencyDays": 90}}
 
     def get_providers(self):
         return list(self._providers)
@@ -63,6 +66,7 @@ class _FakeAPI:
 class _RecordingDBManager:
     def __init__(self):
         self.upserts = []
+        self.enrich_calls = []
 
     def get_database(self):
         return None
@@ -70,6 +74,10 @@ class _RecordingDBManager:
     def upsert_anime_batch(self, records):
         self.upserts.append(list(records))
         return len(records)
+
+    def enrich_catalog_identities_for_ids(self, catalog_ids):
+        self.enrich_calls.append(list(catalog_ids))
+        return SimpleNamespace(looked_up=len(catalog_ids), enriched=0, merged=0)
 
 
 def _build_coordinator(api, db):
@@ -80,7 +88,7 @@ def _build_coordinator(api, db):
     return coord
 
 
-def _anime_like(rid, title="t"):
+def _anime_like(rid, title="t", date_from=None, title_synonyms=None):
     return SimpleNamespace(
         id=rid,
         title=title,
@@ -89,11 +97,12 @@ def _anime_like(rid, title="t"):
         duration=None,
         status=None,
         rating=None,
-        date_from=None,
+        date_from=date_from,
         date_to=None,
         picture=None,
         trailer=None,
         broadcast=None,
+        title_synonyms=title_synonyms or (title, f"{title} Alt"),
     )
 
 
@@ -117,6 +126,22 @@ def test_full_search_flow_persists_dedup():
     # DB sink received exactly the deduped batch.
     assert len(db.upserts) == 1
     assert sorted(a.id for a in db.upserts[0]) == [1, 2, 3]
+    assert db.enrich_calls == [[1, 2, 3]]
+
+
+def test_full_search_flow_persists_title_synonyms():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1, title="Primary")])])
+    db = _RecordingDBManager()
+    coord = _build_coordinator(api, db)
+    try:
+        coord._perform_api_search("term", 10)
+    finally:
+        coord.close()
+
+    assert len(db.upserts) == 1
+    upserted = db.upserts[0][0]
+    _data, meta = upserted.save_format()
+    assert meta["title_synonyms"] == ["Primary", "Primary Alt"]
 
 
 def test_partial_failure_still_persists_good_results():
@@ -177,23 +202,216 @@ def test_close_is_idempotent():
     coord.close()  # second call must not raise
 
 
-def test_fetch_latest_per_provider_uses_full_limit():
+def test_fetch_latest_splits_total_limit_across_providers():
+    now = int(time.time())
     providers = [
-        _FakeProvider("A", schedule_items=[_anime_like(i) for i in range(1, 9)]),
-        _FakeProvider("B", schedule_items=[_anime_like(i) for i in range(9, 17)]),
+        _FakeProvider(
+            "A",
+            schedule_items=[
+                _anime_like(i, date_from=now - i * 86_400) for i in range(1, 9)
+            ],
+        ),
+        _FakeProvider(
+            "B",
+            schedule_items=[
+                _anime_like(i, date_from=now - i * 86_400) for i in range(9, 17)
+            ],
+        ),
     ]
     api = _FakeAPI(providers)
     db = _RecordingDBManager()
     coord = _build_coordinator(api, db)
     try:
-        result = coord.fetch_latest(limit=8, per_provider=True)
+        result = coord.fetch_latest(limit=8, per_provider=False)
     finally:
         coord.close()
 
     assert result is not None
-    assert providers[0].last_schedule_limit == 8
-    assert providers[1].last_schedule_limit == 8
-    assert len(result.records) == 16
+    assert providers[0].last_schedule_limit == 12
+    assert providers[1].last_schedule_limit == 12
+    assert len(result.records) == 8
+    assert result.persisted_count == 8
+
+
+def test_fetch_latest_resolves_schedule_external_ids_in_batch():
+    def _schedule_like(anilist_id, mal_id=None, title="t"):
+        ext = {"anilist_id": anilist_id}
+        if mal_id is not None:
+            ext["mal_id"] = mal_id
+        return SimpleNamespace(
+            _schedule_external_ids=ext,
+            title=title,
+            synopsis=None,
+            episodes=None,
+            duration=None,
+            status="AIRING",
+            rating=None,
+            date_from=int(time.time()) - 5 * 86_400,
+            date_to=None,
+            picture=None,
+            trailer=None,
+            broadcast=None,
+            title_synonyms=(),
+        )
+
+    class _Identity:
+        def resolve_external_ids_batch(self, entries):
+            out = []
+            for idx, entry in enumerate(entries, start=100):
+                out.append(
+                    SimpleNamespace(
+                        catalog_id=idx,
+                        external_ids=dict(entry),
+                    )
+                )
+            return out
+
+    providers = [
+        _FakeProvider(
+            "AnilistCo",
+            schedule_items=[_schedule_like(11, mal_id=22), _schedule_like(33)],
+        ),
+    ]
+    api = _FakeAPI(providers)
+    db = _RecordingDBManager()
+    coord = _build_coordinator(api, db)
+    coord._catalog_identity = _Identity()
+    try:
+        result = coord.fetch_latest(limit=4, per_provider=False)
+    finally:
+        coord.close()
+
+    assert result is not None
+    assert sorted(r.id for r in result.records) == [100, 101]
+    assert db.upserts and sorted(a.id for a in db.upserts[0]) == [100, 101]
+
+
+def test_schedule_light_anime_retains_external_ids_for_adapter():
+    """Real Anime objects must keep _schedule_external_ids through __setattr__."""
+    anime = Anime()
+    external_ids = {"mal_id": 123}
+    anime._schedule_external_ids = external_ids
+    assert getattr(anime, "_schedule_external_ids", None) == external_ids
+
+    record = APICoordinator._project_legacy_anime(
+        anime, provider_name="JikanMoeWrapper"
+    )
+    assert record is not None
+    assert record.id < 0
+    assert record.external_ids == external_ids
+    assert record.title == ""
+
+
+def test_fetch_latest_merges_cross_provider_schedule_rows():
+    """Same show from Kitsu and MAL should resolve to one catalogue id."""
+    from application.services.catalog_identity import CatalogIdentityService
+    from tests.unit.application.test_catalog_enrichment import _EnrichmentDB, _FakeMappingPort
+
+    class _MappingDBManager:
+        def __init__(self, db):
+            self._db = db
+            self._mapping_port = _FakeMappingPort()
+            self.upserts = []
+            self.enrich_calls = []
+
+        def get_database(self):
+            return self._db
+
+        def upsert_anime_batch(self, records):
+            self.upserts.append(list(records))
+            return len(records)
+
+        def enrich_catalog_identities_for_ids(self, catalog_ids):
+            self.enrich_calls.append(list(catalog_ids))
+            return SimpleNamespace(looked_up=0, enriched=0, merged=0)
+
+    def _schedule_like(external_ids, title="t"):
+        return SimpleNamespace(
+            _schedule_external_ids=external_ids,
+            title=title,
+            synopsis=None,
+            episodes=None,
+            duration=None,
+            status="AIRING",
+            rating=None,
+            date_from=int(time.time()) - 5 * 86_400,
+            date_to=None,
+            picture=None,
+            trailer=None,
+            broadcast=None,
+            title_synonyms=(),
+        )
+
+    db = _EnrichmentDB()
+    db.index[1] = {
+        "id": 1,
+        "mal_id": 46488,
+        "kitsu_id": None,
+        "anilist_id": 128757,
+        "anidb_id": None,
+    }
+    db.index[2] = {
+        "id": 2,
+        "mal_id": None,
+        "kitsu_id": 44021,
+        "anilist_id": None,
+        "anidb_id": None,
+    }
+
+    providers = [
+        _FakeProvider(
+            "KitsuIo",
+            schedule_items=[_schedule_like({"kitsu_id": 44021}, title="Duplicate Kitsu")],
+        ),
+        _FakeProvider(
+            "JikanMoe",
+            schedule_items=[_schedule_like({"mal_id": 46488}, title="Duplicate MAL")],
+        ),
+    ]
+    api = _FakeAPI(providers)
+    db_manager = _MappingDBManager(db)
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db_manager)
+    coord.set_catalog_identity(CatalogIdentityService.from_database(db))
+    coord.log = lambda *args, **kwargs: None
+    try:
+        result = coord.fetch_latest(limit=10, per_provider=False)
+    finally:
+        coord.close()
+
+    assert result is not None
+    assert len(result.records) == 1
+    assert result.records[0].id == 1
+    assert db_manager.upserts and len(db_manager.upserts[0]) == 1
+    assert 2 not in db.index
+
+
+def test_fetch_latest_filters_rows_outside_recency_window():
+    now = int(time.time())
+    recent = now - 10 * 86_400
+    old = now - 400 * 86_400
+    api = _FakeAPI(
+        [
+            _FakeProvider(
+                "A",
+                schedule_items=[
+                    _anime_like(1, date_from=recent),
+                    _anime_like(2, date_from=old),
+                ],
+            ),
+        ]
+    )
+    db = _RecordingDBManager()
+    coord = _build_coordinator(api, db)
+    try:
+        result = coord.fetch_latest(limit=10, per_provider=False)
+    finally:
+        coord.close()
+
+    assert result is not None
+    assert [record.id for record in result.records] == [1]
+    assert db.upserts and [anime.id for anime in db.upserts[0]] == [1]
 
 
 def test_browse_season_dedupes_across_providers():

@@ -1,7 +1,12 @@
 import re
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import requests
+
+from shared.utils.broadcast_schedule import (
+    broadcast_slot_to_string,
+    utc_timestamp_to_jst_slot,
+)
 
 try:
     from .APIUtils import Anime, APIUtils, Character, EnhancedSession
@@ -279,6 +284,10 @@ class AnilistCoWrapper(APIUtils):
         anime = self._convertAnime(data.get("Media"))
         return anime
 
+    def animeCharacters(self, id):
+        """AniList does not expose a character endpoint in this wrapper."""
+        return []
+
     def searchAnime(self, search, limit=50):
         query = QueryObject(
             "query",
@@ -441,6 +450,67 @@ class AnilistCoWrapper(APIUtils):
         mal_id = a.get("mal_id") or a.get("idMal")
         if mal_id:
             external_ids["mal_id"] = int(mal_id)
+        if getattr(self, "schedule_light", False):
+            out = Anime()
+            out._schedule_external_ids = external_ids
+
+            keys = ["english", "romaji", "native"]
+            titles = []
+            for key in keys:
+                title = a.get("title").get(key)
+                if title:
+                    titles.append(title)
+            titles += a.get("synonyms", [])
+            out.title = titles[0].rstrip(".") if titles else ""
+            out.title_synonyms = titles
+
+            mapped_status = {
+                "FINISHED": "FINISHED",
+                "RELEASING": "AIRING",
+                "NOT_YET_RELEASED": "UPCOMING",
+                "CANCELLED": "UNKNOWN",
+                "HIATUS": "UPCOMING",
+            }
+            out.status = mapped_status.get(a.get("status"))
+
+            desc = a.get("description")
+            if desc:
+                out.synopsis = re.sub("<.*?>", "", desc)
+            else:
+                out.synopsis = None
+
+            datefrom = a.get("startDate")
+            if datefrom and None not in datefrom.values():
+                try:
+                    dt = datetime(**datefrom)
+                    out.date_from = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                except Exception:
+                    out.date_from = None
+            else:
+                out.date_from = None
+
+            dateto = a.get("endDate")
+            if dateto and None not in dateto.values():
+                try:
+                    dt = datetime(**dateto)
+                    out.date_to = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                except Exception:
+                    out.date_to = None
+            else:
+                out.date_to = None
+
+            out.episodes = a.get("episodes")
+            out.duration = a.get("duration")
+            out.trailer = (a.get("trailer") or {}).get("site")
+            out.rating = "R" if a.get("isAdult") else ""
+            out.picture = a.get("coverImage", {}).get("medium")
+            broadcast = (a.get("nextAiringEpisode") or {}).get("airingAt")
+            if broadcast:
+                slot = utc_timestamp_to_jst_slot(int(broadcast))
+                out.broadcast = broadcast_slot_to_string(slot)
+            out.status = self.getStatus(out)
+            return out
+
         id = self.resolve_catalog_id(external_ids)
         out = Anime()
 
@@ -522,13 +592,9 @@ class AnilistCoWrapper(APIUtils):
 
         broadcast = (a.get("nextAiringEpisode") or {}).get("airingAt")
         if broadcast:
-            broadcast = datetime.fromtimestamp(broadcast)
-            data = (broadcast.isoweekday() - 1, broadcast.hour, broadcast.minute)
-
-            self.save_broadcast(id, *data)
-
-            # TODO - Should be removed
-            out.broadcast = "{}-{}-{}".format(*data)
+            slot = utc_timestamp_to_jst_slot(int(broadcast))
+            self.save_broadcast(id, slot.weekday, slot.hour, slot.minute)
+            out.broadcast = broadcast_slot_to_string(slot)
 
         out.status = self.getStatus(out)
 

@@ -109,7 +109,9 @@ class TestBuildSeasonListQuery:
 class TestBuildGenreListQuery:
     def test_filters_by_genre_exists(self):
         q = build_genre_list_query("Comedy", (0, 24), hide_rated=True, user_id=4)
-        assert "EXISTS (SELECT 1 FROM genres g WHERE g.id = anime.id" in q.filter_clause
+        assert "EXISTS (SELECT 1 FROM genres g" in q.filter_clause
+        assert "LEFT JOIN genresindex gi ON gi.id = g.value" in q.filter_clause
+        assert "gi.name = 'Comedy'" in q.filter_clause
         assert "g.value = 'Comedy'" in q.filter_clause
         assert "anime.status != 'UPCOMING'" in q.filter_clause
         assert "rating NOT IN" in q.filter_clause

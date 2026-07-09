@@ -75,3 +75,25 @@ def test_stream_browse_season_falls_back_to_browse():
 def test_api_coordinator_property():
     adapter, coord = _make_adapter()
     assert adapter.api_coordinator is coord
+
+
+def test_browse_genre_maps_results():
+    adapter, coord = _make_adapter()
+    coord.browse_genre.return_value = [{"id": 7, "title": "Comedy"}]
+    results = adapter.browse_genre("Comedy")
+    assert results[0].title == "Comedy"
+
+
+def test_stream_browse_genre_uses_native_streamer():
+    adapter, coord = _make_adapter()
+    coord.stream_browse_genre.return_value = [{"id": 8, "title": "Drama"}]
+    items = list(adapter.stream_browse_genre("Drama"))
+    assert items[0].title == "Drama"
+
+
+def test_stream_browse_genre_falls_back_to_browse():
+    adapter, coord = _make_adapter()
+    del coord.stream_browse_genre
+    coord.browse_genre.return_value = [{"id": 9, "title": "Action"}]
+    items = list(adapter.stream_browse_genre("Action"))
+    assert items[0].title == "Action"

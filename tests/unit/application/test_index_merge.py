@@ -14,6 +14,7 @@ class _IndexDB:
             2: {"id": 2, "mal_id": None, "kitsu_id": None, "anilist_id": 138380, "anidb_id": None},
         }
         self.anime = {1: {"id": 1, "title": "Shared Title"}, 2: {"id": 2, "title": "Shared Title"}}
+        self.torrents_index: list[tuple[int, str]] = [(2, "dup-hash")]
         self.saved = 0
 
     def get_lock(self):
@@ -62,6 +63,33 @@ class _IndexDB:
         if sql_norm.startswith("DELETE FROM indexList"):
             self.index.pop(params[0], None)
             return []
+        if sql_norm.startswith("SELECT value FROM torrentsIndex WHERE id"):
+            duplicate_id = int(params[0])
+            return [(value,) for row_id, value in self.torrents_index if row_id == duplicate_id]
+        if sql_norm.startswith("SELECT EXISTS(SELECT 1 FROM torrentsIndex"):
+            canonical_id, hash_value = params
+            exists = any(
+                row_id == int(canonical_id) and value == hash_value
+                for row_id, value in self.torrents_index
+            )
+            return [(int(exists),)]
+        if "DELETE FROM torrentsIndex WHERE id" in sql_norm and "AND value" in sql_norm:
+            duplicate_id, hash_value = params
+            self.torrents_index = [
+                row
+                for row in self.torrents_index
+                if not (row[0] == int(duplicate_id) and row[1] == hash_value)
+            ]
+            return []
+        if sql_norm.startswith("UPDATE torrentsIndex SET id"):
+            canonical_id, duplicate_id, hash_value = params
+            self.torrents_index = [
+                (int(canonical_id), hash_value)
+                if row[0] == int(duplicate_id) and row[1] == hash_value
+                else row
+                for row in self.torrents_index
+            ]
+            return []
         if sql_norm.startswith("UPDATE indexList"):
             col_val, row_id = params
             for col in ("mal_id", "kitsu_id", "anilist_id", "anidb_id"):
@@ -73,7 +101,7 @@ class _IndexDB:
         return []
 
     def save(self):
-        pass
+        self.saved += 1
 
 
 def test_merge_deletes_orphan_anime_row():
@@ -82,6 +110,12 @@ def test_merge_deletes_orphan_anime_row():
     assert 2 not in db.anime
     assert 2 not in db.index
     assert db.saved > 0
+
+
+def test_merge_repoints_torrents_index_to_canonical():
+    db = _IndexDB()
+    merge_anime_index_rows(db, duplicate_id=2, canonical_id=1)
+    assert db.torrents_index == [(1, "dup-hash")]
 
 
 def test_repair_merges_rows_with_identical_title():

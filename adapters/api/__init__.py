@@ -84,6 +84,7 @@ class AnimeAPI:
     ):
         self._getters = getters if getters is not None else Getters()
         self._logger = logger if logger is not None else Logger()
+        self._write_service = None
         self.apis = []
         self.sql_queue = queue.Queue()
         self.init_thread = threading.Thread(
@@ -110,6 +111,10 @@ class AnimeAPI:
     @property
     def dbPath(self):
         return self._getters.dbPath
+
+    def set_write_service(self, write_service):
+        """Attach centralized anime write gateway used by ``save``."""
+        self._write_service = write_service
 
     def __getattr__(self, name):
         # ``__getattr__`` is only consulted when normal lookup fails, so
@@ -138,6 +143,7 @@ class AnimeAPI:
             ignore = (
                 "__init__.py",
                 "APIUtils.py",
+                "provider_payload.py",
                 "tests.py",
                 "MyAnimeListNet.py",
             )
@@ -314,19 +320,31 @@ class AnimeAPI:
         return provider.searchAnime(terms, limit=limit)
 
     def save(self, data):
-        database = self.getDatabase()
         if not data:
             return
 
         self.handle_sql_queue()
 
         if isinstance(data, Anime):
+            write_service = getattr(self, "_write_service", None)
+            if write_service is not None:
+                from application.services.anime_write_service import WriteSource
 
+                write_service.persist_legacy_anime(
+                    data,
+                    source=WriteSource.HYDRATION,
+                    catalog_id=getattr(data, "id", None),
+                )
+                return
+
+            database = self.getDatabase()
             data, meta = data.save_format()
             data = {k: v for k, v in data.items() if v is not None}
             args, out = database.procedure(
                 "save_anime", data["id"], json.dumps(data)
             )
+            if meta:
+                database.save_metadata(data["id"], meta)
 
         elif isinstance(data, Character):
             raise NotImplementedError()

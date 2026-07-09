@@ -150,12 +150,15 @@ class TestSchedule:
         out = list(w.schedule())
         assert out == []
 
-    def test_empty_data_no_top_429(self, JikanMoeWrapper):
+    def test_empty_schedules_falls_back_to_season(self, JikanMoeWrapper):
         w = _make(JikanMoeWrapper)
-        # 1st response (schedules) - empty data, 2nd response (top/anime) 429
-        w.get.side_effect = [{"data": []}, {"status": 429}]
-        out = list(w.schedule())
-        assert out == []
+        w.get.side_effect = [
+            {"data": []},
+            {"data": [{"mal_id": 3, "title": "Season Show"}]},
+        ]
+        out = list(w.schedule(limit=5))
+        assert len(out) == 1
+        assert w.get.call_args_list[1].args[0].startswith("/seasons/")
 
     def test_yields_from_schedules(self, JikanMoeWrapper):
         w = _make(JikanMoeWrapper)
@@ -166,14 +169,16 @@ class TestSchedule:
         out = list(w.schedule())
         assert len(out) == 2
 
-    def test_yields_from_top(self, JikanMoeWrapper):
+    def test_does_not_call_top_anime(self, JikanMoeWrapper):
         w = _make(JikanMoeWrapper)
         w.get.side_effect = [
             {"data": []},
             {"data": [{"mal_id": 3, "title": "C"}]},
         ]
-        out = list(w.schedule())
-        assert len(out) == 1
+        list(w.schedule(limit=5))
+        called_paths = [call.args[0] for call in w.get.call_args_list]
+        assert "/top/anime" not in called_paths
+        assert any(path.startswith("/seasons/") for path in called_paths)
 
 
 # ---------------------------------------------------------------------------

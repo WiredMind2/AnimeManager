@@ -10,6 +10,21 @@ except ImportError:
     from APIUtils import Anime, APIUtils, Character, EnhancedSession
 
 
+def _current_anime_season() -> tuple[int, str]:
+    """Return ``(year, season)`` for the current broadcast quarter."""
+    now = datetime.now(timezone.utc)
+    month = now.month
+    if month <= 3:
+        season = "winter"
+    elif month <= 6:
+        season = "spring"
+    elif month <= 9:
+        season = "summer"
+    else:
+        season = "fall"
+    return now.year, season
+
+
 class JikanMoeWrapper(APIUtils):
     def __init__(self):
         super().__init__()
@@ -57,45 +72,64 @@ class JikanMoeWrapper(APIUtils):
         return a.get("pictures", [])
 
     def schedule(self, limit=50):
-        # TODO - Limit + status
-        # value = self.getRates('schedule')
-        # now = time.time()
-        # if value is not None and now - value < 60*60:
-        #     # Too quick, doesn't need to update that often
-        #     return
         self.delay()
-        # self.setRates('schedule', now)
+        seen_mal_ids: set[int] = set()
+        count = 0
+
+        def convert_unique(raw):
+            nonlocal count
+            if count >= limit:
+                return False
+            mal_id = raw.get("mal_id") if isinstance(raw, dict) else None
+            if mal_id is None:
+                return None
+            mal_id = int(mal_id)
+            if mal_id in seen_mal_ids:
+                return None
+            anime = self._convertAnime(raw)
+            if not anime:
+                return None
+            seen_mal_ids.add(mal_id)
+            count += 1
+            return anime
 
         rep = self.get("/schedules")
-
         if rep.get("status", None) == 429:
-            # Spammed too much
             return
 
-        # Reload database since this might run in a different thread as a generator
         self.getDatabase()
 
         if rep.get("data", None):
             for anime in rep["data"]:
-                anime = self._convertAnime(anime)
-                # anime['status'] = 'UPDATE'
-                yield anime
+                item = convert_unique(anime)
+                if item is False:
+                    return
+                if item:
+                    yield item
 
-        else:
-            if rep.get("status", None) == 429:
-                # Spammed too much
-                return
-
-        top = self.get("/top/anime")
-        if top.get("status", None) == 429:
-            # Spammed too much
+        if count >= limit:
             return
 
-        if "data" in top:
-            for anime in top["data"]:
-                anime = self._convertAnime(anime)
-                # anime['status'] = 'UPDATE'
+        year, season = _current_anime_season()
+        for anime in self.season(year, season, limit=limit - count):
+            mal_id = getattr(anime, "id", None)
+            ext = getattr(anime, "_schedule_external_ids", None) or {}
+            if mal_id is None:
+                mal_id = ext.get("mal_id")
+            if mal_id is None:
                 yield anime
+                count += 1
+                if count >= limit:
+                    return
+                continue
+            mal_id = int(mal_id)
+            if mal_id in seen_mal_ids:
+                continue
+            seen_mal_ids.add(mal_id)
+            count += 1
+            yield anime
+            if count >= limit:
+                return
 
     def season(self, year, season, limit=50):
         self.delay()
@@ -174,6 +208,74 @@ class JikanMoeWrapper(APIUtils):
 
     def _convertAnime(self, a):
         external_ids = {"mal_id": int(a["mal_id"])}
+        if getattr(self, "schedule_light", False):
+            out = Anime()
+            out._schedule_external_ids = external_ids
+            out["title"] = a["title"]
+            if a["title"][-1] == ".":
+                out["title"] = a["title"][:-1]
+
+            keys = ["title", "title_english", "title_japanese"]
+            titles = []
+            for key in keys:
+                if key in a.keys() and a[key] is not None:
+                    titles.append(a[key])
+            if "title_synonyms" in a.keys():
+                titles += a["title_synonyms"]
+            out["title_synonyms"] = titles
+
+            if "aired" in a.keys():
+                for i in ("from", "to"):
+                    v = a["aired"]["prop"].get(i, None)
+                    if v and not None in v.values():
+                        out["date_" + i] = int(
+                            datetime(**v, tzinfo=timezone.utc).timestamp()
+                        )
+                    else:
+                        out["date_" + i] = None
+            else:
+                out["date_from"] = None
+                out["date_to"] = None
+
+            out["picture"] = (
+                a["images"]["jpg"].get("large_image_url", None)
+                or a["images"]["jpg"]["image_url"]
+            )
+            out["synopsis"] = a["synopsis"] if "synopsis" in a.keys() else None
+            out["episodes"] = a["episodes"] if "episodes" in a.keys() else None
+            duration = (
+                a["duration"].split(" ")[0] if "duration" in a.keys() else None
+            )
+            out["duration"] = (
+                int(duration) if duration and duration != "Unknown" else None
+            )
+            out["rating"] = (
+                a["rating"].split("-")[0].rstrip()
+                if "rating" in a.keys() and a["rating"]
+                else None
+            )
+            if "broadcast" in a.keys() and a["broadcast"]["day"] is not None:
+                weekdays = (
+                    "Mondays",
+                    "Tuesdays",
+                    "Wednesdays",
+                    "Thursdays",
+                    "Fridays",
+                    "Saturdays",
+                    "Sundays",
+                )
+                w = weekdays.index(a["broadcast"]["day"])
+                h, m = a["broadcast"]["time"].split(":")[:2]
+                out["broadcast"] = "{}-{}-{}".format(w, h, m)
+            out["trailer"] = a["trailer_url"] if "trailer_url" in a.keys() else None
+            if out["date_from"] is None:
+                out["status"] = "UPDATE"
+            else:
+                out["status"] = (
+                    self.getStatus(out) if "status" in a.keys() else None
+                )
+            return out
+
         id = self.resolve_catalog_id(external_ids)
         out = Anime()
 

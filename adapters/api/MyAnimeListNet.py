@@ -145,7 +145,8 @@ class MyAnimeListNetWrapper(APIUtils):
                 looping = False
 
     def _convertAnime(self, a, relations=False):
-        id = self.database.getId("mal_id", int(a["id"]))
+        external_ids = {"mal_id": int(a["id"])}
+        id = self.resolve_catalog_id(external_ids)
         out = Anime()
 
         out["id"] = id

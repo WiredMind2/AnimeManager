@@ -12,7 +12,7 @@ frozenlist
 future
 idna
 jikanpy
-jsonapi-client
+jsonapi-client>=0.9.10
 jsonschema
 multidict
 mysql-connector

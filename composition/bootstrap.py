@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from adapters.api import AnimeAPI
 from adapters.file.local_episode_scanner import LocalEpisodeScanner
+from adapters.metadata.catalog_mapping_adapter import CatalogMappingAdapter
 from application.services.database_manager import DatabaseManager
 from shared.config import ConfigProvider
 from shared.config.constants import Constants
@@ -39,13 +40,16 @@ class _BootstrapHost:
         constants: Constants,
         config: ConfigProvider,
         logger: LoggerService,
-        api: AnimeAPI,
     ) -> None:
         self._config = config
         self._logger = logger
         self.__dict__.update(constants.__dict__)
         self.database = Getters.getDatabase(self)
-        self.api = api
+        self.api = None
+
+    def getDatabase(self):  # noqa: N802 - legacy naming
+        """Legacy getter expected by older API save paths."""
+        return self.database
 
     def setSettings(self, settings):  # noqa: N802 - legacy naming
         updated = self._config.update_settings(settings)
@@ -66,19 +70,28 @@ def bootstrap_embedded_deps(*, api: Optional[AnimeAPI] = None) -> EmbeddedDeps:
     constants = Constants()
     config = ConfigProvider(constants=constants)
     logger = LoggerService.from_defaults()
-    api_instance = api if api is not None else AnimeAPI(apis="all")
 
     host = _BootstrapHost(
         constants=constants,
         config=config,
         logger=logger,
-        api=api_instance,
     )
     Getters.getFileManager(host)
     Getters.getTorrentManager(host)
 
+    if api is not None:
+        host.api = api
+    else:
+        host.api = AnimeAPI(apis="all", getters=host, logger=logger)
+
     db_manager = DatabaseManager()
     db_manager.set_database(host.database)
+    db_manager.set_mapping_port(CatalogMappingAdapter())
+
+    settings = getattr(host, "settings", None) or {}
+    flags = settings.get("feature_flags") or {}
+    if not isinstance(flags, dict) or flags.get("batched_db_writes", True):
+        db_manager.enable_batched_writes()
 
     anime_path = str(getattr(host, "animePath", "") or "")
     scanner = LocalEpisodeScanner(

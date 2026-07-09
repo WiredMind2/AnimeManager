@@ -7,7 +7,8 @@ from typing import Any, Optional
 
 from adapters.persistence.models import Anime
 from application.services.database_manager import DatabaseManager
-from domain.entities import AnimeEntity, from_legacy_anime
+from domain.entities import AnimeEntity, enrich_anime_entity, from_legacy_anime
+from shared.utils.anime_metadata import collect_anime_enrichment
 from domain.errors import InfrastructureError, NotFoundError
 from shared.config import ConfigProvider
 
@@ -72,6 +73,21 @@ class AnimeRepositoryAdapter:
             return []
         return [from_legacy_anime(item) for item in results]
 
+    def list_by_genre(self, genre: str, limit: int = 50) -> list[AnimeEntity]:
+        results = self._db_manager.list_anime_by_genre(genre, limit=limit)
+        if not results:
+            return []
+        return [from_legacy_anime(item) for item in results]
+
+    def anime_row_exists(self, anime_id: int) -> bool:
+        db = self._database
+        if db is None:
+            return False
+        try:
+            return bool(db.exists(anime_id, table="anime"))
+        except Exception:
+            return False
+
     def get_anime(self, anime_id: int) -> Optional[AnimeEntity]:
         db = self._database
         if db is None:
@@ -82,11 +98,25 @@ class AnimeRepositoryAdapter:
             return None
         if not anime:
             return None
+        if hasattr(anime, "metadata_keys"):
+            for key in anime.metadata_keys:
+                try:
+                    getattr(anime, key)
+                except Exception:
+                    pass
         if isinstance(anime, Anime):
-            return from_legacy_anime(anime)
-        if isinstance(anime, dict):
-            return from_legacy_anime(anime)
-        return None
+            if getattr(anime, "id", None) in (None, 0):
+                return None
+            entity = from_legacy_anime(anime)
+        elif isinstance(anime, dict):
+            if not anime.get("id"):
+                return None
+            entity = from_legacy_anime(anime)
+        else:
+            return None
+
+        enrichment = collect_anime_enrichment(anime, db)
+        return enrich_anime_entity(entity, **enrichment)
 
     def get_search_terms(self, anime_id: int) -> list[str]:
         db = self._database
@@ -220,19 +250,63 @@ class AnimeRepositoryAdapter:
         updated = self._config.update_settings(updates)
         return updated
 
+    def _relation_row_to_dict(self, row: dict) -> dict:
+        rel_id = row.get("rel_id")
+        if rel_id is None:
+            rel_id = row.get("related_id")
+        relation_name = row.get("name") or row.get("relation")
+        media_type = row.get("type") or row.get("media_type") or "anime"
+        return {
+            "id": row.get("id"),
+            "rel_id": rel_id,
+            "anime_id": rel_id,
+            "type": media_type,
+            "media_type": media_type,
+            "name": relation_name,
+            "relation": relation_name,
+            "title": row.get("title"),
+            "picture": row.get("picture"),
+            "status": row.get("status"),
+            "date_from": row.get("date_from"),
+            "episodes": row.get("episodes"),
+        }
+
     def get_relations(self, anime_id: int, relation_type: str = "anime") -> list[dict]:
         db = self._database
         if db is None:
             return []
         try:
             rows = db.sql(
-                "SELECT * FROM animeRelations WHERE id=? AND type=?",
+                (
+                    "SELECT r.id, r.rel_id, r.type, r.name, "
+                    "a.title, a.picture, a.status, a.date_from, a.episodes "
+                    "FROM animeRelations AS r "
+                    "LEFT JOIN anime AS a ON a.id = r.rel_id "
+                    "WHERE r.id=? AND r.type=?"
+                ),
                 (anime_id, relation_type),
                 to_dict=True,
             )
         except Exception:
-            return []
-        return list(rows or [])
+            try:
+                rows = db.sql(
+                    (
+                        "SELECT r.id, r.related_id AS rel_id, r.type, r.name, "
+                        "a.title, a.picture, a.status, a.date_from, a.episodes "
+                        "FROM animeRelations AS r "
+                        "LEFT JOIN anime AS a ON a.id = r.related_id "
+                        "WHERE r.id=? AND r.type=?"
+                    ),
+                    (anime_id, relation_type),
+                    to_dict=True,
+                )
+            except Exception:
+                return []
+        return [
+            self._relation_row_to_dict(row)
+            for row in (rows or [])
+            if row and (row.get("rel_id") is not None or row.get("related_id") is not None)
+        ]
 
     def get_anime_torrents(self, anime_id: int) -> list[dict]:
         db = self._database
@@ -384,6 +458,9 @@ class AnimeRepositoryAdapter:
                 to_dict=True,
             )
         except Exception as exc:
+            message = str(exc).lower()
+            if "locked" in message or "deadlock" in message:
+                return []
             raise InfrastructureError(
                 f"Failed to load pictures for anime {anime_id}: {exc}"
             ) from exc
@@ -552,6 +629,12 @@ class AnimeRepositoryAdapter:
         normalized: list[dict] = []
         for pic in pictures or []:
             if not isinstance(pic, dict):
+                getter = getattr(pic, "get", None)
+                if callable(getter):
+                    for size in ("small", "medium", "large", "original"):
+                        url = getter(size)
+                        if url:
+                            normalized.append({"url": url, "size": size})
                 continue
             if "url" in pic and pic.get("url"):
                 normalized.append(
