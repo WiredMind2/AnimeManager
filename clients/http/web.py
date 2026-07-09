@@ -506,9 +506,9 @@ def _annotate_episode_playability(episode_files: list[Any]) -> list[Any]:
 
 
 def _episode_player_response(request: Request, anime_id: int) -> Response:
-    """Swap the episode table after HTMX mutations; redirect otherwise."""
+    """Swap the episode table after HTMX mutations; 204 for API-style POSTs."""
     if not _is_htmx(request):
-        return _redirect(f"/ui/anime/{anime_id}")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     sdk = get_sdk()
     try:
         anime = sdk.get_anime(anime_id)
@@ -2431,6 +2431,7 @@ def web_anime_torrent_stream(
     anime_id: int,
     terms: list[str] | None = Query(None),
     term: str | None = None,
+    allow_nsfw: bool = False,
 ) -> StreamingResponse:
     """Server-Sent Events feed for the inline torrent search.
 
@@ -2461,7 +2462,10 @@ def web_anime_torrent_stream(
         emitted = 0
         try:
             for raw in sdk.stream_torrents(
-                active_terms, profile="interactive", limit=TORRENT_RESULT_LIMIT
+                active_terms,
+                profile="interactive",
+                limit=TORRENT_RESULT_LIMIT,
+                allow_nsfw=allow_nsfw,
             ):
                 if emitted >= TORRENT_RESULT_LIMIT:
                     break

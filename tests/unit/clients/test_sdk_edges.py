@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from clients.sdk import ClientSDK
+from application.services.anime_hydration import AnimeDetailsResult
 from domain.entities import AnimeEntity
 
 
@@ -30,7 +31,10 @@ class FakeFacade:
         return Response()
 
     def get_anime_details(self, anime_id):
-        return AnimeEntity(id=anime_id, title="Detail")
+        return AnimeDetailsResult(
+            entity=AnimeEntity(id=anime_id, title="Detail"),
+            metadata_pending=False,
+        )
 
     def start_download(self, anime_id, url=None, hash_value=None, user_id=None):
         return True
@@ -121,6 +125,7 @@ class TestSDKEdges:
     def test_get_anime_returns_dict(self, sdk):
         out = sdk.get_anime(42)
         assert out["id"] == 42
+        assert out["metadata_pending"] is False
 
     def test_start_download_pass_through(self, sdk):
         assert sdk.start_download(1, url="magnet:?xt=urn:btih:abc") is True

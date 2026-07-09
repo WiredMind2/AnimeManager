@@ -59,6 +59,12 @@ def _shutdown_embedded_background() -> None:
             stopper()
         except Exception as exc:  # noqa: BLE001
             _LOG.debug("schedule loop shutdown skipped: %s", exc)
+    hydration_stopper = getattr(sdk, "stop_hydration", None)
+    if callable(hydration_stopper):
+        try:
+            hydration_stopper()
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("hydration shutdown skipped: %s", exc)
     facade = getattr(sdk, "_facade", None)
     if facade is None:
         return
@@ -132,6 +138,14 @@ def get_anime(anime_id: int):
     try:
         return get_sdk().get_anime(anime_id)
     except Exception as exc:  # pragma: no cover - mapping path
+        raise _map_error(exc) from exc
+
+
+@app.post("/anime/{anime_id}/refresh")
+def refresh_anime(anime_id: int):
+    try:
+        return get_sdk().refresh_anime_details(anime_id)
+    except Exception as exc:  # pragma: no cover
         raise _map_error(exc) from exc
 
 
@@ -220,10 +234,17 @@ def active_downloads():
 
 
 @app.get("/torrents/search")
-def search_torrents(term: str, profile: str = "interactive", limit: int = 200):
+def search_torrents(
+    term: str,
+    profile: str = "interactive",
+    limit: int = 200,
+    allow_nsfw: bool = False,
+):
     terms = [part.strip() for part in term.split(",") if part.strip()]
     try:
-        return get_sdk().search_torrents(terms=terms, profile=profile, limit=limit)
+        return get_sdk().search_torrents(
+            terms=terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+        )
     except Exception as exc:  # pragma: no cover
         raise _map_error(exc) from exc
 

@@ -1,5 +1,8 @@
 import importlib
 
+from application.services.anime_hydration import AnimeDetailsResult
+from domain.entities import AnimeEntity
+
 
 sdk_module = importlib.import_module("clients.sdk")
 
@@ -20,25 +23,10 @@ class FakeFacade:
         return _Payload()
 
     def get_anime_details(self, anime_id: int):
-        class _Anime:
-            id = anime_id
-            title = "A"
-            picture = None
-            title_synonyms = []
-            date_from = None
-            date_to = None
-            synopsis = None
-            episodes = None
-            duration = None
-            rating = None
-            status = None
-            trailer = None
-            genres = []
-            tag = "NONE"
-            liked = False
-            last_seen = None
-
-        return _Anime()
+        return AnimeDetailsResult(
+            entity=AnimeEntity(id=anime_id, title="A"),
+            metadata_pending=False,
+        )
 
     def start_download(self, anime_id: int, **kwargs):
         _ = (anime_id, kwargs)
