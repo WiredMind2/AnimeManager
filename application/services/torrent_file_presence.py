@@ -76,6 +76,41 @@ def paths_have_video_files(*paths: Optional[str]) -> bool:
     return False
 
 
+def normalize_media_path(path: Optional[str]) -> str:
+    if not path or not str(path).strip():
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(os.path.realpath(str(path).strip())))
+    except OSError:
+        return os.path.normcase(os.path.normpath(str(path).strip()))
+
+
+def deleted_path_matches_torrent_file(
+    deleted_path: str,
+    candidate_path: str,
+    *,
+    save_path: Optional[str] = None,
+) -> bool:
+    """Return True when ``candidate_path`` refers to the deleted on-disk file."""
+    deleted_norm = normalize_media_path(deleted_path)
+    candidate_norm = normalize_media_path(candidate_path)
+    if deleted_norm and candidate_norm and deleted_norm == candidate_norm:
+        return True
+    deleted_base = os.path.basename(deleted_norm or str(deleted_path))
+    candidate_base = os.path.basename(candidate_norm or str(candidate_path))
+    if deleted_base and candidate_base and deleted_base == candidate_base:
+        if save_path:
+            save_norm = normalize_media_path(save_path)
+            if candidate_norm.startswith(save_norm + os.sep):
+                return True
+        return True
+    if save_path and candidate_path and not os.path.isabs(str(candidate_path)):
+        joined = os.path.join(str(save_path), str(candidate_path))
+        if normalize_media_path(joined) == deleted_norm:
+            return True
+    return False
+
+
 def parse_episode_range_from_name(torrent_name: Optional[str]) -> Optional[Tuple[int, int]]:
     """Extract an inclusive episode range from a torrent release name."""
     text = str(torrent_name or "").strip()
@@ -140,6 +175,18 @@ def _normalise_live_state(live_state: Optional[str]) -> str:
     return str(live_state or "").strip().lower().replace(" ", "_")
 
 
+def parse_single_episode_from_name(
+    torrent_name: Optional[str],
+) -> Optional[int]:
+    """Extract a single episode number from a torrent release name."""
+    text = str(torrent_name or "").strip()
+    if not text:
+        return None
+    if parse_episode_range_from_name(text) is not None:
+        return None
+    return _episode_number_from_filename(text)
+
+
 def should_reconcile_torrent(
     *,
     status: Optional[str],
@@ -166,6 +213,12 @@ def should_reconcile_torrent(
         start, end = episode_range
         if not episodes_in_range_present(folder, start, end):
             return TorrentReconcileAction.MARK_DELETED
+
+    single_episode = parse_single_episode_from_name(torrent_name)
+    if single_episode is not None and not episodes_in_range_present(
+        folder, single_episode, single_episode
+    ):
+        return TorrentReconcileAction.MARK_DELETED
 
     if status_token == "complete" and not paths_have_video_files(save_path, anime_folder):
         return TorrentReconcileAction.MARK_DELETED

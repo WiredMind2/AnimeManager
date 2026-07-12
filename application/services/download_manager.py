@@ -775,6 +775,92 @@ class DownloadManager(BaseComponent):
             )
         return marked
 
+    def mark_torrents_deleted_for_removed_file(
+        self,
+        anime_id: int,
+        deleted_path: str,
+        folder_resolver: Callable[[int], Optional[str]],
+    ) -> int:
+        """Mark and remove torrents whose payload includes ``deleted_path``."""
+        from application.services.torrent_file_presence import (
+            deleted_path_matches_torrent_file,
+            folder_has_video_files,
+        )
+
+        db_manager = self._database_manager
+        if db_manager is None or not str(deleted_path or "").strip():
+            return 0
+        lister = getattr(db_manager, "list_torrents_for_anime", None)
+        updater = getattr(db_manager, "update_torrent_status", None)
+        if not callable(lister) or not callable(updater):
+            return 0
+
+        anime_folder: Optional[str] = None
+        try:
+            anime_folder = folder_resolver(int(anime_id))
+        except Exception:
+            anime_folder = None
+
+        marked = 0
+        hashes_to_remove: list[str] = []
+        rows = list(lister(anime_id) or [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            hash_val = str(row.get("hash") or "").strip()
+            if not hash_val:
+                continue
+            if str(row.get("status") or "").lower() == "deleted":
+                continue
+            save_path = row.get("save_path") or anime_folder
+            owned = False
+            for listed in self._list_files_for_torrent(hash_val):
+                if deleted_path_matches_torrent_file(
+                    deleted_path,
+                    listed,
+                    save_path=save_path,
+                ):
+                    owned = True
+                    break
+            if owned:
+                updater(hash_val, "deleted")
+                hashes_to_remove.append(hash_val)
+                marked += 1
+
+        if anime_folder and not folder_has_video_files(anime_folder):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                hash_val = str(row.get("hash") or "").strip()
+                if not hash_val or hash_val in hashes_to_remove:
+                    continue
+                if str(row.get("status") or "").lower() != "complete":
+                    continue
+                updater(hash_val, "deleted")
+                hashes_to_remove.append(hash_val)
+                marked += 1
+
+        if hashes_to_remove:
+            self.remove_torrents_from_client(hashes_to_remove, delete_files=False)
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Marked {marked} torrent(s) deleted after file removal for anime {anime_id}",
+            )
+        return marked
+
+    def _list_files_for_torrent(self, hash_value: str) -> list[str]:
+        tm = self._torrent_manager
+        if tm is None or not hash_value:
+            return []
+        lister = getattr(tm, "list_files", None)
+        if not callable(lister):
+            return []
+        try:
+            rows = lister(hash_value) or []
+        except Exception:
+            return []
+        return [str(path) for path in rows if path]
+
     def remove_torrents_from_client(
         self, hashes: List[str], *, delete_files: bool = False
     ) -> None:

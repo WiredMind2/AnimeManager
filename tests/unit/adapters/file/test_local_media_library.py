@@ -135,16 +135,14 @@ def test_delete_episode_file_rejects_bad_id(tmp_path):
     assert adapter.delete_episode_file(7, "missing-id") is False
 
 
-def test_delete_episode_file_marks_torrent_deleted_when_folder_empty(tmp_path):
-    adapter, db, _ = _build_adapter(tmp_path, [("Episode 01.mkv", "x")])
-    db.conn.execute(
-        "INSERT INTO torrents VALUES ('hash1', 'complete')"
+def test_delete_episode_file_does_not_touch_torrent_db(tmp_path):
+    adapter, db, _ = _build_adapter(
+        tmp_path,
+        [("Episode 01.mkv", "x"), ("Episode 02.mkv", "y")],
     )
+    db.conn.execute("INSERT INTO torrents VALUES ('hash1', 'complete')")
     db.conn.execute("INSERT INTO torrentsIndex VALUES (7, 'hash1')")
     db.conn.commit()
-
-    removed_hashes: list[str] = []
-    adapter.set_on_torrents_deleted(removed_hashes.extend)
 
     file_id = adapter.list_episode_files(7)[0]["file_id"]
     assert adapter.delete_episode_file(7, file_id) is True
@@ -152,8 +150,8 @@ def test_delete_episode_file_marks_torrent_deleted_when_folder_empty(tmp_path):
     row = db.conn.execute(
         "SELECT status FROM torrents WHERE hash='hash1'"
     ).fetchone()
-    assert row[0] == "deleted"
-    assert removed_hashes == ["hash1"]
+    assert row[0] == "complete"
+    assert len(adapter.list_episode_files(7)) == 1
 
 
 def test_get_stream_cache_root_creates_directory(tmp_path):
@@ -211,23 +209,6 @@ def test_delete_episode_file_returns_false_when_remove_fails(tmp_path, monkeypat
     monkeypatch.setattr(os, "remove", _fail_remove)
     assert adapter.delete_episode_file(7, file_id) is False
 
-
-def test_mark_torrent_deleted_skips_when_videos_remain(tmp_path):
-    adapter, db, _ = _build_adapter(
-        tmp_path,
-        [("Episode 01.mkv", "x"), ("Episode 02.mkv", "y")],
-    )
-    db.conn.execute("INSERT INTO torrents VALUES ('hash1', 'complete')")
-    db.conn.execute("INSERT INTO torrentsIndex VALUES (7, 'hash1')")
-    db.conn.commit()
-
-    file_id = adapter.list_episode_files(7)[0]["file_id"]
-    adapter.delete_episode_file(7, file_id)
-
-    row = db.conn.execute(
-        "SELECT status FROM torrents WHERE hash='hash1'"
-    ).fetchone()
-    assert row[0] == "complete"
 
 
 def test_list_episode_files_skips_invalid_entries(tmp_path, monkeypatch):

@@ -15,6 +15,7 @@ from application.commands import (
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
 from application.playback import PlaybackService
+from application.playback.file_ids import find_episode_by_file_id, progress_for_file_id
 from application.services.anime_hydration import (
     PRIORITY_PREFETCH,
     AnimeDetailsResult,
@@ -380,6 +381,17 @@ class AnimeApplicationService:
             if self._hydration is not None
             else False
         )
+        if (
+            pending
+            and self._hydration is not None
+            and self._hydration.catalog_id_exists(anime_id)
+            and not refreshing
+        ):
+            self._hydration.kickoff_detail_refresh(
+                anime_id,
+                after_hydrate=self._refresh_detail_extras,
+            )
+            refreshing = True
         return AnimeDetailsResult(
             entity=entity,
             metadata_pending=pending,
@@ -691,7 +703,7 @@ class AnimeApplicationService:
         progress = self._user_actions_port.get_episode_progress_map(anime_id, user_id)
         merged: list[EpisodeFileDTO] = []
         for row in core:
-            p = progress.get(row.file_id) or {}
+            p = progress_for_file_id(progress, row.file_id)
             st = str(p.get("status") or "UNSEEN").upper()
             pos_raw = p.get("position_seconds")
             try:
@@ -731,10 +743,29 @@ class AnimeApplicationService:
 
     def delete_episode_file(self, anime_id: int, file_id: str, user_id: int) -> bool:
         media = self._require_media_streaming()
+        deleted_path = ""
+        if self._media_streaming is not None:
+            episodes = self._media_streaming.list_episode_files(
+                ListEpisodeFilesQuery(anime_id=anime_id)
+            )
+            selected = find_episode_by_file_id(episodes, file_id)
+            if selected is not None:
+                deleted_path = str(selected.path or "").strip()
         ok = bool(media.delete_episode_file(anime_id, file_id))
         if ok:
             self._user_actions_port.delete_episode_progress(anime_id, user_id, file_id)
             self._sync_watching_tag_from_library(anime_id, user_id)
+            if deleted_path:
+                marker = getattr(
+                    self._download_port,
+                    "mark_torrents_deleted_for_removed_file",
+                    None,
+                )
+                if callable(marker):
+                    try:
+                        marker(anime_id, deleted_path)
+                    except Exception:
+                        pass
         return ok
 
     def create_playback_session(

@@ -1181,3 +1181,49 @@ class TestTorrentDeletedStatus:
             db.update_torrent_status.assert_called_once_with("abc123", "complete")
         finally:
             mgr.close()
+
+    def test_mark_deleted_for_removed_file_matches_owner_only(
+        self, DownloadManager, tmp_path
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        folder = tmp_path / "Show - 7"
+        folder.mkdir()
+        deleted = folder / "[ANi] Example - 01.mp4"
+        deleted.write_bytes(b"x")
+        (folder / "[SubsPlease] Show - 02.mkv").write_bytes(b"y")
+
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {
+                "hash": "ani123",
+                "name": "[ANi] Example - 01",
+                "save_path": str(folder),
+                "status": "complete",
+            },
+            {
+                "hash": "sub456",
+                "name": "[SubsPlease] Show - 02",
+                "save_path": str(folder),
+                "status": "complete",
+            },
+        ]
+        tm = MagicMock()
+        tm.list_files.side_effect = lambda h: {
+            "ani123": [str(deleted)],
+            "sub456": [str(folder / "[SubsPlease] Show - 02.mkv")],
+        }.get(h, [])
+
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            count = mgr.mark_torrents_deleted_for_removed_file(
+                7,
+                str(deleted),
+                lambda _aid: str(folder),
+            )
+            assert count == 1
+            db.update_torrent_status.assert_called_once_with("ani123", "deleted")
+            tm.delete.assert_called_once_with("ani123", delete_files=False)
+        finally:
+            mgr.close()

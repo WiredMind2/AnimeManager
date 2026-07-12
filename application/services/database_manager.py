@@ -7,6 +7,7 @@ import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Callable
 from contextlib import contextmanager
 import json
+import os
 
 from shared.base_component import BaseComponent
 from adapters.persistence.queue import PersistenceQueue
@@ -635,6 +636,180 @@ class DatabaseManager(BaseComponent):
             if key:
                 out[key] = aid
         return out
+
+        return out
+
+    def list_torrents_for_anime(self, anime_id: int) -> List[Dict[str, Any]]:
+        """Indexed torrent rows for one anime."""
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                rows = db.sql(
+                    (
+                        "SELECT t.hash, t.name, t.save_path, t.status "
+                        "FROM torrents AS t "
+                        "INNER JOIN torrentsIndex AS i "
+                        "ON LOWER(i.value) = LOWER(t.hash) "
+                        "WHERE i.id=?"
+                    ),
+                    (anime_id,),
+                )
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to list torrents for anime {anime_id}: {exc}")
+            return []
+        out: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if not row:
+                continue
+            try:
+                hash_val = str(row[0]).strip()
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not hash_val:
+                continue
+            out.append(
+                {
+                    "hash": hash_val,
+                    "name": row[1] if len(row) > 1 else None,
+                    "save_path": (
+                        str(row[2]).strip() if len(row) > 2 and row[2] else None
+                    ),
+                    "status": (
+                        str(row[3]).strip().lower()
+                        if len(row) > 3 and row[3] is not None
+                        else None
+                    ),
+                }
+            )
+        return out
+
+    def count_torrent_index_for_anime(self, anime_id: int) -> int:
+        try:
+            with self.get_connection() as db:
+                rows = db.sql(
+                    "SELECT COUNT(*) FROM torrentsIndex WHERE id=?",
+                    (anime_id,),
+                )
+                if rows and rows[0]:
+                    return int(rows[0][0] or 0)
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to count torrent index for {anime_id}: {exc}")
+        return 0
+
+    def list_orphan_torrents_for_folder(
+        self, anime_id: int, folder: str
+    ) -> List[Dict[str, Any]]:
+        """Torrent rows whose save_path matches ``folder`` but lack an index for ``anime_id``."""
+        folder_norm = os.path.normcase(os.path.normpath(str(folder or "").strip()))
+        if not folder_norm:
+            return []
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                rows = db.sql(
+                    (
+                        "SELECT t.hash, t.name, t.save_path, t.status "
+                        "FROM torrents AS t "
+                        "LEFT JOIN torrentsIndex AS i "
+                        "ON LOWER(i.value) = LOWER(t.hash) AND i.id=? "
+                        "WHERE i.id IS NULL AND t.save_path IS NOT NULL"
+                    ),
+                    (anime_id,),
+                )
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to list orphan torrents: {exc}")
+            return []
+        out: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if not row:
+                continue
+            save_path = row[2] if len(row) > 2 else None
+            if not save_path:
+                continue
+            save_norm = os.path.normcase(os.path.normpath(str(save_path).strip()))
+            if save_norm != folder_norm and not save_norm.startswith(folder_norm + os.sep):
+                continue
+            try:
+                hash_val = str(row[0]).strip()
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not hash_val:
+                continue
+            out.append(
+                {
+                    "hash": hash_val,
+                    "name": row[1] if len(row) > 1 else None,
+                    "save_path": str(save_path),
+                    "status": (
+                        str(row[3]).strip().lower()
+                        if len(row) > 3 and row[3] is not None
+                        else None
+                    ),
+                }
+            )
+        return out
+
+    def ensure_torrent_index(
+        self,
+        anime_id: int,
+        hash_value: str,
+        *,
+        name: Optional[str] = None,
+        save_path: Optional[str] = None,
+        trackers: Optional[Any] = None,
+    ) -> bool:
+        """Ensure ``torrentsIndex`` and ``torrents`` rows exist for a hash."""
+        hash_val = str(hash_value or "").strip()
+        if not hash_val:
+            return False
+        try:
+            with self.get_connection() as db:
+                self._ensure_torrent_columns(db)
+                exists = db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))",
+                    (anime_id, hash_val),
+                )
+                inserted_index = False
+                if not exists or not exists[0][0]:
+                    db.sql(
+                        "INSERT INTO torrentsIndex(id, value) VALUES(?, ?)",
+                        (anime_id, hash_val),
+                        save=False,
+                    )
+                    inserted_index = True
+                exists_torrent = db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))",
+                    (hash_val,),
+                )
+                if not exists_torrent or not exists_torrent[0][0]:
+                    tracker_payload = trackers
+                    if isinstance(trackers, (list, tuple, set)):
+                        tracker_payload = json.dumps(list(trackers))
+                    elif trackers is None:
+                        tracker_payload = json.dumps([])
+                    db.sql(
+                        "INSERT INTO torrents(hash, name, trackers, save_path) VALUES(?, ?, ?, ?)",
+                        (hash_val, name, tracker_payload, save_path),
+                        save=False,
+                    )
+                elif save_path or name:
+                    if save_path:
+                        db.sql(
+                            "UPDATE torrents SET save_path=? WHERE LOWER(hash)=LOWER(?)",
+                            (save_path, hash_val),
+                            save=False,
+                        )
+                    if name:
+                        db.sql(
+                            "UPDATE torrents SET name=? WHERE LOWER(hash)=LOWER(?)",
+                            (name, hash_val),
+                            save=False,
+                        )
+                db.save()
+                return inserted_index
+        except Exception as exc:
+            self.log("DB_ERROR", f"Failed to ensure torrent index: {exc}")
+            return False
 
     def get_anime_titles(self, anime_ids: List[int]) -> Dict[int, str]:
         """Resolve ``{anime_id: title}`` for the ``anime_ids`` set.

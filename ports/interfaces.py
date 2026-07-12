@@ -219,13 +219,13 @@ class DownloadPort(Protocol):
         limit: int = 200,
         allow_nsfw: bool = False,
     ):
-        """Optional streaming variant of :meth:`search_torrents`.
+        """Optional streaming variant of :meth:`search_torrents`."""
+        ...
 
-        Implementations should yield each result dict as soon as it is
-        produced by the underlying search engines. The application
-        service degrades to :meth:`search_torrents` automatically when
-        a port has not implemented this method.
-        """
+    def mark_torrents_deleted_for_removed_file(
+        self, anime_id: int, deleted_path: str
+    ) -> int:
+        """Mark torrents owning ``deleted_path`` as deleted and stop client restore."""
         ...
 
 

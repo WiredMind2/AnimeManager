@@ -346,3 +346,29 @@ def test_resume_write_clears_readonly_target(libtorrent_manager):
 
     with open(path, "rb") as fh:
         assert fh.read() == b"new-data"
+
+
+def test_list_files_returns_absolute_paths(libtorrent_manager):
+    info_hash = "c" * 40
+    handle = MagicMock()
+    handle.has_metadata.return_value = True
+    status = MagicMock()
+    status.save_path = r"C:\Anime\Show - 7"
+    handle.status.return_value = status
+    torrent_info = MagicMock()
+    file_storage = MagicMock()
+    file_storage.num_files.return_value = 2
+    file_storage.file_path.side_effect = lambda idx: {
+        0: "[ANi] Example - 01.mp4",
+        1: "readme.txt",
+    }[idx]
+    handle.get_torrent_info.return_value = torrent_info
+    torrent_info.files.return_value = file_storage
+    libtorrent_manager.handles[info_hash] = handle
+
+    paths = libtorrent_manager.list_files(info_hash)
+
+    assert paths == [
+        r"C:\Anime\Show - 7\[ANi] Example - 01.mp4",
+        r"C:\Anime\Show - 7\readme.txt",
+    ]

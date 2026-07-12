@@ -1,3 +1,4 @@
+import os
 import threading
 
 import qbittorrentapi
@@ -270,6 +271,33 @@ class qBittorrent(BaseTorrentManager):
             raise TorrentException("Couldn't connect to qBittorrent")
 
         self.qb.torrents_delete(delete_files=delete_files, torrent_hashes=hashes)
+
+    @wait_connection
+    def list_files(self, hash_value):
+        if self.qb is None or not hash_value:
+            return []
+        try:
+            rows = self.qb.torrents_files(torrent_hash=hash_value)
+        except Exception:
+            return []
+        out: list[str] = []
+        save_path = ""
+        try:
+            info_rows = self.qb.torrents_info(torrent_hashes=hash_value)
+            data = getattr(info_rows, "data", info_rows) or []
+            if data:
+                save_path = str(getattr(data[0], "save_path", "") or "").strip()
+        except Exception:
+            save_path = ""
+        for row in rows or []:
+            name = getattr(row, "name", None) if not isinstance(row, dict) else row.get("name")
+            if not name:
+                continue
+            if save_path:
+                out.append(os.path.join(save_path, str(name)))
+            else:
+                out.append(str(name))
+        return out
 
     def convert(self, data):
         # Convert qbittorrentapi torrent representation to our Torrent

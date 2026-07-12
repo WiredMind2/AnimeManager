@@ -317,7 +317,7 @@ class AnimeRepositoryAdapter:
                 (
                     "SELECT t.hash, t.name, t.trackers, t.save_path, t.status "
                     "FROM torrents AS t "
-                    "JOIN torrentsIndex AS i ON i.value = t.hash "
+                    "JOIN torrentsIndex AS i ON LOWER(i.value) = LOWER(t.hash) "
                     "WHERE i.id=?"
                 ),
                 (anime_id,),

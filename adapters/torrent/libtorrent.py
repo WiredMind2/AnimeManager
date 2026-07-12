@@ -761,6 +761,30 @@ class LibTorrent(BaseTorrentManager):
             except OSError:
                 pass
 
+    @wait_connection
+    def list_files(self, hash_value):
+        if self.session is None or lt is None:
+            return []
+        key = self._normalise_hash(hash_value)
+        handle = self.handles.get(key)
+        if handle is None or not handle.has_metadata():
+            return []
+        try:
+            status = handle.status()
+            save_path = str(status.save_path or "").strip()
+            torrent_info = handle.get_torrent_info()
+            file_storage = torrent_info.files()
+            out: list[str] = []
+            for index in range(file_storage.num_files()):
+                rel = file_storage.file_path(index)
+                if save_path:
+                    out.append(os.path.join(save_path, rel))
+                else:
+                    out.append(rel)
+            return out
+        except Exception:
+            return []
+
     def _convert_handle_to_torrent_data(self, handle, status):
         try:
             info_hash = self._normalise_hash(handle.info_hash())

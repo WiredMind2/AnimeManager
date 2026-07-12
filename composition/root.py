@@ -47,7 +47,6 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         user_actions=user_actions,
         repository=repository,
     )
-    media_library.set_on_torrents_deleted(download.remove_torrents_from_client)
     anime_write = AnimeWriteService(
         db_manager=deps.db_manager,
         log_fn=lambda msg: deps.logger.log("ANIME_WRITE", msg),

@@ -317,3 +317,32 @@ class TestWaitConnection:
         mgr.timeout = 0.01
         with pytest.raises(TorrentException):
             mgr.add(["m"])
+
+
+# ---------------------------------------------------------------------------
+# list_files()
+# ---------------------------------------------------------------------------
+
+
+class TestListFiles:
+    def test_list_files_joins_save_path(self, qBittorrent):
+        qb_client = MagicMock()
+        qb_client.torrents_files.return_value = [
+            SimpleNamespace(name="[ANi] Example - 01.mp4"),
+            SimpleNamespace(name="readme.txt"),
+        ]
+        qb_client.torrents_info.return_value = [
+            SimpleNamespace(save_path=r"C:\Anime\Show - 7"),
+        ]
+        mgr = _make_mgr(qBittorrent, qb_client=qb_client)
+        paths = mgr.list_files("abc123")
+        assert paths == [
+            r"C:\Anime\Show - 7\[ANi] Example - 01.mp4",
+            r"C:\Anime\Show - 7\readme.txt",
+        ]
+        qb_client.torrents_files.assert_called_once_with(torrent_hash="abc123")
+
+    def test_list_files_raises_without_client(self, qBittorrent, TorrentException):
+        mgr = _make_mgr(qBittorrent, qb_client=None)
+        with pytest.raises(TorrentException):
+            mgr.list_files("abc123")

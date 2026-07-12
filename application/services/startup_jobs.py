@@ -425,6 +425,7 @@ class StartupJobsService:
         yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
         )
+        yield StartupJob("repair_torrent_index", self._job_repair_torrent_index)
         yield StartupJob(
             "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
         )
@@ -458,6 +459,18 @@ class StartupJobsService:
         if count == 0:
             return "no torrents marked deleted"
         return f"marked {count} torrent(s) deleted"
+
+    def _job_repair_torrent_index(self) -> str:
+        adapter = self._download_adapter
+        if adapter is None:
+            return "skipped (no download adapter)"
+        repair = getattr(adapter, "repair_torrent_index", None)
+        if not callable(repair):
+            return "skipped (no repair_torrent_index)"
+        try:
+            return str(repair())
+        except Exception as exc:
+            return f"repair failed: {exc}"
 
     def _job_restore_libtorrent_sessions(self) -> str:
         """Ensure embedded LibTorrent finished restore (idempotent)."""

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from application.services.torrent_file_presence import (
     TorrentReconcileAction,
+    deleted_path_matches_torrent_file,
     episodes_in_range_present,
     folder_has_video_files,
     parse_episode_range_from_name,
+    parse_single_episode_from_name,
     should_mark_deleted,
     should_reconcile_torrent,
 )
@@ -143,4 +145,34 @@ def test_should_mark_deleted_false_for_non_complete_status(tmp_path):
             anime_folder=None,
         )
         is False
+    )
+
+
+def test_parse_single_episode_from_name():
+    assert parse_single_episode_from_name("[SubsPlease] Show - 01 (720p)") == 1
+    assert parse_single_episode_from_name("[SubsPlease] Show (01-13) Batch") is None
+
+
+def test_should_reconcile_single_deleted_when_episode_missing(tmp_path):
+    show = tmp_path / "Show - 1"
+    show.mkdir()
+    (show / "[SubsPlease] Show - 02.mkv").write_bytes(b"x")
+    action = should_reconcile_torrent(
+        status="complete",
+        save_path=str(show),
+        anime_folder=str(show),
+        torrent_name="[SubsPlease] Show - 01 (720p)",
+    )
+    assert action == TorrentReconcileAction.MARK_DELETED
+
+
+def test_deleted_path_matches_torrent_file_by_basename(tmp_path):
+    show = tmp_path / "Show - 1"
+    show.mkdir()
+    deleted = show / "[ANi] Example - 01.mp4"
+    deleted.write_bytes(b"x")
+    assert deleted_path_matches_torrent_file(
+        str(deleted),
+        "[ANi] Example - 01.mp4",
+        save_path=str(show),
     )

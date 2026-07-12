@@ -32,6 +32,7 @@ class DownloadAdapter:
     ) -> None:
         self._torrent_manager = torrent_manager
         self._file_manager = file_manager
+        self._db_manager = db_manager
         self._user_actions = user_actions
         self._download_manager = DownloadManager()
         self._download_manager.set_torrent_manager(torrent_manager)
@@ -95,6 +96,41 @@ class DownloadAdapter:
     def reconcile_deleted_torrents(self) -> int:
         return self._download_manager.reconcile_deleted_torrents(
             self._scanner.resolve_anime_folder
+        )
+
+    def mark_torrents_deleted_for_removed_file(
+        self, anime_id: int, deleted_path: str
+    ) -> int:
+        return self._download_manager.mark_torrents_deleted_for_removed_file(
+            anime_id,
+            deleted_path,
+            self._scanner.resolve_anime_folder,
+        )
+
+    def repair_torrent_index(self, *, dry_run: bool = False) -> str:
+        from application.services.torrent_index_repair import TorrentIndexRepairService
+
+        anime_path = getattr(self._scanner, "_anime_path", "") or ""
+        service = TorrentIndexRepairService(
+            db_manager=self._db_manager,
+            scanner=self._scanner,
+            torrent_manager=self._torrent_manager,
+            file_manager=self._file_manager,
+            anime_path=anime_path,
+            log_fn=lambda cat, msg: self._download_manager.log(cat, msg),
+        )
+        result = service.repair_unindexed_torrents(dry_run=dry_run)
+        if dry_run:
+            return (
+                f"would repair {result.repaired_index_rows} index row(s) "
+                f"across {result.affected_anime} anime; "
+                f"{len(result.issues)} issue(s) detected"
+            )
+        if result.repaired_index_rows == 0:
+            return "no torrent index rows repaired"
+        return (
+            f"repaired {result.repaired_index_rows} index row(s) "
+            f"across {result.affected_anime} anime"
         )
 
     def close(self) -> None:

@@ -150,9 +150,10 @@ def test_startup_pipeline_runs_lean_jobs_only():
         "update_status",
         "purge_deleted_torrents",
         "restore_libtorrent_sessions",
+        "repair_torrent_index",
         "reconcile_deleted_torrents",
     ]
-    assert report.total == 6
+    assert report.total == 7
     assert db.enrich_calls == []
 
 
@@ -185,10 +186,11 @@ def test_fetch_latest_persists_deduped_batch():
     assert isinstance(report, StartupJobReport)
     # Lean pipeline: ``repair_date_from``, ``fetch_latest_anime``,
     # ``update_status``, ``purge_deleted_torrents``,
-    # ``restore_libtorrent_sessions``, ``reconcile_deleted_torrents``.
+    # ``restore_libtorrent_sessions``, ``repair_torrent_index``,
+    # ``reconcile_deleted_torrents``.
     # cleanly here because ``_RecordingDBManager.get_database()`` returns
     # ``None``.
-    assert report.total == 5
+    assert report.total == 7
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
@@ -375,10 +377,44 @@ def test_purge_deleted_torrents_job_runs_before_restore():
         assert names.index("purge_deleted_torrents") < names.index(
             "restore_libtorrent_sessions"
         )
+        assert names.index("restore_libtorrent_sessions") < names.index(
+            "repair_torrent_index"
+        )
+        assert names.index("repair_torrent_index") < names.index(
+            "reconcile_deleted_torrents"
+        )
         detail = service._job_purge_deleted_torrents()
     finally:
         coord.close()
     assert detail == "purged 3 deleted torrent artifact(s)"
+
+
+def test_repair_torrent_index_job_runs_with_adapter():
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    adapter = SimpleNamespace(
+        repair_torrent_index=lambda: (
+            "repaired 2 index row(s) across 1 anime"
+        )
+    )
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db)
+    coord.log = lambda *a, **k: None
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db,
+        config=SimpleNamespace(settings={}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+        download_adapter=adapter,
+        schedule_limit=10,
+    )
+    try:
+        detail = service._job_repair_torrent_index()
+    finally:
+        coord.close()
+    assert detail == "repaired 2 index row(s) across 1 anime"
 
 
 def test_schedule_timeout_clamped_to_daily_minimum():

@@ -1,3 +1,4 @@
+import os
 import string
 from urllib.parse import urlparse
 
@@ -178,6 +179,34 @@ class Transmission(BaseTorrentManager):
         ids = hashes if isinstance(hashes, (list, tuple)) else [hashes]
         for h in ids:
             self.client.remove_torrent(h, delete_data=True)
+
+    def list_files(self, hash_value):
+        if not getattr(self, "client", None) or not hash_value:
+            return []
+        try:
+            torrent = self.client.get_torrent(hash_value)
+        except Exception:
+            return []
+        save_path = str(getattr(torrent, "download_dir", "") or "").strip()
+        out: list[str] = []
+        files = getattr(torrent, "files", None)
+        if files is None:
+            return out
+        try:
+            values = files.values() if hasattr(files, "values") else files
+        except Exception:
+            values = []
+        for entry in values or []:
+            name = getattr(entry, "name", None)
+            if not name and isinstance(entry, dict):
+                name = entry.get("name")
+            if not name:
+                continue
+            if save_path:
+                out.append(os.path.join(save_path, str(name)))
+            else:
+                out.append(str(name))
+        return out
 
     def convert(self, data):
         t = Torrent(
