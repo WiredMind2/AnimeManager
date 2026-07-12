@@ -55,8 +55,8 @@ describe("mergeAiringLines", () => {
     const merged = mergeAiringLines(
       ["Since 01 Jan 2026 (100 days)", "Next episode on Mon 9 at 09:00"],
       "0-9-0",
-      new Date("2026-07-06T12:00:00Z"),
       "Europe/Berlin",
+      new Date("2026-07-06T12:00:00Z"),
     );
     expect(merged[0]).toContain("Since");
     expect(merged.some((line) => line.startsWith("Next episode on"))).toBe(true);

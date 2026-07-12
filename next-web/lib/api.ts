@@ -1,5 +1,6 @@
 import { apiUrl, backendPath } from "./config";
 import { reportError } from "@/lib/telemetry/errors";
+import { injectTraceHeaders } from "@/lib/telemetry/trace-context";
 
 export const REQUEST_ID_HEADER = "x-request-id";
 
@@ -14,12 +15,19 @@ export class ApiError extends Error {
   }
 }
 
+type RequestOptions = RequestInit & {
+  json?: unknown;
+  /** When false, failed responses are not reported to client telemetry (default true). */
+  reportError?: boolean;
+};
+
 async function request<T>(
   path: string,
-  init?: RequestInit & { json?: unknown },
+  init?: RequestOptions,
 ): Promise<T> {
   const url = apiUrl(path);
   const headers = new Headers(init?.headers);
+  injectTraceHeaders(headers);
 
   let body = init?.body;
   if (init?.json !== undefined) {
@@ -43,13 +51,15 @@ async function request<T>(
     }
     const requestId = res.headers.get(REQUEST_ID_HEADER) ?? undefined;
     const apiError = new ApiError(`Request failed: ${path}`, res.status, detail);
-    reportError(apiError, {
-      path,
-      method: init?.method ?? "GET",
-      status: res.status,
-      request_id: requestId,
-      source: "api.request",
-    });
+    if (init?.reportError !== false) {
+      reportError(apiError, {
+        path,
+        method: init?.method ?? "GET",
+        status: res.status,
+        request_id: requestId,
+        source: "api.request",
+      });
+    }
     throw apiError;
   }
 
@@ -366,11 +376,15 @@ export type LogRecord = {
 };
 
 export const api = {
-  getAnime: (id: number, init?: Pick<RequestInit, "signal">) =>
+  getAnime: (id: number, init?: Pick<RequestInit, "signal"> & { reportError?: boolean }) =>
     request<AnimeItem>(`/anime/${id}`, init),
-  refreshAnimeDetails: (id: number) =>
+  refreshAnimeDetails: (
+    id: number,
+    init?: Pick<RequestInit, "signal"> & { reportError?: boolean },
+  ) =>
     request<{ accepted: boolean; anime_id: number }>(`/anime/${id}/refresh`, {
       method: "POST",
+      ...init,
     }),
   getAnimeList: (params: {
     filter?: string;

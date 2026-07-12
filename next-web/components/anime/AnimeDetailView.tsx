@@ -1,5 +1,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, type RefObject } from "react";
+import {
+  DOWNLOAD_ACTIVITY_CHANGED_EVENT,
+  DOWNLOAD_STARTED_EVENT,
+  hasActiveTorrents,
+  type DownloadActivityDetail,
+} from "@/lib/downloads/torrent-state";
 import type {
   AnimeCharacter,
   AnimeItem,
@@ -24,6 +30,7 @@ import TorrentSearchSection from "./TorrentSearchSection";
 type AnimeDetailViewProps = {
   anime: AnimeItem;
   refreshing?: boolean;
+  sectionsLoading?: boolean;
   userState: UserState;
   torrentSearchOptions: TorrentSearchOptions;
   relations: AnimeRelation[];
@@ -47,6 +54,7 @@ type TabDef = {
 export default function AnimeDetailView({
   anime,
   refreshing = false,
+  sectionsLoading = false,
   userState,
   torrentSearchOptions,
   relations,
@@ -61,10 +69,34 @@ export default function AnimeDetailView({
   tabsRef,
 }: AnimeDetailViewProps) {
   const [timeZone, setTimeZone] = useState<string | null>(null);
+  const [hasActiveDownload, setHasActiveDownload] = useState(() =>
+    hasActiveTorrents(animeTorrents),
+  );
 
   useEffect(() => {
     setTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
   }, []);
+
+  useEffect(() => {
+    setHasActiveDownload(hasActiveTorrents(animeTorrents));
+  }, [animeTorrents]);
+
+  useEffect(() => {
+    const onActivityChanged = (event: Event) => {
+      const detail = (event as CustomEvent<DownloadActivityDetail>).detail;
+      if (!detail || detail.animeId !== anime.id) return;
+      setHasActiveDownload(detail.active);
+    };
+    const onDownloadStarted = () => {
+      setHasActiveDownload(true);
+    };
+    window.addEventListener(DOWNLOAD_ACTIVITY_CHANGED_EVENT, onActivityChanged);
+    window.addEventListener(DOWNLOAD_STARTED_EVENT, onDownloadStarted);
+    return () => {
+      window.removeEventListener(DOWNLOAD_ACTIVITY_CHANGED_EVENT, onActivityChanged);
+      window.removeEventListener(DOWNLOAD_STARTED_EVENT, onDownloadStarted);
+    };
+  }, [anime.id]);
 
   const genres = (anime.genres || []).slice(0, 6);
   const airingLines = useMemo(
@@ -72,7 +104,6 @@ export default function AnimeDetailView({
       mergeAiringLines(
         anime.airing_lines || [],
         anime.broadcast,
-        new Date(),
         timeZone ?? "Asia/Tokyo",
       ),
     [anime.airing_lines, anime.broadcast, timeZone],
@@ -206,6 +237,15 @@ export default function AnimeDetailView({
               onClick={() => onTabChange(tab.id)}
             >
               {tab.label}
+              {tab.id === "downloads" && hasActiveDownload ? (
+                <span
+                  className="badge badge--accent"
+                  style={{ marginLeft: 6, fontSize: 10, verticalAlign: "middle" }}
+                  aria-label="Download in progress"
+                >
+                  ●
+                </span>
+              ) : null}
             </button>
           ))}
         </div>
@@ -229,7 +269,15 @@ export default function AnimeDetailView({
           hidden={activeTab !== "player"}
           id="panel-player"
         >
-          <EpisodePlayerTable animeId={anime.id!} initialFiles={episodeFiles} />
+          {sectionsLoading ? (
+            <section className="detail__section detail--skeleton" aria-busy="true" aria-label="Loading episodes">
+              <div className="detail__skeleton-line detail__skeleton-line--title" />
+              <div className="detail__skeleton-line detail__skeleton-line--synopsis" />
+              <div className="detail__skeleton-line detail__skeleton-line--short" />
+            </section>
+          ) : (
+            <EpisodePlayerTable animeId={anime.id!} initialFiles={episodeFiles} />
+          )}
         </div>
 
         <div
@@ -238,7 +286,14 @@ export default function AnimeDetailView({
           hidden={activeTab !== "downloads"}
           id="panel-downloads"
         >
-          <DownloadedEpisodesTable animeId={anime.id!} initialTorrents={animeTorrents} />
+          {sectionsLoading ? (
+            <section className="detail__section detail--skeleton" aria-busy="true" aria-label="Loading downloads">
+              <div className="detail__skeleton-line detail__skeleton-line--title" />
+              <div className="detail__skeleton-line detail__skeleton-line--synopsis" />
+            </section>
+          ) : (
+            <DownloadedEpisodesTable animeId={anime.id!} initialTorrents={animeTorrents} />
+          )}
         </div>
 
         {pictures.length > 0 ? (

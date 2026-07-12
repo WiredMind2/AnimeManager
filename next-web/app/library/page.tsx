@@ -104,18 +104,9 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
   const pageTitle = qClean ? "Search results" : "Library";
 
   const topbarActions = (
-    <>
-      <Link className="btn btn--ghost" href="/torrents">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-          <path d="M12 3v12" />
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-        Find torrents
-      </Link>
-      <Link className="btn btn--primary" href="/downloads">
-        Downloads
-      </Link>
-    </>
+    <Link className="btn btn--primary" href="/downloads">
+      Downloads
+    </Link>
   );
 
   return (

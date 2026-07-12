@@ -107,10 +107,6 @@ export default function Rail({ activeNav = "library", activeFilter }: RailProps)
 
         <nav className="rail__group" aria-label="Workflow">
           <span className="rail__group-label">Workflow</span>
-          <NavLink href="/torrents" active={activeNav === "torrents"} onNavigate={closeMenu}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3v12" /><path d="M6 9l6 6 6-6" /><path d="M5 21h14" /></svg>
-            Torrent search
-          </NavLink>
           <NavLink href="/downloads" active={activeNav === "downloads"} onNavigate={closeMenu}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 14a4 4 0 0 1 .9-7.9 5 5 0 0 1 9.7-1A5 5 0 0 1 20 14" /><path d="M12 12v8" /><path d="M9 17l3 3 3-3" /></svg>
             Downloads

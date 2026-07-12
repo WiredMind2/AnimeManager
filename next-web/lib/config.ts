@@ -24,7 +24,6 @@ export type FilterValue = (typeof FILTER_OPTIONS)[number]["value"];
 
 export type NavKey =
   | "library"
-  | "torrents"
   | "downloads"
   | "logs"
   | "settings";

@@ -221,7 +221,7 @@ export default function LibraryPageContent({
           <EmptyState
             icon="⌀"
             title="No anime to show"
-            hint="Try a different filter, broaden your search, or hit the torrent search to seed the library."
+            hint="Try a different filter, broaden your search, or open an anime to find torrents."
           />
         </>
       )}

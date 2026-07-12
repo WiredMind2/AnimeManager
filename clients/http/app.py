@@ -50,6 +50,12 @@ _LOG = logging.getLogger("animemanager.http")
 def _init_observability_exporters(_app: FastAPI) -> None:
     """Wire optional Sentry/OpenTelemetry exporters when env vars are set."""
     try:
+        from adapters.observability.env import load_repo_env
+    except ImportError:
+        load_repo_env = None  # type: ignore[assignment,misc]
+    if load_repo_env is not None:
+        load_repo_env()
+    try:
         from adapters.observability.sentry import init_sentry
     except ImportError:
         init_sentry = None  # type: ignore[assignment,misc]
@@ -155,6 +161,19 @@ install_telemetry_middleware(app)
 register_exception_handlers(app)
 _web.mount_static(app)
 app.include_router(_web.router)
+
+try:
+    from adapters.observability.env import load_repo_env
+except ImportError:
+    load_repo_env = None  # type: ignore[assignment,misc]
+if load_repo_env is not None:
+    load_repo_env()
+try:
+    from adapters.observability.otel import instrument_fastapi_app
+except ImportError:
+    instrument_fastapi_app = None  # type: ignore[assignment,misc]
+if instrument_fastapi_app is not None:
+    instrument_fastapi_app(app)
 
 
 @lru_cache(maxsize=1)

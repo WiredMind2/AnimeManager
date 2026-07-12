@@ -217,10 +217,17 @@ class AnimeHydrationService:
                 return
             self._detail_refresh_in_flight.add(catalog_id)
 
-        self._schedule_catalog_enrichment([catalog_id])
         self.schedule([catalog_id], priority=PRIORITY_USER, force=True)
 
         def _run_refresh() -> None:
+            if self._catalog_enrich_fn is not None:
+                try:
+                    self._catalog_enrich_fn([catalog_id])
+                except Exception as exc:
+                    if self._log:
+                        self._log(
+                            f"catalog enrich error for {catalog_id}: {exc}"
+                        )
             try:
                 self._wait_for_hydration_worker(
                     catalog_id,

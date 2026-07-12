@@ -55,7 +55,7 @@ export default function DownloadsPanel({ overview, onRefresh }: DownloadsPanelPr
         <EmptyState
           icon="↓"
           title="No downloads yet"
-          hint="Start one from the torrent search or an anime detail page — it will appear here in real time."
+          hint="Start one from an anime detail page — it will appear here in real time."
         />
       ) : null}
 

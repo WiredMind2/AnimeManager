@@ -43,11 +43,6 @@
       "name": "Downloads",
       "url": "/downloads",
       "description": "View active downloads"
-    },
-    {
-      "name": "Torrent search",
-      "url": "/torrents",
-      "description": "Search torrent providers"
     }
   ]
 }

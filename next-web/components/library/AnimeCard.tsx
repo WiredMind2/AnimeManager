@@ -44,11 +44,7 @@ export default function AnimeCard({ item }: AnimeCardProps) {
   function openTorrentSearch(event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
-    const params = new URLSearchParams();
-    params.set("anime_id", String(item.id));
-    const term = (item.title ?? "").trim();
-    if (term) params.set("term", term);
-    router.push(`/torrents?${params.toString()}`);
+    router.push(`/anime/${item.id}?tab=torrents`);
   }
 
   return (

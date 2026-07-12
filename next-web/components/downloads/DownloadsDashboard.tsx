@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import DownloadsPanel from "@/components/downloads/DownloadsPanel";
@@ -219,19 +218,14 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
       pageTitle="Downloads"
       showSearch={false}
       topbarActions={
-        <>
-          <Link className="btn btn--ghost" href="/torrents">
-            Find more
-          </Link>
-          <button
-            type="button"
-            className="btn btn--primary"
-            data-downloads-refresh
-            onClick={requestRefresh}
-          >
-            Refresh
-          </button>
-        </>
+        <button
+          type="button"
+          className="btn btn--primary"
+          data-downloads-refresh
+          onClick={requestRefresh}
+        >
+          Refresh
+        </button>
       }
     >
       <header className="page-head">

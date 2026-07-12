@@ -209,9 +209,9 @@ export function latestEpisodeLabel(
 }
 
 export function buildBroadcastAiringLines(
-  broadcast?: string | null,
-  now: Date = new Date(),
+  broadcast: string | null | undefined,
   timeZone: string,
+  now: Date = new Date(),
 ): string[] {
   const slot = parseBroadcast(broadcast);
   if (!slot) return [];
@@ -223,14 +223,14 @@ export function buildBroadcastAiringLines(
 
 export function mergeAiringLines(
   serverLines: string[],
-  broadcast?: string | null,
-  now: Date = new Date(),
+  broadcast: string | null | undefined,
   timeZone: string,
+  now: Date = new Date(),
 ): string[] {
   const base = serverLines.filter(
     (line) =>
       !line.startsWith("Next episode on") && !line.startsWith("Latest episode:"),
   );
   if (!broadcast) return base;
-  return [...base, ...buildBroadcastAiringLines(broadcast, now, timeZone)];
+  return [...base, ...buildBroadcastAiringLines(broadcast, timeZone, now)];
 }

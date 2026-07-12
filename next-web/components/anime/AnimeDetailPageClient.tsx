@@ -16,6 +16,10 @@ import {
   type UserState,
 } from "@/lib/api";
 import { DEFAULT_USER_ID } from "@/lib/config";
+import {
+  DOWNLOAD_ACTIVITY_CHANGED_EVENT,
+  type DownloadActivityDetail,
+} from "@/lib/downloads/torrent-state";
 import { truncateTitle } from "@/lib/format";
 
 export type AnimeDetailTabId =
@@ -26,7 +30,23 @@ export type AnimeDetailTabId =
   | "characters"
   | "related";
 
-const POLL_INTERVAL_MS = 2500;
+const DETAIL_TAB_IDS = new Set<AnimeDetailTabId>([
+  "torrents",
+  "player",
+  "downloads",
+  "pictures",
+  "characters",
+  "related",
+]);
+
+export function parseAnimeDetailTab(value: string | undefined): AnimeDetailTabId | undefined {
+  if (!value) return undefined;
+  return DETAIL_TAB_IDS.has(value as AnimeDetailTabId)
+    ? (value as AnimeDetailTabId)
+    : undefined;
+}
+
+const POLL_INTERVAL_MS = 1000;
 const MAX_POLL_ATTEMPTS = 15;
 
 const EMPTY_TORRENT_SEARCH_OPTIONS: TorrentSearchOptions = {
@@ -43,6 +63,7 @@ type AnimeDetailPageClientProps = {
   animeId: number;
   initialAnime: AnimeItem;
   userState?: UserState;
+  initialTab?: AnimeDetailTabId;
   initialTorrentSearchOptions?: TorrentSearchOptions;
   initialEpisodeFiles?: EpisodeFile[];
   initialAnimeTorrents?: AnimeLibraryTorrent[];
@@ -125,6 +146,7 @@ export default function AnimeDetailPageClient({
   animeId,
   initialAnime,
   userState = {},
+  initialTab,
   initialTorrentSearchOptions,
   initialEpisodeFiles = [],
   initialAnimeTorrents = [],
@@ -139,10 +161,13 @@ export default function AnimeDetailPageClient({
   const [characters, setCharacters] = useState<AnimeCharacter[]>([]);
   const [pictures, setPictures] = useState<AnimePicture[]>([]);
   const [relations, setRelations] = useState<AnimeRelation[]>([]);
+  const [sectionsLoading, setSectionsLoading] = useState(
+    initialEpisodeFiles.length === 0 && initialAnimeTorrents.length === 0,
+  );
   const [mounted, setMounted] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<AnimeDetailTabId>("player");
-  const [torrentTabActivated, setTorrentTabActivated] = useState(false);
+  const [activeTab, setActiveTab] = useState<AnimeDetailTabId>(initialTab ?? "player");
+  const [torrentTabActivated, setTorrentTabActivated] = useState(initialTab === "torrents");
   const tabsRef = useRef<HTMLDivElement>(null);
   const pollInFlightRef = useRef(false);
 
@@ -153,6 +178,33 @@ export default function AnimeDetailPageClient({
     }
     tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, []);
+
+  const refreshAnimeTorrents = useCallback(async () => {
+    try {
+      const { items } = await api.getAnimeLibraryTorrents(animeId);
+      setAnimeTorrents(items);
+    } catch {
+      /* child table owns live refresh; parent sync is best-effort */
+    }
+  }, [animeId]);
+
+  useEffect(() => {
+    const onActivityChanged = (event: Event) => {
+      const detail = (event as CustomEvent<DownloadActivityDetail>).detail;
+      if (!detail || detail.animeId !== animeId) return;
+      void refreshAnimeTorrents();
+    };
+    window.addEventListener(DOWNLOAD_ACTIVITY_CHANGED_EVENT, onActivityChanged);
+    return () => {
+      window.removeEventListener(DOWNLOAD_ACTIVITY_CHANGED_EVENT, onActivityChanged);
+    };
+  }, [animeId, refreshAnimeTorrents]);
+
+  useEffect(() => {
+    if (initialTab) {
+      tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [initialTab]);
 
   useEffect(() => {
     setMounted(true);
@@ -165,21 +217,30 @@ export default function AnimeDetailPageClient({
     const { signal } = controller;
     let attempts = 0;
 
-    void fetchPageSections(animeId, DEFAULT_USER_ID).then((sections) => {
-      if (signal.aborted) return;
-      setTorrentSearchOptions(sections.torrentSearchOptions);
-      setEpisodeFiles(sections.episodeFiles);
-      setAnimeTorrents(sections.animeTorrents);
-      setCharacters(sections.characters);
-      setPictures(sections.pictures);
-      setRelations(sections.relations);
-    });
+    void fetchPageSections(animeId, DEFAULT_USER_ID)
+      .then((sections) => {
+        if (signal.aborted) return;
+        setTorrentSearchOptions(sections.torrentSearchOptions);
+        setEpisodeFiles(sections.episodeFiles);
+        setAnimeTorrents(sections.animeTorrents);
+        setCharacters(sections.characters);
+        setPictures(sections.pictures);
+        setRelations(sections.relations);
+      })
+      .finally(() => {
+        if (!signal.aborted) {
+          setSectionsLoading(false);
+        }
+      });
 
     const pollAnime = async (): Promise<AnimeItem | null> => {
       if (signal.aborted || pollInFlightRef.current) return null;
       pollInFlightRef.current = true;
       try {
-        const nextAnime = await api.getAnime(animeId, { signal });
+        const nextAnime = await api.getAnime(animeId, {
+          signal,
+          reportError: false,
+        });
         if (signal.aborted) return null;
         setAnime(nextAnime);
         const stillRefreshing =
@@ -197,7 +258,7 @@ export default function AnimeDetailPageClient({
     };
 
     const runRefreshCycle = async () => {
-      void api.refreshAnimeDetails(animeId).catch(() => {
+      void api.refreshAnimeDetails(animeId, { reportError: false }).catch(() => {
         // Polling still picks up background work when refresh POST fails.
       });
 
@@ -245,7 +306,11 @@ export default function AnimeDetailPageClient({
       }
     };
 
-    void runRefreshCycle();
+    if (!isRefreshComplete(initialAnime)) {
+      void runRefreshCycle();
+    } else {
+      setRefreshing(false);
+    }
     return () => {
       controller.abort();
     };
@@ -276,6 +341,7 @@ export default function AnimeDetailPageClient({
       <AnimeDetailView
         anime={anime}
         refreshing={mounted && refreshing}
+        sectionsLoading={sectionsLoading}
         userState={userStateState}
         torrentSearchOptions={torrentSearchOptions}
         relations={relations}

@@ -370,11 +370,23 @@ class APIUtils:
     def _catalog_identity(self):
         identity = getattr(self, "_catalog_identity_service", None)
         if identity is None:
+            from adapters.persistence.catalog_repository import (
+                CatalogIndexRepository,
+                CatalogMergeRepository,
+                _batched_writes,
+            )
             from application.services.catalog_identity import CatalogIdentityService
+            from application.services.catalog_merge import CatalogMergeService
 
+            log_fn = lambda msg: self.log("API_UTILS", msg)
             identity = CatalogIdentityService.from_database(
                 self.database,
-                log_fn=lambda msg: self.log("API_UTILS", msg),
+                index_repo=CatalogIndexRepository(self.database),
+                merge_service=CatalogMergeService(
+                    CatalogMergeRepository(self.database, log_fn=log_fn)
+                ),
+                batched_writes=_batched_writes,
+                log_fn=log_fn,
             )
             self._catalog_identity_service = identity
         return identity
