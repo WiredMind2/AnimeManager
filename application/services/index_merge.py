@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from adapters.persistence.catalog_repository import CatalogMergeRepository
-from shared.contracts import RepairStrategy
+from domain.catalog import RepairStrategy
+from ports.interfaces import CatalogMergePort
 
 
 def merge_anime_index_rows(
-    db: Any,
     *,
+    merge_repo: CatalogMergePort,
     duplicate_id: int,
     canonical_id: int,
 ) -> int:
-    return CatalogMergeRepository(db).merge(duplicate_id, canonical_id)
+    return merge_repo.merge(duplicate_id, canonical_id)
 
 
 def repair_duplicate_index_entries(
-    db: Any,
     *,
+    merge_repo: CatalogMergePort,
     strategy: RepairStrategy = RepairStrategy.PROVIDER_ID,
 ) -> int:
-    return CatalogMergeRepository(db).repair_duplicates(strategy=strategy)
+    return merge_repo.repair_duplicates(strategy=strategy)

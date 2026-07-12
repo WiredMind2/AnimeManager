@@ -106,7 +106,11 @@ class _IndexDB:
 
 def test_merge_deletes_orphan_anime_row():
     db = _IndexDB()
-    merge_anime_index_rows(db, duplicate_id=2, canonical_id=1)
+    merge_anime_index_rows(
+        merge_repo=CatalogMergeRepository(db),
+        duplicate_id=2,
+        canonical_id=1,
+    )
     assert 2 not in db.anime
     assert 2 not in db.index
     assert db.saved > 0
@@ -114,7 +118,11 @@ def test_merge_deletes_orphan_anime_row():
 
 def test_merge_repoints_torrents_index_to_canonical():
     db = _IndexDB()
-    merge_anime_index_rows(db, duplicate_id=2, canonical_id=1)
+    merge_anime_index_rows(
+        merge_repo=CatalogMergeRepository(db),
+        duplicate_id=2,
+        canonical_id=1,
+    )
     assert db.torrents_index == [(1, "dup-hash")]
 
 

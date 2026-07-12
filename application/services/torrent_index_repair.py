@@ -75,8 +75,18 @@ class TorrentIndexRepairService:
         self._file_manager = file_manager
         self._anime_path = str(anime_path or "").strip()
         self._log = log_fn or (lambda _cat, _msg: None)
+        self._live_torrent_snapshot: list[dict[str, Any]] | None = None
 
     def detect_issues(self) -> list[LibraryIssue]:
+        live_snapshot = self._snapshot_live_torrents()
+        try:
+            return self._detect_issues_with_snapshot(live_snapshot)
+        finally:
+            self._live_torrent_snapshot = None
+
+    def _detect_issues_with_snapshot(
+        self, live_snapshot: list[dict[str, Any]]
+    ) -> list[LibraryIssue]:
         issues: list[LibraryIssue] = []
         for anime_id, folder in self._iter_library_folders():
             if not folder_has_video_files(folder):
@@ -91,6 +101,8 @@ class TorrentIndexRepairService:
                         detail="on-disk videos but no torrentsIndex rows",
                     )
                 )
+            if index_count > 0:
+                continue
             if self._has_multi_release_episode_one(folder):
                 issues.append(
                     LibraryIssue(
@@ -109,7 +121,9 @@ class TorrentIndexRepairService:
                         detail=f"unindexed hash {orphan.get('hash', '')[:12]}",
                     )
                 )
-            for live in self._orphan_live_torrents(anime_id, folder):
+            for live in self._orphan_live_torrents(
+                anime_id, folder, live_snapshot=live_snapshot
+            ):
                 issues.append(
                     LibraryIssue(
                         anime_id=anime_id,
@@ -121,56 +135,72 @@ class TorrentIndexRepairService:
         return issues
 
     def repair_unindexed_torrents(self, *, dry_run: bool = False) -> TorrentIndexRepairResult:
-        result = TorrentIndexRepairResult(issues=self.detect_issues())
-        touched_anime: set[int] = set()
-
-        for anime_id, folder in self._iter_library_folders():
-            if not folder_has_video_files(folder):
-                continue
-            candidates = []
-            candidates.extend(self._orphan_db_torrents(anime_id, folder))
-            candidates.extend(self._orphan_live_torrents(anime_id, folder))
-            if not candidates and self._count_index_rows(anime_id) == 0:
-                candidates.extend(self._live_torrents_for_folder(folder))
-
-            seen_hashes: set[str] = set()
-            for row in candidates:
-                hash_val = str(row.get("hash") or "").strip()
-                if not hash_val:
-                    continue
-                key = hash_val.lower()
-                if key in seen_hashes:
-                    continue
-                seen_hashes.add(key)
-                if dry_run:
-                    result.repaired_index_rows += 1
-                    touched_anime.add(anime_id)
-                    continue
-                linker = getattr(self._db_manager, "ensure_torrent_index", None)
-                if not callable(linker):
-                    continue
-                linked = bool(
-                    linker(
-                        anime_id,
-                        hash_val,
-                        name=row.get("name"),
-                        save_path=row.get("save_path") or folder,
-                    )
-                )
-                if linked:
-                    result.repaired_index_rows += 1
-                    touched_anime.add(anime_id)
-
-        result.affected_anime = len(touched_anime)
-        if not dry_run:
-            self._log(
-                "TORRENT_INDEX_REPAIR",
-                (
-                    f"repaired {result.repaired_index_rows} index row(s) "
-                    f"across {result.affected_anime} anime"
-                ),
+        live_snapshot = self._snapshot_live_torrents()
+        try:
+            result = TorrentIndexRepairResult(
+                issues=self._detect_issues_with_snapshot(live_snapshot)
             )
-        return result
+            touched_anime: set[int] = set()
+
+            for anime_id, folder in self._iter_library_folders():
+                if not folder_has_video_files(folder):
+                    continue
+                index_count = self._count_index_rows(anime_id)
+                candidates = []
+                if index_count == 0:
+                    candidates.extend(self._orphan_db_torrents(anime_id, folder))
+                    candidates.extend(
+                        self._orphan_live_torrents(
+                            anime_id, folder, live_snapshot=live_snapshot
+                        )
+                    )
+                    if not candidates:
+                        candidates.extend(
+                            self._live_torrents_for_folder(
+                                folder, live_snapshot=live_snapshot
+                            )
+                        )
+
+                seen_hashes: set[str] = set()
+                for row in candidates:
+                    hash_val = str(row.get("hash") or "").strip()
+                    if not hash_val:
+                        continue
+                    key = hash_val.lower()
+                    if key in seen_hashes:
+                        continue
+                    seen_hashes.add(key)
+                    if dry_run:
+                        result.repaired_index_rows += 1
+                        touched_anime.add(anime_id)
+                        continue
+                    linker = getattr(self._db_manager, "ensure_torrent_index", None)
+                    if not callable(linker):
+                        continue
+                    linked = bool(
+                        linker(
+                            anime_id,
+                            hash_val,
+                            name=row.get("name"),
+                            save_path=row.get("save_path") or folder,
+                        )
+                    )
+                    if linked:
+                        result.repaired_index_rows += 1
+                        touched_anime.add(anime_id)
+
+            result.affected_anime = len(touched_anime)
+            if not dry_run:
+                self._log(
+                    "TORRENT_INDEX_REPAIR",
+                    (
+                        f"repaired {result.repaired_index_rows} index row(s) "
+                        f"across {result.affected_anime} anime"
+                    ),
+                )
+            return result
+        finally:
+            self._live_torrent_snapshot = None
 
     def _iter_library_folders(self) -> list[tuple[int, str]]:
         root = self._anime_path
@@ -220,17 +250,17 @@ class TorrentIndexRepairService:
         except Exception:
             return []
 
-    def _live_torrents_for_folder(self, folder: str) -> list[dict[str, Any]]:
-        tm = self._torrent_manager
-        if tm is None:
-            return []
-        lister = getattr(tm, "list", None)
-        if not callable(lister):
-            return []
-        try:
-            rows = lister() or []
-        except Exception:
-            return []
+    def _live_torrents_for_folder(
+        self,
+        folder: str,
+        *,
+        live_snapshot: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = (
+            live_snapshot
+            if live_snapshot is not None
+            else self._snapshot_live_torrents()
+        )
         out: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -249,14 +279,43 @@ class TorrentIndexRepairService:
                 )
         return out
 
-    def _orphan_live_torrents(self, anime_id: int, folder: str) -> list[dict[str, Any]]:
+    def _snapshot_live_torrents(self) -> list[dict[str, Any]]:
+        if self._live_torrent_snapshot is not None:
+            return self._live_torrent_snapshot
+        tm = self._torrent_manager
+        if tm is None:
+            self._live_torrent_snapshot = []
+            return self._live_torrent_snapshot
+        lister = getattr(tm, "list", None)
+        if not callable(lister):
+            self._live_torrent_snapshot = []
+            return self._live_torrent_snapshot
+        try:
+            rows = list(lister() or [])
+        except Exception:
+            rows = []
+        normalized: list[dict[str, Any]] = [
+            row for row in rows if isinstance(row, dict)
+        ]
+        self._live_torrent_snapshot = normalized
+        return normalized
+
+    def _orphan_live_torrents(
+        self,
+        anime_id: int,
+        folder: str,
+        *,
+        live_snapshot: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         indexed = {
             str(row.get("hash") or "").lower()
             for row in self._indexed_torrents(anime_id)
             if row.get("hash")
         }
         out: list[dict[str, Any]] = []
-        for row in self._live_torrents_for_folder(folder):
+        for row in self._live_torrents_for_folder(
+            folder, live_snapshot=live_snapshot
+        ):
             key = str(row.get("hash") or "").lower()
             if key and key not in indexed:
                 out.append(row)

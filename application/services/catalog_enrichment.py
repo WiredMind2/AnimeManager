@@ -5,12 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
-from adapters.persistence.catalog_repository import CatalogIndexRepository
 from application.services.catalog_identity import (
     CatalogIdentityService,
     _normalize_external_ids,
 )
-from ports.interfaces import CatalogMappingPort
+from ports.interfaces import CatalogIndexPort, CatalogMappingPort
 from shared.contracts import INDEX_PROVIDER_KEYS
 from shared.telemetry import get_telemetry
 
@@ -146,15 +145,14 @@ class CatalogEnrichmentService:
         db: Any,
         mapping_port: CatalogMappingPort,
         *,
+        index_repo: CatalogIndexPort,
+        identity_service: CatalogIdentityService,
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._db = db
         self._mapping = mapping_port
-        self._index = CatalogIndexRepository(db)
-        self._identity = CatalogIdentityService.from_database(
-            db,
-            log_fn=log_fn,
-        )
+        self._index = index_repo
+        self._identity = identity_service
         self._telemetry = get_telemetry()
         self._log = log_fn
 

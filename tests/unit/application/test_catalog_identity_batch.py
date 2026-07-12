@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from adapters.persistence.catalog_repository import CatalogIndexRepository, _batched_writes
 from application.services.catalog_identity import CatalogIdentityService
-from adapters.persistence.catalog_repository import CatalogIndexRepository
 
 
 class _BatchDB:
@@ -69,7 +69,12 @@ def test_find_by_external_batch_uses_grouped_lookup():
 
 def test_resolve_external_ids_batch_commits_once_for_existing_rows():
     db = _BatchDB()
-    service = CatalogIdentityService(db, merge_service=_MergeStub())
+    service = CatalogIdentityService(
+        db,
+        index_repo=CatalogIndexRepository(db),
+        merge_service=_MergeStub(),
+        batched_writes=_batched_writes,
+    )
 
     results = service.resolve_external_ids_batch(
         [

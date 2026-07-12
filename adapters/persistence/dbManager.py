@@ -137,6 +137,7 @@ class db_instance(BaseDB):
     """Database manager using sqlite3"""
 
     def __init__(self, settings):
+        super().__init__(settings if isinstance(settings, dict) else {})
         if isinstance(settings, dict):
             self.path = settings["dbPath"]
         else:
@@ -199,15 +200,6 @@ class db_instance(BaseDB):
             self.query_cache.set(sql, params, result)
 
         return result
-
-        if not os.path.exists(self.path):
-            self.createNewDb()
-
-        self.con = sqlite3.connect(self.path)
-        # self.con.row_factory = sqlite3.Row
-        sqlite3.register_adapter(bool, int)
-        sqlite3.register_converter("BOOLEAN", lambda v: bool(int(v)))
-        self.cur = self.con.cursor()
 
     def createNewDb(self):
         open(self.path, "w")
@@ -386,13 +378,8 @@ class db_instance(BaseDB):
     # 			self.save()
 
     def get_lock(self):
+        self._ensure_connection()
         return self.con
-        if "db_lock" not in globals().keys():
-            lock = threading.RLock()
-            globals()["db_lock"] = lock
-            return lock
-        else:
-            return globals()["db_lock"]
 
     def execute(self, sql, *args):
         self._ensure_connection()

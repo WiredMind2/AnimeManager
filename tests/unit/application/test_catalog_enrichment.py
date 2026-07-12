@@ -2,10 +2,34 @@
 
 from __future__ import annotations
 
+from adapters.persistence.catalog_repository import (
+    CatalogIndexRepository,
+    CatalogMergeRepository,
+    _batched_writes,
+)
 from application.services.catalog_enrichment import (
     CatalogEnrichmentService,
     select_single_provider_ids_for_enrichment,
 )
+from application.services.catalog_identity import CatalogIdentityService
+from application.services.catalog_merge import CatalogMergeService
+
+
+def _enrichment_service(db, mapping_port) -> CatalogEnrichmentService:
+    index_repo = CatalogIndexRepository(db)
+    merge_service = CatalogMergeService(CatalogMergeRepository(db))
+    identity_service = CatalogIdentityService.from_database(
+        db,
+        index_repo=index_repo,
+        merge_service=merge_service,
+        batched_writes=_batched_writes,
+    )
+    return CatalogEnrichmentService(
+        db,
+        mapping_port,
+        index_repo=index_repo,
+        identity_service=identity_service,
+    )
 
 
 class _EnrichmentDB:
@@ -180,7 +204,7 @@ class _FakeMappingPort:
 
 def test_enrich_kitsu_only_row_merges_into_existing_canonical():
     db = _EnrichmentDB()
-    service = CatalogEnrichmentService(db, _FakeMappingPort())
+    service = _enrichment_service(db, _FakeMappingPort())
     result = service.enrich_ids([2])
     assert result.looked_up == 1
     assert result.enriched == 1
@@ -193,7 +217,7 @@ def test_enrich_kitsu_only_row_merges_into_existing_canonical():
 
 def test_enrich_single_provider_scan_finds_kitsu_row():
     db = _EnrichmentDB()
-    service = CatalogEnrichmentService(db, _FakeMappingPort())
+    service = _enrichment_service(db, _FakeMappingPort())
     result = service.enrich_single_provider_rows(limit=10)
     assert result.looked_up == 1
     assert result.merged == 1
@@ -216,7 +240,7 @@ def test_expand_external_ids_with_mapping_merges_cross_refs():
 
 def test_enrich_skips_rows_with_multiple_provider_ids():
     db = _EnrichmentDB()
-    service = CatalogEnrichmentService(db, _FakeMappingPort())
+    service = _enrichment_service(db, _FakeMappingPort())
     result = service.enrich_ids([1])
     assert result.looked_up == 0
     assert result.enriched == 0

@@ -26,3 +26,17 @@ def test_db_instance_ensure_connection_sets_busy_timeout():
     assert int(row[0]) == 5000
     db.close()
     db.con.close()
+
+
+def test_db_instance_initializes_base_query_cache():
+    db = db_instance(":memory:")
+    assert hasattr(db, "_query_cache")
+    assert isinstance(db._query_cache, dict)
+
+
+def test_db_instance_sql_select_works_without_manual_cache_priming():
+    db = db_instance(":memory:")
+    row = db.sql("SELECT 1 AS n", to_dict=True)
+    assert row == [{"n": 1}]
+    db.close()
+    db.con.close()

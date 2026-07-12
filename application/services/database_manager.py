@@ -327,6 +327,73 @@ class DatabaseManager(BaseComponent):
         )
         return query.to_args()
 
+    def _sqlite_table_exists(self, db, table: str) -> bool:
+        try:
+            rows = db.sql(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                (table,),
+            )
+            return bool(rows)
+        except Exception:
+            return False
+
+    def _sqlite_table_columns(self, db, table: str) -> set[str]:
+        if not self._sqlite_table_exists(db, table):
+            return set()
+        try:
+            info = db.sql(f"PRAGMA table_info({table})")
+            if info:
+                return {str(row[1]) for row in info if row and len(row) > 1}
+        except Exception:
+            pass
+        return set()
+
+    def _ensure_torrent_schema(self, db) -> None:
+        """Create torrent tables and optional columns on legacy SQLite databases."""
+        created = False
+        torrent_cols = self._sqlite_table_columns(db, "torrents")
+        if not {"hash", "name", "trackers"}.issubset(torrent_cols):
+            if torrent_cols:
+                try:
+                    db.sql("DROP TABLE IF EXISTS torrents", (), save=False)
+                except Exception:
+                    pass
+            try:
+                db.sql(
+                    (
+                        "CREATE TABLE torrents ("
+                        "hash TEXT PRIMARY KEY, name TEXT, trackers TEXT, "
+                        "save_path TEXT, status TEXT)"
+                    ),
+                    (),
+                    save=False,
+                )
+                created = True
+            except Exception:
+                pass
+        index_cols = self._sqlite_table_columns(db, "torrentsIndex")
+        if not {"id", "value"}.issubset(index_cols):
+            if index_cols:
+                try:
+                    db.sql("DROP TABLE IF EXISTS torrentsIndex", (), save=False)
+                except Exception:
+                    pass
+            try:
+                db.sql(
+                    "CREATE TABLE torrentsIndex (id INTEGER, value TEXT)",
+                    (),
+                    save=False,
+                )
+                created = True
+            except Exception:
+                pass
+        if created:
+            try:
+                db.save()
+            except Exception:
+                pass
+        self._ensure_torrent_columns(db)
+
     def _ensure_torrent_columns(self, db) -> None:
         """Add optional ``torrents`` columns when missing (SQLite / MariaDB)."""
         names: set[str] = set()
@@ -372,7 +439,7 @@ class DatabaseManager(BaseComponent):
         """
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 trackers = torrent.trackers
                 if isinstance(trackers, (list, tuple, set)):
                     trackers = json.dumps(list(trackers))
@@ -420,7 +487,7 @@ class DatabaseManager(BaseComponent):
             return
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 exists = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)",
                     (hash_value,),
@@ -449,7 +516,7 @@ class DatabaseManager(BaseComponent):
         normalized = None if status is None or str(status).strip() == "" else str(status).strip().lower()
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 exists = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)",
                     (hash_value,),
@@ -471,7 +538,7 @@ class DatabaseManager(BaseComponent):
             return None
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 rows = db.sql(
                     "SELECT status FROM torrents WHERE hash=? LIMIT 1",
                     (hash_value,),
@@ -488,7 +555,7 @@ class DatabaseManager(BaseComponent):
         """All indexed torrents with status and paths for missing-file reconciliation."""
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 rows = db.sql(
                     (
                         "SELECT t.hash, t.save_path, t.status, i.id, t.name "
@@ -534,7 +601,7 @@ class DatabaseManager(BaseComponent):
         """Rows for LibTorrent fallback restore (hash, name, trackers, save_path, anime_id)."""
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 rows = db.sql(
                     (
                         "SELECT t.hash, t.name, t.trackers, t.save_path, i.id, t.status "
@@ -643,7 +710,7 @@ class DatabaseManager(BaseComponent):
         """Indexed torrent rows for one anime."""
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 rows = db.sql(
                     (
                         "SELECT t.hash, t.name, t.save_path, t.status "
@@ -705,7 +772,7 @@ class DatabaseManager(BaseComponent):
             return []
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 rows = db.sql(
                     (
                         "SELECT t.hash, t.name, t.save_path, t.status "
@@ -764,7 +831,7 @@ class DatabaseManager(BaseComponent):
             return False
         try:
             with self.get_connection() as db:
-                self._ensure_torrent_columns(db)
+                self._ensure_torrent_schema(db)
                 exists = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))",
                     (anime_id, hash_val),
@@ -976,19 +1043,40 @@ class DatabaseManager(BaseComponent):
 
     def enrich_catalog_identities(self, *, limit: int = 200):
         """Backfill single-provider rows from external mapping APIs."""
+        from adapters.persistence.catalog_repository import (
+            CatalogIndexRepository,
+            CatalogMergeRepository,
+            _batched_writes,
+        )
         from application.services.catalog_enrichment import (
             CatalogEnrichmentService,
             EnrichmentResult,
         )
+        from application.services.catalog_identity import CatalogIdentityService
+        from application.services.catalog_merge import CatalogMergeService
 
         if self._mapping_port is None:
             return EnrichmentResult()
         try:
             with self.get_connection() as db:
+                log_fn = lambda msg: self.log("DB_WARNING", msg)
+                index_repo = CatalogIndexRepository(db)
+                merge_service = CatalogMergeService(
+                    CatalogMergeRepository(db, log_fn=log_fn)
+                )
+                identity_service = CatalogIdentityService.from_database(
+                    db,
+                    index_repo=index_repo,
+                    merge_service=merge_service,
+                    batched_writes=_batched_writes,
+                    log_fn=log_fn,
+                )
                 return CatalogEnrichmentService(
                     db,
                     self._mapping_port,
-                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                    index_repo=index_repo,
+                    identity_service=identity_service,
+                    log_fn=log_fn,
                 ).enrich_single_provider_rows(limit=limit)
         except Exception as exc:
             self.log("DB_ERROR", f"Failed enriching catalogue identities: {exc}")
@@ -996,20 +1084,41 @@ class DatabaseManager(BaseComponent):
 
     def enrich_catalog_identities_for_ids(self, catalog_ids: Sequence[int]):
         """Enrich specific catalogue rows after an ingest batch."""
+        from adapters.persistence.catalog_repository import (
+            CatalogIndexRepository,
+            CatalogMergeRepository,
+            _batched_writes,
+        )
         from application.services.catalog_enrichment import (
             CatalogEnrichmentService,
             EnrichmentResult,
         )
+        from application.services.catalog_identity import CatalogIdentityService
+        from application.services.catalog_merge import CatalogMergeService
 
         if self._mapping_port is None or not catalog_ids:
             return EnrichmentResult()
         unique_ids = sorted({int(catalog_id) for catalog_id in catalog_ids})
         try:
             with self.get_connection() as db:
+                log_fn = lambda msg: self.log("DB_WARNING", msg)
+                index_repo = CatalogIndexRepository(db)
+                merge_service = CatalogMergeService(
+                    CatalogMergeRepository(db, log_fn=log_fn)
+                )
+                identity_service = CatalogIdentityService.from_database(
+                    db,
+                    index_repo=index_repo,
+                    merge_service=merge_service,
+                    batched_writes=_batched_writes,
+                    log_fn=log_fn,
+                )
                 return CatalogEnrichmentService(
                     db,
                     self._mapping_port,
-                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                    index_repo=index_repo,
+                    identity_service=identity_service,
+                    log_fn=log_fn,
                 ).enrich_ids(unique_ids)
         except Exception as exc:
             self.log("DB_ERROR", f"Failed enriching ingest batch identities: {exc}")
@@ -1022,8 +1131,9 @@ class DatabaseManager(BaseComponent):
         title_only: bool = False,
     ) -> int:
         """Merge catalogue rows that share a provider id (optional title heuristic)."""
+        from adapters.persistence.catalog_repository import CatalogMergeRepository
         from application.services.catalog_merge import CatalogMergeService
-        from shared.contracts import RepairStrategy
+        from domain.catalog import RepairStrategy
 
         if title_only:
             strategy = RepairStrategy.TITLE
@@ -1034,8 +1144,10 @@ class DatabaseManager(BaseComponent):
         try:
             with self.get_connection() as db:
                 merged = CatalogMergeService(
-                    db,
-                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                    CatalogMergeRepository(
+                        db,
+                        log_fn=lambda msg: self.log("DB_WARNING", msg),
+                    )
                 ).repair_duplicates(strategy=strategy)
         except Exception as exc:
             self.log("DB_ERROR", f"Failed repairing duplicate anime rows: {exc}")

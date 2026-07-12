@@ -516,3 +516,51 @@ class TestQueueStats:
         mgr.set_database(db)
         assert mgr.enqueue_anime(SimpleNamespace(id=5)) is True
         assert any(getattr(a, "id", None) == 5 for a in db.saved)
+
+
+class TestEnsureTorrentSchema:
+    def test_list_torrents_for_reconcile_creates_missing_tables(self, DatabaseManager):
+        import sqlite3
+        from contextlib import contextmanager
+
+        class _LegacySqliteDB:
+            def __init__(self) -> None:
+                self.conn = sqlite3.connect(":memory:")
+                self.conn.execute("CREATE TABLE anime (id INTEGER PRIMARY KEY)")
+                self.conn.commit()
+                self._lock = _NopLock()
+                self.save_called = False
+
+            @contextmanager
+            def get_lock(self):
+                yield self
+
+            def sql(self, query: str, params=(), save: bool = False, to_dict: bool = False):
+                cur = self.conn.execute(query, tuple(params))
+                upper = query.strip().upper()
+                if save or upper.startswith(("CREATE", "ALTER", "INSERT", "UPDATE", "DELETE")):
+                    self.conn.commit()
+                if upper.startswith(("SELECT", "PRAGMA")):
+                    rows = cur.fetchall()
+                    cur.close()
+                    return rows
+                cur.close()
+                return []
+
+            def save(self) -> None:
+                self.conn.commit()
+                self.save_called = True
+
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _LegacySqliteDB()
+        mgr.set_database(db)
+        assert mgr.list_torrents_for_reconcile() == []
+        tables = {
+            row[0]
+            for row in db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "torrents" in tables
+        assert "torrentsIndex" in tables

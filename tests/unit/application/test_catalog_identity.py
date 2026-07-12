@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
+from adapters.persistence.catalog_repository import (
+    CatalogIndexRepository,
+    CatalogMergeRepository,
+    _batched_writes,
+)
 from application.services.catalog_identity import CatalogIdentityService
+from application.services.catalog_merge import CatalogMergeService
+
+
+def _identity_service(db) -> CatalogIdentityService:
+    index_repo = CatalogIndexRepository(db)
+    merge_service = CatalogMergeService(CatalogMergeRepository(db))
+    return CatalogIdentityService.from_database(
+        db,
+        index_repo=index_repo,
+        merge_service=merge_service,
+        batched_writes=_batched_writes,
+    )
 
 
 class _IdentityDB:
@@ -88,7 +105,7 @@ def test_resolve_merges_conflicting_provider_ids():
     anilist_row = db.getId("anilist_id", 138380)
     assert mal_row != anilist_row
 
-    service = CatalogIdentityService(db)
+    service = _identity_service(db)
     resolved = service.resolve_external_ids(
         {"mal_id": 62604, "anilist_id": 138380},
     )

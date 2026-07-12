@@ -25,7 +25,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from adapters.metadata.catalog_mapping_adapter import CatalogMappingAdapter
+from adapters.persistence.catalog_repository import (
+    CatalogIndexRepository,
+    CatalogMergeRepository,
+    _batched_writes,
+)
 from application.services.catalog_enrichment import CatalogEnrichmentService
+from application.services.catalog_identity import CatalogIdentityService
+from application.services.catalog_merge import CatalogMergeService
 from application.services.database_manager import DatabaseManager
 from shared.config.constants import Constants
 from shared.config.getters import Getters
@@ -260,7 +267,21 @@ def main() -> int:
                 flush=True,
             )
 
-        service = CatalogEnrichmentService(db, mapping, log_fn=_log_fn)
+        service = CatalogEnrichmentService(
+            db,
+            mapping,
+            index_repo=CatalogIndexRepository(db),
+            identity_service=CatalogIdentityService.from_database(
+                db,
+                index_repo=CatalogIndexRepository(db),
+                merge_service=CatalogMergeService(
+                    CatalogMergeRepository(db, log_fn=_log_fn)
+                ),
+                batched_writes=_batched_writes,
+                log_fn=_log_fn,
+            ),
+            log_fn=_log_fn,
+        )
         slow_rows: list[tuple[int, float]] = []
         processed = 0
 

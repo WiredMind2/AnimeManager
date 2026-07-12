@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
-
-from adapters.persistence.catalog_repository import CatalogMergeRepository
-from shared.contracts import RepairStrategy
+from domain.catalog import RepairStrategy
+from ports.interfaces import CatalogMergePort
 
 
 class CatalogMergeService:
     """Fold duplicate internal ids; used during identity resolution and startup repair."""
 
-    def __init__(
-        self,
-        db: Any,
-        *,
-        log_fn: Optional[Callable[[str], None]] = None,
-    ) -> None:
-        self._repo = CatalogMergeRepository(db, log_fn=log_fn)
+    def __init__(self, merge_repo: CatalogMergePort) -> None:
+        self._repo = merge_repo
 
     def merge(self, duplicate_id: int, canonical_id: int) -> int:
         return self._repo.merge(duplicate_id, canonical_id)

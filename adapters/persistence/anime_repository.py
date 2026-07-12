@@ -118,6 +118,29 @@ class AnimeRepositoryAdapter:
         enrichment = collect_anime_enrichment(anime, db)
         return enrich_anime_entity(entity, **enrichment)
 
+    def get_anime_title_bundle(self, anime_id: int) -> Optional[dict]:
+        """Minimal title payload for torrent search (no enrichment/hydration)."""
+        db = self._database
+        if db is None:
+            return None
+        try:
+            anime = db.get(anime_id, table="anime")
+        except Exception:
+            return None
+        if not anime:
+            return None
+        if isinstance(anime, Anime):
+            title = str(anime.title or "").strip()
+        elif isinstance(anime, dict):
+            title = str(anime.get("title") or "").strip()
+        else:
+            return None
+        return {
+            "id": int(anime_id),
+            "title": title,
+            "title_synonyms": self.get_search_terms(anime_id),
+        }
+
     def get_search_terms(self, anime_id: int) -> list[str]:
         db = self._database
         if db is None:

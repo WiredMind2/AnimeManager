@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
-from adapters.persistence.catalog_repository import CatalogIndexRepository, _batched_writes
 from application.services.catalog_merge import CatalogMergeService
+from ports.interfaces import CatalogIndexPort
 from shared.contracts import (
     INDEX_PROVIDER_KEYS,
     ProviderAnimePayload,
@@ -33,13 +34,17 @@ class CatalogIdentityService:
         self,
         db: Any,
         *,
+        index_repo: CatalogIndexPort,
+        batched_writes: Callable[[Any], AbstractContextManager[None]],
         merge_service: Optional[CatalogMergeService] = None,
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._db = db
-        self._index = CatalogIndexRepository(db)
-        self._merge = merge_service or CatalogMergeService(db, log_fn=log_fn)
+        self._index = index_repo
+        self._batched_writes = batched_writes
+        self._merge = merge_service
         self._telemetry = get_telemetry()
+        self._log = log_fn
 
     @classmethod
     def from_database(cls, db: Any, **kwargs) -> "CatalogIdentityService":
@@ -69,6 +74,8 @@ class CatalogIdentityService:
 
         merged_from: list[int] = []
         if len(found) > 1:
+            if self._merge is None:
+                raise RuntimeError("Catalog merge service is required to resolve conflicts")
             canonical = min(found)
             for duplicate in sorted(found):
                 if duplicate == canonical:
@@ -110,7 +117,7 @@ class CatalogIdentityService:
         ]
         lookup = self._index.find_by_external_batch(pairs)
         results: List[ResolvedCatalogEntry] = []
-        with _batched_writes(self._db):
+        with self._batched_writes(self._db):
             for normalized in normalized_list:
                 if not normalized:
                     raise ValueError(
@@ -137,6 +144,8 @@ class CatalogIdentityService:
 
         merged_from: list[int] = []
         if len(found) > 1:
+            if self._merge is None:
+                raise RuntimeError("Catalog merge service is required to resolve conflicts")
             canonical = min(found)
             for duplicate in sorted(found):
                 if duplicate == canonical:
@@ -171,6 +180,8 @@ class CatalogIdentityService:
         external_ids: Mapping[str, Any],
     ) -> int:
         """Attach provider ids to an existing row; merge away conflicts."""
+        if self._merge is None:
+            raise RuntimeError("Catalog merge service is required to link external ids")
         normalized = _normalize_external_ids(external_ids)
         if not normalized:
             return int(internal_id)
