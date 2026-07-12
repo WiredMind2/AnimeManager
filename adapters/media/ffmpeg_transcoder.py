@@ -33,7 +33,7 @@ from pathlib import Path
 
 from adapters.media.ffmpeg_encoder import build_video_encode_args, resolve_video_encoder
 from domain.errors import InfrastructureError
-from shared.telemetry import get_telemetry
+from shared.telemetry import get_telemetry, get_tracer
 
 _LOG = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ class FFmpegTranscoderAdapter:
         self._active: dict[str, _ActiveTranscode] = {}
         self._lock = threading.RLock()
         self._telemetry = get_telemetry()
+        self._tracer = get_tracer(__name__)
         _LOG.info("ffmpeg_transcoder_init video_encoder=%s", self._video_encoder)
 
     def _sync_active_gauge(self, *, _lock_held: bool = False) -> None:
@@ -102,6 +103,37 @@ class FFmpegTranscoderAdapter:
     # ------------------------------------------------------------------
 
     def ensure_hls_session(
+        self,
+        *,
+        session_id: str,
+        source_path: str,
+        output_dir: str,
+        audio_track: int | None = None,
+        subtitle_track: int | None = None,
+        start_segment_index: int = 0,
+        segment_seconds: int | None = None,
+        duration_seconds: float | None = None,
+    ) -> dict[str, str]:
+        with self._tracer.start_as_current_span(
+            "ffmpeg.transcode",
+            attributes={
+                "session_id": session_id,
+                "encoder": self._video_encoder,
+                "segment": start_segment_index,
+            },
+        ):
+            return self._ensure_hls_session_impl(
+                session_id=session_id,
+                source_path=source_path,
+                output_dir=output_dir,
+                audio_track=audio_track,
+                subtitle_track=subtitle_track,
+                start_segment_index=start_segment_index,
+                segment_seconds=segment_seconds,
+                duration_seconds=duration_seconds,
+            )
+
+    def _ensure_hls_session_impl(
         self,
         *,
         session_id: str,
@@ -176,7 +208,7 @@ class FFmpegTranscoderAdapter:
                 # Different audio or segment length also invalidates every
                 # existing transport stream.
                 if (
-                    start_index < existing.start_segment_index
+                    start_index != existing.start_segment_index
                     or audio_track != existing.audio_track
                     or seg_secs != existing.segment_seconds
                 ):
@@ -185,6 +217,7 @@ class FFmpegTranscoderAdapter:
                 self._active.pop(session_id, None)
             while len(self._active) >= self._max_active_sessions:
                 if not self._evict_oldest_locked(excluding=session_id):
+                    self._telemetry.increment("ffmpeg.failures")
                     raise InfrastructureError(
                         "Media server is busy: too many active transcoding sessions."
                     )
@@ -224,6 +257,7 @@ class FFmpegTranscoderAdapter:
             )
             self._write_spawn_record(log_path, command)
             process = self._spawn_ffmpeg(command, log_path)
+            self._telemetry.increment("ffmpeg.transcodes_started")
             self._active[session_id] = _ActiveTranscode(
                 session_id=session_id,
                 output_dir=output_dir,
@@ -283,14 +317,19 @@ class FFmpegTranscoderAdapter:
             active = self._active.get(session_id)
             return active is not None and active.process.poll() is None
 
-    def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
+    def probe_media_info(self, source_path: str) -> dict[str, object]:
+        """Return audio/subtitle tracks and duration from a single ffprobe call."""
         ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
         command = [
             ffprobe_cmd,
             "-v",
             "error",
             "-show_entries",
-            "stream=index,codec_type,codec_name:stream_tags=language,title",
+            (
+                "format=duration:"
+                "stream=index,codec_type,codec_name,duration:"
+                "stream_tags=language,title"
+            ),
             "-of",
             "json",
             source_path,
@@ -304,10 +343,66 @@ class FFmpegTranscoderAdapter:
                 timeout=15,
             )
             payload = json.loads(result.stdout or "{}")
-            streams = list(payload.get("streams") or [])
         except Exception:
-            return {"audio": [], "subtitles": []}
+            return {"audio": [], "subtitles": [], "duration_seconds": 0.0}
 
+        tracks = self._tracks_from_probe_payload(payload)
+        duration = self._duration_from_probe_payload(payload)
+        return {
+            "audio": tracks["audio"],
+            "subtitles": tracks["subtitles"],
+            "duration_seconds": duration,
+        }
+
+    def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
+        info = self.probe_media_info(source_path)
+        return {
+            "audio": list(info.get("audio") or []),
+            "subtitles": list(info.get("subtitles") or []),
+        }
+
+    def probe_media_duration(self, source_path: str) -> float:
+        """Return the duration of ``source_path`` in seconds.
+
+        We try the container-level ``format=duration`` first, then fall
+        back to the longest stream duration. Returns ``0.0`` when the
+        duration is not available — the caller is expected to drop back
+        to a live-style playlist when that happens.
+        """
+        info = self.probe_media_info(source_path)
+        try:
+            value = float(info.get("duration_seconds") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        if value != value or value <= 0:
+            return 0.0
+        return value
+
+    @staticmethod
+    def _duration_from_probe_payload(payload: dict[str, object]) -> float:
+        def _as_float(value: object) -> float:
+            try:
+                f = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return 0.0
+            if f != f:
+                return 0.0
+            return max(0.0, f)
+
+        fmt_dur = _as_float((payload.get("format") or {}).get("duration"))
+        if fmt_dur > 0:
+            return fmt_dur
+        stream_durations = [
+            _as_float(stream.get("duration"))
+            for stream in (payload.get("streams") or [])
+        ]
+        return max(stream_durations, default=0.0)
+
+    @staticmethod
+    def _tracks_from_probe_payload(
+        payload: dict[str, object],
+    ) -> dict[str, list[dict[str, object]]]:
+        streams = list(payload.get("streams") or [])
         audio: list[dict[str, object]] = []
         subtitles: list[dict[str, object]] = []
         audio_pos = 0
@@ -329,55 +424,6 @@ class FFmpegTranscoderAdapter:
                 sub_pos += 1
         return {"audio": audio, "subtitles": subtitles}
 
-    def probe_media_duration(self, source_path: str) -> float:
-        """Return the duration of ``source_path`` in seconds.
-
-        We try the container-level ``format=duration`` first, then fall
-        back to the longest stream duration. Returns ``0.0`` when the
-        duration is not available — the caller is expected to drop back
-        to a live-style playlist when that happens.
-        """
-        ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
-        command = [
-            ffprobe_cmd,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration:stream=duration",
-            "-of",
-            "json",
-            source_path,
-        ]
-        try:
-            result = subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            payload = json.loads(result.stdout or "{}")
-        except Exception:
-            return 0.0
-
-        def _as_float(value: object) -> float:
-            try:
-                f = float(value)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                return 0.0
-            if f != f:  # NaN guard
-                return 0.0
-            return max(0.0, f)
-
-        fmt_dur = _as_float((payload.get("format") or {}).get("duration"))
-        if fmt_dur > 0:
-            return fmt_dur
-        stream_durations = [
-            _as_float(stream.get("duration"))
-            for stream in (payload.get("streams") or [])
-        ]
-        return max(stream_durations, default=0.0)
-
     # ------------------------------------------------------------------
     # Implementation details
     # ------------------------------------------------------------------
@@ -387,6 +433,8 @@ class FFmpegTranscoderAdapter:
         for session_id, active in list(self._active.items()):
             if active.process.poll() is not None:
                 code = active.process.returncode
+                if code not in (None, 0):
+                    self._telemetry.increment("ffmpeg.failures")
                 _LOG.warning(
                     "transcode_exited session=%s code=%s start_seg=%s source=%s",
                     session_id,
@@ -477,11 +525,9 @@ class FFmpegTranscoderAdapter:
         command.extend(["-i", source_path, "-avoid_negative_ts", "make_zero"])
         if seek_seconds > 0:
             command.extend(["-output_ts_offset", f"{seek_seconds:g}"])
-        keyframe_expr = (
-            f"expr:gte(t,{seek_seconds}+n_forced*{segment_seconds})"
-            if seek_seconds > 0
-            else f"expr:gte(t,n_forced*{segment_seconds})"
-        )
+        # Force keyframes on the encoder's local timeline. ``-output_ts_offset``
+        # rebases muxed MPEG-TS packets onto the canonical playlist clock.
+        keyframe_expr = f"expr:gte(t,n_forced*{segment_seconds})"
         command.extend(["-map", "0:v:0"])
         if audio_track is None:
             command.extend(["-map", "0:a:0?"])
@@ -555,6 +601,7 @@ class FFmpegTranscoderAdapter:
                 with self._lock:
                     self._active.pop(session_id, None)
                 self._sync_active_gauge()
+                self._telemetry.increment("ffmpeg.failures")
                 _LOG.warning("transcode_failed_early session=%s", session_id)
                 raise InfrastructureError(
                     "Transcoder exited before playlist became ready."

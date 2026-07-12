@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from application.commands import (
@@ -26,6 +27,7 @@ from application.playback.contract import (
     SEGMENT_WAIT_SECONDS,
     SESSION_CREATE_WAIT_SECONDS,
 )
+from application.playback.file_ids import find_episode_by_file_id
 from application.playback.playlist import (
     latest_existing_segment,
     write_initial_playlist,
@@ -37,17 +39,19 @@ from application.playback.resume import (
     resume_segment_index,
     wait_for_file,
 )
+from application.playback.media_probe_cache import MediaProbeCache, MediaProbeResult
 from application.playback.session_store import SessionTokenStore
 from application.playback.transcode_session import TranscodeSession
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
 from application.services import player_session_log
 from domain.errors import InfrastructureError, NotFoundError, UnauthorizedError, ValidationError
 from ports.interfaces import MediaLibraryPort, MediaTranscoderPort
-from shared.telemetry import get_telemetry
+from shared.telemetry import get_telemetry, get_tracer
 
 _LOG = logging.getLogger(__name__)
 
 _SEGMENT_NAME_RE = re.compile(r"^segment_(\d+)\.ts$")
+_PROBE_WORKERS = 4
 
 
 def _safe_int(value: object) -> int | None:
@@ -93,40 +97,122 @@ class PlaybackService:
         self._restart_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
         self._telemetry = get_telemetry()
+        self._tracer = get_tracer(__name__)
+        self._probe_cache = MediaProbeCache()
+        self._probe_pool = ThreadPoolExecutor(
+            max_workers=_PROBE_WORKERS,
+            thread_name_prefix="media-probe",
+        )
 
-    def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
-        out: list[EpisodeFileDTO] = []
-        for row in self._media_library.list_episode_files(query.anime_id) or []:
+    def has_episode_files(self, query: ListEpisodeFilesQuery) -> bool:
+        rows = self._media_library.list_episode_files(query.anime_id) or []
+        for row in rows:
             file_id = str(row.get("file_id") or "").strip()
             path = str(row.get("path") or "").strip()
-            title = str(row.get("title") or row.get("name") or "").strip()
-            if not file_id or not path:
-                continue
+            if file_id and path:
+                return True
+        return False
+
+    def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
+        rows = [
+            row
+            for row in (self._media_library.list_episode_files(query.anime_id) or [])
+            if str(row.get("file_id") or "").strip() and str(row.get("path") or "").strip()
+        ]
+        if not rows:
+            return []
+
+        if len(rows) == 1:
+            probed = [self._build_episode_file_dto(rows[0])]
+        else:
+            probed = list(
+                self._probe_pool.map(self._build_episode_file_dto, rows, timeout=120)
+            )
+        return [item for item in probed if item is not None]
+
+    def _build_episode_file_dto(self, row: dict[str, object]) -> EpisodeFileDTO | None:
+        file_id = str(row.get("file_id") or "").strip()
+        path = str(row.get("path") or "").strip()
+        title = str(row.get("title") or row.get("name") or "").strip()
+        if not file_id or not path:
+            return None
+        try:
+            tracks, duration = self._probe_media(path)
+        except Exception:  # noqa: BLE001
+            tracks = {"audio": [], "subtitles": []}
+            duration = 0.0
+        return EpisodeFileDTO(
+            file_id=file_id,
+            title=title or Path(path).name,
+            path=path,
+            size_bytes=_safe_int(row.get("size_bytes") or row.get("size")),
+            season=_safe_int(row.get("season")),
+            episode=_safe_int(row.get("episode")),
+            audio_tracks=list(tracks.get("audio", []) or []),
+            subtitle_tracks=list(tracks.get("subtitles", []) or []),
+            duration_seconds=duration if duration > 0 else None,
+        )
+
+    def _probe_media(self, path: str) -> tuple[dict[str, list[dict[str, object]]], float]:
+        cached = self._probe_cache.lookup(path)
+        if cached is not None:
+            return (
+                {"audio": list(cached.audio), "subtitles": list(cached.subtitles)},
+                cached.duration_seconds,
+            )
+
+        probe_info = getattr(self._transcoder, "probe_media_info", None)
+        if callable(probe_info):
+            payload = probe_info(path)
+            tracks = {
+                "audio": list(payload.get("audio") or []),
+                "subtitles": list(payload.get("subtitles") or []),
+            }
+            try:
+                duration = float(payload.get("duration_seconds") or 0.0)
+            except (TypeError, ValueError):
+                duration = 0.0
+        else:
             tracks = self._transcoder.probe_media_tracks(path)
             duration = self._probe_duration(path)
-            out.append(
-                EpisodeFileDTO(
-                    file_id=file_id,
-                    title=title or Path(path).name,
-                    path=path,
-                    size_bytes=_safe_int(row.get("size_bytes") or row.get("size")),
-                    season=_safe_int(row.get("season")),
-                    episode=_safe_int(row.get("episode")),
-                    audio_tracks=list(tracks.get("audio", []) or []),
-                    subtitle_tracks=list(tracks.get("subtitles", []) or []),
-                    duration_seconds=duration if duration > 0 else None,
-                )
-            )
-        return out
+
+        if duration != duration or duration < 0:
+            duration = 0.0
+        self._probe_cache.store(
+            path,
+            MediaProbeResult(
+                audio=list(tracks.get("audio") or []),
+                subtitles=list(tracks.get("subtitles") or []),
+                duration_seconds=duration,
+            ),
+        )
+        return tracks, duration
 
     def delete_episode_file(self, anime_id: int, file_id: str) -> bool:
-        return bool(self._media_library.delete_episode_file(anime_id, file_id))
+        episodes = self._media_library.list_episode_files(anime_id) or []
+        deleted_path = ""
+        for row in episodes:
+            if str(row.get("file_id") or "").strip() == str(file_id).strip():
+                deleted_path = str(row.get("path") or "").strip()
+                break
+        ok = bool(self._media_library.delete_episode_file(anime_id, file_id))
+        if ok and deleted_path:
+            self._probe_cache.invalidate_path(deleted_path)
+        return ok
 
     def create_session(self, command: CreatePlaybackSessionCommand) -> PlaybackSessionDTO:
+        with self._tracer.start_as_current_span(
+            "playback.create_session", attributes={"anime_id": command.anime_id}
+        ) as span:
+            return self._create_session_impl(command, span)
+
+    def _create_session_impl(
+        self, command: CreatePlaybackSessionCommand, span
+    ) -> PlaybackSessionDTO:
         started_at = time.time()
         self.cleanup_stale_sessions()
         episodes = self.list_episode_files(ListEpisodeFilesQuery(anime_id=command.anime_id))
-        selected = next((ep for ep in episodes if ep.file_id == command.file_id), None)
+        selected = find_episode_by_file_id(episodes, command.file_id)
         if selected is None:
             raise NotFoundError("Requested episode file was not found.")
         if not os.path.isfile(selected.path):
@@ -146,6 +232,7 @@ class PlaybackService:
         ttl_seconds = max(60, int(command.ttl_seconds or self._default_ttl_seconds))
         expires_at = now + ttl_seconds
         session_id = uuid.uuid4().hex
+        span.set_attribute("session_id", session_id)
         stream_root = Path(self._media_library.get_stream_cache_root()).resolve()
         output_dir = (stream_root / session_id).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -324,16 +411,20 @@ class PlaybackService:
 
         if query.segment_name:
             segment_name = _validate_segment_name(query.segment_name)
-            resolve_started = time.perf_counter()
-            target = (Path(session.output_dir) / segment_name).resolve()
-            if not _is_within_dir(target, Path(session.output_dir).resolve()):
-                raise ValidationError("Segment path escapes stream directory.")
-            self._ensure_segment(session, segment_name, target)
-            target_path = str(target)
-            self._telemetry.record_ms(
-                "playback.segment_resolve_ms",
-                (time.perf_counter() - resolve_started) * 1000.0,
-            )
+            with self._tracer.start_as_current_span(
+                "playback.resolve_segment",
+                attributes={"session_id": query.session_id, "segment": segment_name},
+            ):
+                resolve_started = time.perf_counter()
+                target = (Path(session.output_dir) / segment_name).resolve()
+                if not _is_within_dir(target, Path(session.output_dir).resolve()):
+                    raise ValidationError("Segment path escapes stream directory.")
+                self._ensure_segment(session, segment_name, target)
+                target_path = str(target)
+                self._telemetry.record_ms(
+                    "playback.segment_resolve_ms",
+                    (time.perf_counter() - resolve_started) * 1000.0,
+                )
         else:
             if session.total_segments > 0:
                 write_manifest_file(session)
@@ -389,37 +480,23 @@ class PlaybackService:
         if segment_index >= session.total_segments:
             raise NotFoundError("Requested segment is past the end of the stream.")
 
-        if segment_index < session.hls_anchor_segment:
-            if target.is_file():
-                return
-            player_session_log.append(
-                session.output_dir,
-                source="server",
-                event="segment_before_anchor",
-                level="warn",
-                session_id=session.session_id,
-                segment=segment_name,
-                segment_index=segment_index,
-                hls_anchor_segment=session.hls_anchor_segment,
-            )
-            raise NotFoundError("Requested segment is before the stream anchor.")
-
         wait_secs = self._segment_wait_seconds(session, segment_index)
         latest = latest_existing_segment(session.output_dir)
-        in_prefetch = segment_index <= latest + 3
+        encode_head = session.transcode_start_segment
+        forward_catchup = (
+            self._transcode.is_running(session.session_id)
+            and segment_index >= encode_head
+            and segment_index <= latest + 3
+        )
+        backward_miss = not target.is_file() and segment_index < encode_head
 
-        if in_prefetch:
-            if not self._transcode.is_running(session.session_id):
-                # Restart at the requested segment, not the anchor: the
-                # output dir may already contain later segments from a
-                # previous seek-on-demand run (e.g. a Shaka probe at 110
-                # fills 110-217), so ``latest`` can be far ahead of the
-                # requested segment. Restarting at ``latest+1`` would
-                # skip the requested segment entirely; restarting at the
-                # anchor re-encodes existing segments and underruns the
-                # buffer. Seeking to ``segment_index`` emits the missing
-                # segment in ~2s and fills forward from there.
-                self._restart_at(session, segment_index)
+        if forward_catchup:
+            if wait_for_file(target, wait_secs):
+                return
+        elif backward_miss:
+            # Backward seek to a missing segment: restart immediately even
+            # when ffmpeg is encoding forward from a higher head.
+            self._restart_at(session, segment_index)
             if wait_for_file(target, wait_secs):
                 return
 

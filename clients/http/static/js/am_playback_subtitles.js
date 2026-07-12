@@ -27,22 +27,68 @@
     );
   }
 
+  const SUBTITLE_OVERLAY_SELECTOR = ".shaka-text-container, .libassjs-canvas-parent";
+
+  function ensureNoAutohide(el) {
+    if (!el || el.hasAttribute("noautohide")) return;
+    el.setAttribute("noautohide", "");
+  }
+
+  function markSubtitleOverlaysNoAutohide(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll(SUBTITLE_OVERLAY_SELECTOR).forEach(ensureNoAutohide);
+  }
+
+  function installSubtitleAutohideGuard(video) {
+    if (!video || !video.closest) return null;
+    const controller =
+      video.closest(".watch-view__controller") || video.closest("media-controller");
+    if (!controller) return null;
+
+    markSubtitleOverlaysNoAutohide(controller);
+
+    const observer = new MutationObserver(function () {
+      markSubtitleOverlaysNoAutohide(controller);
+    });
+    observer.observe(controller, { childList: true, subtree: true });
+
+    return {
+      disconnect() {
+        observer.disconnect();
+      },
+    };
+  }
+
+  function disposeSubtitleAutohideGuard(video) {
+    if (!video) return;
+    const guard = video.__amSubtitleAutohideGuard;
+    if (guard && typeof guard.disconnect === "function") {
+      guard.disconnect();
+    }
+    delete video.__amSubtitleAutohideGuard;
+  }
+
   /** @returns {object|null} */
   function startLibassOctopus(video, assUrl, onError) {
     if (!supportsLibass()) return null;
     try {
-      return new global.SubtitlesOctopus({
+      const inst = new global.SubtitlesOctopus({
         video,
         subUrl: assUrl,
         workerUrl: libassAsset("subtitles-octopus-worker.js"),
         legacyWorkerUrl: libassAsset("subtitles-octopus-worker-legacy.js"),
         fallbackFont: libassAsset("default.woff2"),
+        onReady() {
+          ensureNoAutohide(inst && inst.canvasParent);
+        },
         onError:
           onError ||
           function (err) {
             global.console.error("[AnimeManager libass]", err);
           },
       });
+      ensureNoAutohide(inst && inst.canvasParent);
+      return inst;
     } catch (e) {
       if (typeof onError === "function") onError(e);
       return null;
@@ -141,5 +187,7 @@
     startLibassOctopus,
     disposeOctopus,
     createShakaTextDisplayFactory,
+    installSubtitleAutohideGuard,
+    disposeSubtitleAutohideGuard,
   };
 })(window);

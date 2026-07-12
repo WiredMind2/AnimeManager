@@ -95,10 +95,10 @@ def test_seek_without_subtitles_uses_input_seek_and_output_ts_offset():
     assert _output_ts_offset_value(command) == "40"
 
 
-def test_seek_keyframe_expression_is_offset_from_seek_point():
+def test_seek_keyframe_expression_uses_local_encoder_clock():
     command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
     idx = command.index("-force_key_frames")
-    assert command[idx + 1] == "expr:gte(t,40+n_forced*4)"
+    assert command[idx + 1] == "expr:gte(t,n_forced*4)"
 
 
 def test_start_keyframe_expression_starts_at_zero():
@@ -240,8 +240,8 @@ def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
     assert adapter._active["new"].process.poll() is None
 
 
-def test_forward_restart_does_not_purge_segments(monkeypatch, tmp_path: Path):
-    """Forward seek restart must not delete anchor-encoded segments."""
+def test_forward_restart_purges_stale_segments(monkeypatch, tmp_path: Path):
+    """Any ffmpeg restart at a new segment index must purge stale transport streams."""
     adapter = FFmpegTranscoderAdapter()
     out = tmp_path / "streams" / "sess1"
     out.mkdir(parents=True)
@@ -271,4 +271,4 @@ def test_forward_restart_does_not_purge_segments(monkeypatch, tmp_path: Path):
     adapter.ensure_hls_session(**common, start_segment_index=175)
     adapter.ensure_hls_session(**common, start_segment_index=177)
 
-    purge_spy.assert_not_called()
+    purge_spy.assert_called_once()

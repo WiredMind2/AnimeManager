@@ -35,37 +35,38 @@ def render_manifest(session: PlaybackSessionDTO) -> str:
     total = max(1, session.total_segments)
     seg_secs = max(1, session.segment_seconds)
     duration = max(0.0, session.duration_seconds)
-    # Only advertise segments from the transcode anchor onward. Segments
-    # before ``hls_anchor_segment`` are never generated for a resume
-    # session, so listing them makes Shaka request non-existent files
-    # (e.g. segment_00108 when ffmpeg started at segment_00212) and abort
-    # with LOAD_FAILED. ``#EXT-X-MEDIA-SEQUENCE`` keeps the timeline
-    # aligned so a ``loadStartTime`` of 857s still maps to segment 214.
-    anchor = max(0, int(getattr(session, "hls_anchor_segment", 0) or 0))
-    if anchor >= total:
-        anchor = 0
+    # Always advertise the full source timeline from segment 0 so the
+    # player, seek bar, and subtitle clocks share one absolute clock.
+    # FFmpeg may start encoding near the resume point for a fast start;
+    # missing earlier segments are materialized on demand via
+    # PlaybackService._ensure_segment.
     last_seg_seconds = duration - (total - 1) * seg_secs
     if last_seg_seconds <= 0 or last_seg_seconds > seg_secs:
         last_seg_seconds = float(seg_secs)
 
-    latest = latest_existing_segment(session.output_dir)
-    complete = latest >= total - 1 and (
-        Path(session.output_dir) / f"segment_{total - 1:05d}.ts"
-    ).is_file()
-
+    # Always advertise a VOD playlist with EXT-X-ENDLIST, even before
+    # transcoding has produced every segment. The canonical playlist lists
+    # every segment up front (so arbitrary seeking works via on-demand
+    # restarts in PlaybackService._ensure_segment), so it is complete as a
+    # *playlist*. Emitting EVENT (no ENDLIST) makes Shaka treat the stream
+    # as live: it reports an Infinite (UINT32) duration, probes a mid-stream
+    # segment to bootstrap the live timeline, polls the manifest, and — for a
+    # resume session anchored near the end — maps the first (near-end)
+    # segment to currentTime 0, producing "timeline shows the beginning but
+    # the player plays the last few seconds." VOD+ENDLIST makes Shaka seek
+    # to the requested startTime (0 for a fresh start) and play linearly.
     lines: list[str] = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         f"#EXT-X-TARGETDURATION:{seg_secs}",
-        f"#EXT-X-MEDIA-SEQUENCE:{anchor}",
-        "#EXT-X-PLAYLIST-TYPE:VOD" if complete else "#EXT-X-PLAYLIST-TYPE:EVENT",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
     ]
-    for index in range(anchor, total):
+    for index in range(0, total):
         seg_dur = last_seg_seconds if index == total - 1 else float(seg_secs)
         lines.append(f"#EXTINF:{seg_dur:.3f},")
         lines.append(f"segment_{index:05d}.ts")
-    if complete:
-        lines.append("#EXT-X-ENDLIST")
+    lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"
 
 

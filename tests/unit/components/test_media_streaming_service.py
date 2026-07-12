@@ -92,6 +92,10 @@ class _SeekableFakeTranscoder:
     def stop_hls_session(self, session_id: str) -> None:
         _ = session_id
 
+    def is_hls_session_running(self, session_id: str) -> bool:
+        _ = session_id
+        return len(self.calls) > 0
+
     def probe_media_tracks(self, source_path: str):
         _ = source_path
         return {"audio": [{"id": 0, "label": "UND"}], "subtitles": []}
@@ -573,9 +577,8 @@ def test_stop_session_preserves_segment_files(tmp_path: Path):
     assert not transcoder.is_hls_session_running(session.session_id)
 
 
-def test_resolve_segment_before_anchor_rejects_without_restart(tmp_path: Path):
-    """Prefetch of segment 0 on a mid-file resume must not restart ffmpeg
-    at the beginning — that leaves the player stuck buffering."""
+def test_resolve_segment_before_transcode_anchor_restarts_on_demand(tmp_path: Path):
+    """Seeking to segment 0 on a mid-file resume must restart ffmpeg at 0."""
     svc, transcoder = _seekable_service(tmp_path, duration=600.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -589,15 +592,16 @@ def test_resolve_segment_before_anchor_rejects_without_restart(tmp_path: Path):
     assert transcoder.calls[0]["start_segment_index"] == 18
     assert session.hls_anchor_segment == 18
 
-    with pytest.raises(NotFoundError, match="anchor"):
-        svc.resolve_media_path(
-            GetPlaybackSessionQuery(
-                session_id=session.session_id,
-                token=session.token,
-                segment_name="segment_00000.ts",
-            )
+    _session, seg_path = svc.resolve_media_path(
+        GetPlaybackSessionQuery(
+            session_id=session.session_id,
+            token=session.token,
+            segment_name="segment_00000.ts",
         )
-    assert len(transcoder.calls) == 1
+    )
+    assert Path(seg_path).is_file()
+    assert len(transcoder.calls) >= 2
+    assert transcoder.calls[-1]["start_segment_index"] == 0
 
 
 def test_create_session_honours_start_time_hint(tmp_path: Path):
@@ -625,8 +629,8 @@ def test_resume_segment_index_from_playback_start():
     assert anchor_segment(177) == 175
 
 
-def test_create_session_resume_manifest_no_ext_x_start(tmp_path: Path):
-    """Resume manifest lists segments from the anchor with matching MEDIA-SEQUENCE."""
+def test_create_session_resume_manifest_lists_full_source_timeline(tmp_path: Path):
+    """Resume manifest lists the full source timeline from segment 0."""
     svc, _ = _seekable_service(tmp_path, duration=600.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -638,9 +642,9 @@ def test_create_session_resume_manifest_no_ext_x_start(tmp_path: Path):
         )
     )
     manifest_text = Path(session.manifest_path).read_text(encoding="utf-8")
-    assert "#EXT-X-MEDIA-SEQUENCE:18" in manifest_text
+    assert "#EXT-X-MEDIA-SEQUENCE:0" in manifest_text
     assert "#EXT-X-START" not in manifest_text
-    assert "segment_00000.ts" not in manifest_text
+    assert "segment_00000.ts" in manifest_text
     assert "segment_00018.ts" in manifest_text
     assert "segment_00149.ts" in manifest_text
     assert session.hls_anchor_segment == 18
@@ -672,9 +676,8 @@ def test_create_session_waits_for_resume_segment(tmp_path: Path):
     assert transcoder.calls
 
 
-def test_create_session_writes_event_playlist_until_encode_complete(tmp_path: Path):
-    """The manifest lists the full timeline for the seek bar but stays
-    in EVENT mode (no ``#EXT-X-ENDLIST``) until every segment exists."""
+def test_create_session_writes_vod_playlist_with_full_timeline(tmp_path: Path):
+    """The manifest lists the full source timeline as VOD with ENDLIST."""
     svc, _ = _seekable_service(tmp_path, duration=130.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -692,8 +695,8 @@ def test_create_session_writes_event_playlist_until_encode_complete(tmp_path: Pa
 
     manifest_text = Path(session.manifest_path).read_text(encoding="utf-8")
     assert "#EXTM3U" in manifest_text
-    assert "#EXT-X-PLAYLIST-TYPE:EVENT" in manifest_text
-    assert "#EXT-X-ENDLIST" not in manifest_text
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in manifest_text
+    assert "#EXT-X-ENDLIST" in manifest_text
     # First and last segments are both listed by filename.
     assert "segment_00000.ts" in manifest_text
     assert "segment_00032.ts" in manifest_text
@@ -940,6 +943,42 @@ def test_parallel_prefetch_does_not_thrash_sequential_encode(tmp_path: Path):
     assert len(transcoder.calls) == initial_calls, (
         "parallel prefetch must not restart ffmpeg while encoder is catching up"
     )
+
+
+def test_backward_seek_restarts_immediately_while_encoder_running(tmp_path: Path):
+    """Missing segment behind transcode head must restart, not wait 20s."""
+    svc, transcoder = _seekable_service(tmp_path, duration=600.0, segment_seconds=4)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=80.0,
+        )
+    )
+    assert session.transcode_start_segment == anchor_segment(
+        resume_segment_index(80.0, total_segments=150, segment_seconds=4)
+    )
+    initial_calls = len(transcoder.calls)
+    assert transcoder.is_hls_session_running(session.session_id)
+
+    _session, path = svc.resolve_media_path(
+        GetPlaybackSessionQuery(
+            session_id=session.session_id,
+            token=session.token,
+            segment_name="segment_00005.ts",
+        )
+    )
+
+    assert path.endswith("segment_00005.ts")
+    assert (Path(session.output_dir) / "segment_00005.ts").is_file()
+    restart_calls = [
+        call
+        for call in transcoder.calls[initial_calls:]
+        if call["start_segment_index"] == 5
+    ]
+    assert len(restart_calls) == 1
 
 
 def test_create_session_resume_headroom_covers_shaka_prefetch(tmp_path: Path):

@@ -72,8 +72,8 @@ def test_subsplease_ep11_http_play_and_segment(sdk):
     manifest = client.get(payload["manifest_url"])
     assert manifest.status_code == 200
     manifest_text = manifest.text
-    assert "#EXT-X-PLAYLIST-TYPE:EVENT" in manifest_text
-    assert "#EXT-X-ENDLIST" not in manifest_text
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in manifest_text
+    assert "#EXT-X-ENDLIST" in manifest_text
     seg = client.get(f"/ui/stream/{payload['session_id']}/segment_00000.ts")
     assert seg.status_code == 200
     assert len(seg.content) > 10_000

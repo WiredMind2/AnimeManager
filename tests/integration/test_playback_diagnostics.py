@@ -102,7 +102,7 @@ def test_resume_anchor_segment_materializes(sdk):
     sid = session["session_id"]
     token = session["token"]
     try:
-        anchor = 15  # (80s - 20s headroom) // 4s
+        anchor = 18  # playhead 20 - PREFETCH_MARGIN(2)
         seg_name = f"segment_{anchor:05d}.ts"
         t0 = time.monotonic()
         _session, seg_path = sdk.resolve_playback_media_path(
@@ -141,8 +141,8 @@ def test_seek_ahead_restarts_ffmpeg_and_serves_segment(sdk, transcoder):
         sdk.stop_playback_session(sid)
 
 
-def test_prefetch_before_anchor_returns_404_not_restart(sdk, transcoder):
-    """Shaka may prefetch segment 0 on mid-file resume; must not kill anchor encode."""
+def test_prefetch_before_transcode_anchor_restarts_on_demand(sdk, transcoder):
+    """Seeking to segment 0 on mid-file resume must restart ffmpeg at 0."""
     session = sdk.create_playback_session(
         ANIME_ID,
         file_id=FILE_ID,
@@ -152,14 +152,12 @@ def test_prefetch_before_anchor_returns_404_not_restart(sdk, transcoder):
     sid = session["session_id"]
     token = session["token"]
     try:
-        from domain.errors import NotFoundError
-
-        with pytest.raises(NotFoundError, match="anchor"):
-            sdk.resolve_playback_media_path(
-                session_id=sid,
-                token=token,
-                segment_name="segment_00000.ts",
-            )
+        _session, seg_path = sdk.resolve_playback_media_path(
+            session_id=sid,
+            token=token,
+            segment_name="segment_00000.ts",
+        )
+        assert os.path.getsize(seg_path) > 10_000
         assert transcoder.is_hls_session_running(sid)
     finally:
         sdk.stop_playback_session(sid)

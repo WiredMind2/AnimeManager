@@ -47,10 +47,9 @@ class PlaybackSessionDTO:
     duration_seconds: float = 0.0
     segment_seconds: int = 0
     total_segments: int = 0
-    # First segment index the session intentionally encodes from (resume
-    # hint). Requests below this index are rejected without restarting
-    # ffmpeg so Shaka's prefetch of segment 0 cannot clobber a mid-file
-    # anchor.
+    # First segment index ffmpeg started encoding from (resume hint).
+    # The canonical manifest always lists segment 0..N; earlier segments
+    # are generated on demand when the client seeks backward.
     hls_anchor_segment: int = 0
     # Client resume hint (seconds); the player passes this as
     # ``Player.load(manifest, startTime)``.

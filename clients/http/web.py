@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from application.playback.file_ids import find_episode_by_file_id
 from fastapi import (
     APIRouter,
     Form,
@@ -294,6 +295,12 @@ def _normalize_anime_torrent_row(row: Any) -> dict[str, Any]:
     persisted_status = str(data.get("status") or "").lower()
     if persisted_status == "deleted":
         data["state"] = "DELETED"
+        return data
+    if persisted_status == "complete":
+        data["state"] = "COMPLETE"
+        if data.get("size") and not data.get("downloaded"):
+            data["downloaded"] = data["size"]
+        data["progress"] = 1.0
         return data
     state = (data.get("state") or "").upper() or None
     size = data.get("size") or 0
@@ -1220,12 +1227,12 @@ def _watch_page_context(
     selected_title = ""
     selected_audio_tracks: list[dict[str, Any]] = []
     selected_subtitle_tracks: list[dict[str, Any]] = []
-    for item in episode_files:
-        if str(item.get("file_id") or "") == selected_file_id:
-            selected_title = str(item.get("title") or "")
-            selected_audio_tracks = list(item.get("audio_tracks") or [])
-            selected_subtitle_tracks = list(item.get("subtitle_tracks") or [])
-            break
+    selected = find_episode_by_file_id(episode_files, selected_file_id)
+    if selected is not None:
+        selected_file_id = str(selected.get("file_id") or selected_file_id)
+        selected_title = str(selected.get("title") or "")
+        selected_audio_tracks = list(selected.get("audio_tracks") or [])
+        selected_subtitle_tracks = list(selected.get("subtitle_tracks") or [])
 
     track_map: dict[str, dict[str, list[dict[str, Any]]]] = {}
     episode_resume_map: dict[str, float] = {}
@@ -1578,17 +1585,16 @@ def web_action_play(
     # Resume position comes from the server DB only — not from the browser.
     try:
         ep_files = list(sdk.list_episode_files(anime_id, user_id=DEFAULT_USER_ID) or [])
-        for ep in ep_files:
-            if str(ep.get("file_id") or "") == file_id.strip():
-                pos_raw = ep.get("position_seconds")
-                if pos_raw is not None:
-                    try:
-                        server_pos = float(pos_raw)
-                    except (TypeError, ValueError):
-                        server_pos = 0.0
-                    if server_pos >= 10.0:
-                        start_time_seconds = server_pos
-                break
+        selected_ep = find_episode_by_file_id(ep_files, file_id.strip())
+        if selected_ep is not None:
+            pos_raw = selected_ep.get("position_seconds")
+            if pos_raw is not None:
+                try:
+                    server_pos = float(pos_raw)
+                except (TypeError, ValueError):
+                    server_pos = 0.0
+                if server_pos >= 10.0:
+                    start_time_seconds = server_pos
     except Exception:  # noqa: BLE001
         pass
 
@@ -2318,7 +2324,7 @@ def _build_torrent_search_options_context(
 ) -> dict[str, Any]:
     anime: dict[str, Any] = {"id": anime_id}
     try:
-        loaded = sdk.get_anime(anime_id)
+        loaded = sdk.get_anime_catalog_titles(anime_id)
         if isinstance(loaded, dict):
             anime = loaded
     except Exception:  # noqa: BLE001
