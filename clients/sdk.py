@@ -108,6 +108,9 @@ class ClientSDK:
         payload["metadata_refreshing"] = result.metadata_refreshing
         return payload
 
+    def get_anime_catalog_titles(self, anime_id: int) -> dict[str, Any]:
+        return self._facade.get_anime_catalog_titles(anime_id)
+
     def refresh_anime_details(self, anime_id: int) -> dict[str, Any]:
         return self._facade.refresh_anime_details(anime_id)
 

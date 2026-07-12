@@ -23,6 +23,7 @@ from application.playback import PlaybackService
 from application.services.anime_hydration import AnimeHydrationService
 from application.services.anime_service import AnimeApplicationService
 from application.services.anime_write_service import AnimeWriteService
+from application.services.library_startup_sync import LibraryStartupSyncService
 from application.services.startup_jobs import StartupJobsService
 from composition.bootstrap import bootstrap_embedded_deps
 from composition.facade import EmbeddedClientFacade
@@ -100,6 +101,16 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         schedule_limit = int(anime_cfg.get("maxTrendingAnime", 50))
     except (TypeError, ValueError):
         schedule_limit = 50
+
+    anime_path = str(getattr(deps.scanner, "_anime_path", "") or "")
+    library_sync = LibraryStartupSyncService(
+        user_actions=user_actions,
+        media_library=media_library,
+        anime_path=anime_path,
+        cancel_download=download.cancel_download,
+        purge_torrents_for_anime=download.purge_torrents_for_anime,
+        log_fn=lambda msg: deps.logger.log("LIBRARY_SYNC", msg),
+    )
     startup_jobs = StartupJobsService(
         api_coordinator=metadata.api_coordinator,
         database_manager=deps.db_manager,
@@ -108,6 +119,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         logger=deps.logger,
         download_adapter=download,
         write_service=anime_write,
+        library_sync=library_sync,
         schedule_limit=max(1, schedule_limit),
     )
 

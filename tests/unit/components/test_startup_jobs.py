@@ -22,6 +22,7 @@ from ....application.services.startup_jobs import (
     StartupJob,
     StartupJobReport,
     StartupJobsService,
+    _db_counter,
 )
 
 
@@ -389,6 +390,76 @@ def test_purge_deleted_torrents_job_runs_before_restore():
     assert detail == "purged 3 deleted torrent artifact(s)"
 
 
+def test_library_sync_jobs_run_before_restore_when_enabled():
+    from application.services.library_startup_sync import (
+        PromoteWatchingResult,
+        PurgeSeenResult,
+    )
+
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    adapter = SimpleNamespace(purge_deleted_torrents=lambda: 0)
+    library_sync = SimpleNamespace(
+        promote_watching_tags=lambda _uid: PromoteWatchingResult(promoted=1, scanned=2),
+        purge_seen_libraries=lambda _uid: PurgeSeenResult(
+            purged_folders=1, purged_torrents=2, seen_candidates=1
+        ),
+    )
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db)
+    coord.log = lambda *a, **k: None
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db,
+        config=SimpleNamespace(
+            settings={
+                "library_sync": {
+                    "promote_watching_on_startup": True,
+                    "purge_seen_on_startup": True,
+                }
+            }
+        ),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+        download_adapter=adapter,
+        library_sync=library_sync,
+        schedule_limit=10,
+    )
+    try:
+        names = [job.name for job in service._jobs()]
+        assert names.index("sync_watching_tags") < names.index("purge_seen_libraries")
+        assert names.index("purge_seen_libraries") < names.index("purge_deleted_torrents")
+        assert names.index("purge_deleted_torrents") < names.index(
+            "restore_libtorrent_sessions"
+        )
+        assert service._job_sync_watching_tags().startswith("promoted 1 tag(s)")
+        assert service._job_purge_seen_libraries().startswith("purged 1 folder(s)")
+    finally:
+        coord.close()
+
+
+def test_library_sync_jobs_omitted_when_disabled():
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    service = _build_service(
+        api,
+        db,
+        settings={
+            "library_sync": {
+                "promote_watching_on_startup": False,
+                "purge_seen_on_startup": False,
+            }
+        },
+    )
+    try:
+        names = [job.name for job in service._jobs()]
+        assert "sync_watching_tags" not in names
+        assert "purge_seen_libraries" not in names
+    finally:
+        service._api_coordinator.close()
+
+
 def test_repair_torrent_index_job_runs_with_adapter():
     api = _FakeAPI([])
     db = _RecordingDBManager()
@@ -625,3 +696,108 @@ def test_backfill_title_synonyms_hydrates_missing_rows():
 
     assert detail == "hydrated 2/2 row(s) missing synonyms"
     assert len(write_service.calls) == 2
+
+
+def test_db_counter_reads_inner_db_and_ignores_callables():
+    class _Inner:
+        _commit_count = 3
+        _query_count = 7
+
+    class _Proxy:
+        db = _Inner()
+
+        def __getattr__(self, name):
+            return lambda: 0
+
+    assert _db_counter(_Proxy(), "_commit_count") == 3
+    assert _db_counter(_Proxy(), "_query_count") == 7
+    assert _db_counter(_Inner(), "_commit_count") == 3
+    assert _db_counter(None, "_commit_count") == 0
+
+
+def test_repair_date_from_converts_ordinals():
+    from datetime import datetime, timezone
+
+    ordinal = datetime(2020, 1, 15, tzinfo=timezone.utc).toordinal()
+    expected_ts = int(
+        datetime.fromordinal(ordinal).replace(tzinfo=timezone.utc).timestamp()
+    )
+
+    class _RepairDB:
+        USE_CONNECTION_POOL = False
+        updates = []
+
+        @contextlib.contextmanager
+        def get_lock(self):
+            yield
+
+        def sql(self, query, params=None, save=False):
+            if "SELECT id, date_from" in query:
+                return [(99, ordinal, None)]
+            if query.startswith("UPDATE anime SET"):
+                self.updates.append((query, params, save))
+                return []
+            raise AssertionError(query)
+
+        def save(self):
+            pass
+
+    db = _RepairDB()
+    db_manager = SimpleNamespace(get_database=lambda: db)
+    service = _build_service(_FakeAPI([]), db_manager)
+    try:
+        detail = service._job_repair_date_from()
+    finally:
+        service._api_coordinator.close()
+
+    assert "repaired date_from=1" in detail
+    assert db.updates
+    assert db.updates[0][1][0] == expected_ts
+    assert "?" in db.updates[0][0]
+
+
+def test_repair_date_from_skips_when_migration_done():
+    db = SimpleNamespace()
+    db_manager = SimpleNamespace(get_database=lambda: db)
+    service = _build_service(_FakeAPI([]), db_manager, settings={})
+    service._config.settings = {
+        "anime": {},
+        "startup_migrations": {"repair_date_from": True},
+    }
+    try:
+        detail = service._job_repair_date_from()
+    finally:
+        service._api_coordinator.close()
+    assert detail == "skipped (migration complete)"
+
+
+def test_repair_date_from_sqlite_placeholders_execute():
+    import sqlite3
+
+    from datetime import datetime, timezone
+
+    ordinal = datetime(2020, 1, 15, tzinfo=timezone.utc).toordinal()
+    threshold = StartupJobsService._ORDINAL_THRESHOLD
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE anime (id INTEGER PRIMARY KEY, date_from INTEGER, date_to INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO anime (id, date_from, date_to) VALUES (?, ?, ?)",
+        (1, ordinal, None),
+    )
+    conn.commit()
+
+    select_sql = (
+        "SELECT id, date_from, date_to FROM anime "
+        "WHERE (date_from IS NOT NULL AND date_from < ?) "
+        "   OR (date_to   IS NOT NULL AND date_to   < ?)"
+    )
+    rows = conn.execute(select_sql, (threshold, threshold)).fetchall()
+    assert rows == [(1, ordinal, None)]
+
+    update_sql = "UPDATE anime SET date_from=? WHERE id=?"
+    conn.execute(update_sql, (1234567890, 1))
+    conn.commit()
+    assert conn.execute("SELECT date_from FROM anime WHERE id=1").fetchone()[0] == 1234567890
+    conn.close()

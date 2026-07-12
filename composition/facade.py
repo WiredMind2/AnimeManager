@@ -155,6 +155,9 @@ class EmbeddedClientFacade:
     def get_anime_details(self, anime_id: int):
         return self._service.get_anime_details(anime_id)
 
+    def get_anime_catalog_titles(self, anime_id: int) -> dict:
+        return self._service.get_anime_catalog_titles(anime_id)
+
     def refresh_anime_details(self, anime_id: int) -> dict:
         return self._service.refresh_anime_details(anime_id)
 

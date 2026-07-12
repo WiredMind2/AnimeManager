@@ -196,6 +196,29 @@ class TestGetAnimeDetailsEdges:
         assert result.entity.title == ""
         assert result.metadata_pending is True
 
+    def test_schedules_detail_refresh_when_metadata_pending(self, service):
+        class FakeHydration:
+            catalog_ids = {1}
+            kickoff_calls: list[int] = []
+
+            def catalog_id_exists(self, catalog_id: int) -> bool:
+                return int(catalog_id) in self.catalog_ids
+
+            def is_detail_refreshing(self, catalog_id: int) -> bool:
+                return False
+
+            def kickoff_detail_refresh(self, catalog_id, *, after_hydrate=None):
+                self.kickoff_calls.append(int(catalog_id))
+
+        hydration = FakeHydration()
+        service._hydration = hydration
+        repo, _, _, _ = service._fakes
+        repo.items = [AnimeEntity(id=1, title="")]
+        result = service.get_anime_details(1)
+        assert result.metadata_pending is True
+        assert result.metadata_refreshing is True
+        assert hydration.kickoff_calls == [1]
+
     @pytest.mark.parametrize("anime_id", [0, -1, 999999, 10**12])
     def test_not_found_raises(self, service, anime_id):
         with pytest.raises(NotFoundError):

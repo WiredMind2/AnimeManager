@@ -251,5 +251,9 @@
   },
   "playback": {
     "video_encoder": "auto"
+  },
+  "library_sync": {
+    "promote_watching_on_startup": true,
+    "purge_seen_on_startup": true
   }
 }

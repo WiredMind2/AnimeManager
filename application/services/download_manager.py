@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from shared.base_component import BaseComponent
 from shared.security import validate_url
-from shared.telemetry import get_telemetry
+from shared.telemetry import get_telemetry, get_tracer
 from adapters.persistence.models import Magnet, Torrent
 
 
@@ -53,6 +53,7 @@ class DownloadManager(BaseComponent):
         self._last_status_refresh: float = 0.0
         self._watching_tag_callback: Optional[Callable[[int, int], None]] = None
         self._telemetry = get_telemetry()
+        self._tracer = get_tracer(__name__)
         # Self-initialize so adapters don't have to drive a lifecycle.
         self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
             max_workers=max_concurrent_downloads
@@ -156,6 +157,9 @@ class DownloadManager(BaseComponent):
         """
         with self._lock:
             task = self._active_downloads.pop(anime_id, None)
+            self._telemetry.set_gauge(
+                "download.active", float(len(self._active_downloads))
+            )
         if task is not None:
             task.cancel()
             self.log("DOWNLOAD_MANAGER", f"Cancelled download for anime {anime_id}")
@@ -773,6 +777,7 @@ class DownloadManager(BaseComponent):
                 "DOWNLOAD_MANAGER",
                 f"Marked {marked} torrent(s) as deleted (missing files)",
             )
+            self._telemetry.increment("torrent.reconcile_deleted", value=marked)
         return marked
 
     def mark_torrents_deleted_for_removed_file(
@@ -848,6 +853,47 @@ class DownloadManager(BaseComponent):
             )
         return marked
 
+    def purge_torrents_for_anime(
+        self,
+        anime_id: int,
+        folder_resolver: Callable[[int], Optional[str]],
+    ) -> int:
+        """Cancel active downloads and mark all torrents for ``anime_id`` deleted."""
+        del folder_resolver  # reserved for parity with sibling purge helpers
+
+        self.cancel_download(anime_id)
+
+        db_manager = self._database_manager
+        if db_manager is None:
+            return 0
+        lister = getattr(db_manager, "list_torrents_for_anime", None)
+        updater = getattr(db_manager, "update_torrent_status", None)
+        if not callable(lister) or not callable(updater):
+            return 0
+
+        hashes_to_remove: list[str] = []
+        marked = 0
+        for row in lister(anime_id) or []:
+            if not isinstance(row, dict):
+                continue
+            hash_val = str(row.get("hash") or "").strip()
+            if not hash_val:
+                continue
+            if str(row.get("status") or "").lower() == "deleted":
+                hashes_to_remove.append(hash_val)
+                continue
+            updater(hash_val, "deleted")
+            hashes_to_remove.append(hash_val)
+            marked += 1
+
+        if hashes_to_remove:
+            self.remove_torrents_from_client(hashes_to_remove, delete_files=False)
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Purged {marked} torrent(s) for anime {anime_id}",
+            )
+        return marked
+
     def _list_files_for_torrent(self, hash_value: str) -> list[str]:
         tm = self._torrent_manager
         if tm is None or not hash_value:
@@ -900,8 +946,17 @@ class DownloadManager(BaseComponent):
         Args:
             task: Download task to execute
         """
+        with self._tracer.start_as_current_span(
+            "download.process", attributes={"anime_id": task.anime_id}
+        ):
+            self._execute_download_inner(task)
+
+    def _execute_download_inner(self, task: 'DownloadTask') -> None:
         with self._lock:
             self._active_downloads[task.anime_id] = task
+            self._telemetry.set_gauge(
+                "download.active", float(len(self._active_downloads))
+            )
 
         # The task stays in ``_active_downloads`` for as long as the user
         # should still see it in the UI. We only evict on failure / exception
@@ -911,10 +966,12 @@ class DownloadManager(BaseComponent):
         task.state = "QUEUED"
         try:
             task.status_queue.put(True)  # Download started
+            self._telemetry.increment("download.started")
 
             torrent = self._prepare_torrent(task)
             if not torrent:
                 task.status_queue.put(False)
+                self._telemetry.increment("download.failed")
                 return
 
             task.name = getattr(torrent, "name", None) or task.name
@@ -946,17 +1003,24 @@ class DownloadManager(BaseComponent):
                 task.state = "DOWNLOADING"
                 task.progress = task.progress if task.progress is not None else 0.0
                 keep_visible = True
+                self._telemetry.increment("download.completed")
                 self.log("DOWNLOAD_MANAGER", f"Successfully started download for anime {task.anime_id}")
             else:
+                self._telemetry.increment("download.failed")
                 self.log("DOWNLOAD_MANAGER", f"Failed to start download for anime {task.anime_id}")
 
         except Exception as e:
+            self._telemetry.increment("download.failed")
             self.log("DOWNLOAD_MANAGER", f"Download execution failed for anime {task.anime_id}: {e}")
             task.status_queue.put(False)
         finally:
             if not keep_visible:
                 with self._lock:
                     self._active_downloads.pop(task.anime_id, None)
+            with self._lock:
+                self._telemetry.set_gauge(
+                    "download.active", float(len(self._active_downloads))
+                )
 
     def _prepare_torrent(self, task: 'DownloadTask') -> Optional[Torrent]:
         """

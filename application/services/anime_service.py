@@ -640,6 +640,23 @@ class AnimeApplicationService:
             return self.get_character(character_id)
         return refresher(character_id)
 
+    def get_anime_catalog_titles(self, anime_id: int) -> dict:
+        """Return title metadata for torrent search without triggering hydration."""
+        anime_id = int(anime_id)
+        getter = getattr(self._anime_repository, "get_anime_title_bundle", None)
+        if callable(getter):
+            bundle = getter(anime_id)
+            if bundle is not None:
+                return dict(bundle)
+        entity = self._anime_repository.get_anime(anime_id)
+        if entity is None:
+            raise NotFoundError(f"Anime with id={anime_id} not found")
+        return {
+            "id": anime_id,
+            "title": entity.title,
+            "title_synonyms": list(entity.title_synonyms or []),
+        }
+
     def refresh_anime_pictures(self, anime_id: int) -> list[dict]:
         refresher = getattr(self._anime_repository, "refresh_anime_pictures", None)
         if not callable(refresher):
@@ -681,10 +698,20 @@ class AnimeApplicationService:
                 return True
         return False
 
-    def _sync_watching_tag_from_library(self, anime_id: int, user_id: int) -> None:
+    def _sync_watching_tag_from_library(
+        self,
+        anime_id: int,
+        user_id: int,
+        *,
+        has_files: bool | None = None,
+    ) -> None:
         """Promote ``NONE`` / ``WATCHLIST`` to ``WATCHING`` when local episodes exist."""
         try:
-            has_files = bool(self._list_episode_files_core(anime_id))
+            if has_files is None:
+                media = self._require_media_streaming()
+                has_files = bool(
+                    media.has_episode_files(ListEpisodeFilesQuery(anime_id=anime_id))
+                )
             if not has_files and not self._has_completed_torrent(anime_id):
                 return
             state = self._user_actions_port.get_user_state(anime_id, user_id)
@@ -725,7 +752,11 @@ class AnimeApplicationService:
                     duration_seconds=row.duration_seconds,
                 )
             )
-        self._sync_watching_tag_from_library(anime_id, user_id)
+        self._sync_watching_tag_from_library(
+            anime_id,
+            user_id,
+            has_files=bool(core),
+        )
         return merged
 
     def set_episode_progress(

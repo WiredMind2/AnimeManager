@@ -238,3 +238,43 @@ class UserActionsRepository:
             raise InfrastructureError(
                 f"Failed to delete episode progress: {exc}"
             ) from exc
+
+    def list_anime_ids_by_tag(self, tag: str, user_id: int) -> list[int]:
+        tag_u = str(tag or "").strip().upper()
+        if not tag_u:
+            return []
+        db = self._database
+        try:
+            rows = db.sql(
+                "SELECT anime_id FROM user_tags "
+                "WHERE user_id=? AND UPPER(tag)=?",
+                (user_id, tag_u),
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to list anime ids by tag: {exc}"
+            ) from exc
+        out: list[int] = []
+        for row in rows or []:
+            if not row:
+                continue
+            try:
+                out.append(int(row[0]))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def clear_episode_progress(self, anime_id: int, user_id: int) -> None:
+        self._ensure_episode_progress_table()
+        db = self._database
+        try:
+            with db.get_lock():
+                db.sql(
+                    "DELETE FROM episode_progress WHERE anime_id=? AND user_id=?",
+                    (anime_id, user_id),
+                    save=True,
+                )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to clear episode progress: {exc}"
+            ) from exc

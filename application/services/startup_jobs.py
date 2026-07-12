@@ -29,8 +29,16 @@ from adapters.persistence.models import Anime
 from application.services.api_coordinator import APICoordinator
 from application.services.anime_write_service import WriteSource
 from application.services.database_manager import DatabaseManager
+from application.services.library_startup_sync import LibraryStartupSyncService
 from shared.contracts import IngestionResult, IngestionStatus
 from shared.telemetry import get_telemetry
+
+
+def _db_counter(db: Any, name: str) -> int:
+    """Read an integer counter from a DB handle or thread_safe_db wrapper."""
+    target = getattr(db, "db", db)
+    value = getattr(target, name, 0)
+    return int(value) if isinstance(value, (int, float)) else 0
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,10 @@ class StartupJobsService:
       (``UPCOMING`` / ``AIRING``) based on airing dates.
     * ``purge_deleted_torrents`` -- remove resume artifacts for DB-
       deleted torrents before session restore.
+    * ``sync_watching_tags`` -- promote ``NONE`` / ``WATCHLIST`` rows
+      to ``WATCHING`` when local episode files exist (optional).
+    * ``purge_seen_libraries`` -- remove on-disk folders and torrents
+      for ``SEEN``-tagged anime (optional).
     * ``restore_libtorrent_sessions`` -- wait for embedded LibTorrent
       session restore when that backend is active.
     * ``reconcile_deleted_torrents`` -- mark completed torrents whose
@@ -113,6 +125,7 @@ class StartupJobsService:
     # ``scheduleTimeout`` overflows that and raises ``OverflowError``,
     # killing the ``AM-ScheduleRefresh`` thread on every startup.
     _SCHEDULE_SLEEP_MAX_S = 7 * 86_400
+    _DEFAULT_USER_ID = 1
 
     def __init__(
         self,
@@ -124,6 +137,7 @@ class StartupJobsService:
         logger: Any,
         download_adapter: Any = None,
         write_service: Any = None,
+        library_sync: LibraryStartupSyncService | None = None,
         schedule_limit: int = 50,
     ) -> None:
         self._api_coordinator = api_coordinator
@@ -133,6 +147,7 @@ class StartupJobsService:
         self._logger = logger
         self._download_adapter = download_adapter
         self._write_service = write_service
+        self._library_sync = library_sync
         self._schedule_limit = max(1, int(schedule_limit))
         self._telemetry = get_telemetry()
         self._lock = threading.Lock()
@@ -362,13 +377,13 @@ class StartupJobsService:
     ) -> None:
         start = time.perf_counter()
         db = self._database_manager.get_database()
-        commits_before = int(getattr(db, "_commit_count", 0) or 0) if db else 0
-        queries_before = int(getattr(db, "_query_count", 0) or 0) if db else 0
+        commits_before = _db_counter(db, "_commit_count") if db else 0
+        queries_before = _db_counter(db, "_query_count") if db else 0
         try:
             detail = job.fn()
             elapsed = int((time.perf_counter() - start) * 1000)
-            commits_after = int(getattr(db, "_commit_count", 0) or 0) if db else 0
-            queries_after = int(getattr(db, "_query_count", 0) or 0) if db else 0
+            commits_after = _db_counter(db, "_commit_count") if db else 0
+            queries_after = _db_counter(db, "_query_count") if db else 0
             self._telemetry.increment(
                 f"startup.job.{job.name}_commits", max(0, commits_after - commits_before)
             )
@@ -419,6 +434,10 @@ class StartupJobsService:
                 lambda: "skipped (recent fetch)",
             )
         yield StartupJob("update_status", self._job_update_status)
+        if self._library_sync_promote_enabled():
+            yield StartupJob("sync_watching_tags", self._job_sync_watching_tags)
+        if self._library_sync_purge_enabled():
+            yield StartupJob("purge_seen_libraries", self._job_purge_seen_libraries)
         yield StartupJob(
             "purge_deleted_torrents", self._job_purge_deleted_torrents
         )
@@ -428,6 +447,48 @@ class StartupJobsService:
         yield StartupJob("repair_torrent_index", self._job_repair_torrent_index)
         yield StartupJob(
             "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
+        )
+
+    def _library_sync_settings(self) -> dict[str, Any]:
+        settings = getattr(self._config, "settings", None) or {}
+        section = settings.get("library_sync")
+        if isinstance(section, dict):
+            return section
+        return {}
+
+    def _library_sync_promote_enabled(self) -> bool:
+        return bool(self._library_sync_settings().get("promote_watching_on_startup"))
+
+    def _library_sync_purge_enabled(self) -> bool:
+        return bool(self._library_sync_settings().get("purge_seen_on_startup"))
+
+    def _job_sync_watching_tags(self) -> str:
+        service = self._library_sync
+        if service is None:
+            return "skipped (no library sync service)"
+        if not self._library_sync_promote_enabled():
+            return "skipped (disabled in settings)"
+        result = service.promote_watching_tags(self._DEFAULT_USER_ID)
+        if result.promoted == 0:
+            return f"no tags promoted ({result.scanned} folder(s) with files)"
+        return (
+            f"promoted {result.promoted} tag(s) "
+            f"from {result.scanned} folder(s) with files"
+        )
+
+    def _job_purge_seen_libraries(self) -> str:
+        service = self._library_sync
+        if service is None:
+            return "skipped (no library sync service)"
+        if not self._library_sync_purge_enabled():
+            return "skipped (disabled in settings)"
+        result = service.purge_seen_libraries(self._DEFAULT_USER_ID)
+        if result.purged_folders == 0 and result.purged_torrents == 0:
+            return f"no SEEN libraries purged ({result.seen_candidates} candidate(s))"
+        return (
+            f"purged {result.purged_folders} folder(s), "
+            f"{result.purged_torrents} torrent(s) "
+            f"from {result.seen_candidates} SEEN candidate(s)"
         )
 
     def _job_purge_deleted_torrents(self) -> str:
@@ -642,8 +703,8 @@ class StartupJobsService:
         try:
             rows = db.sql(
                 "SELECT id, date_from, date_to FROM anime "
-                "WHERE (date_from IS NOT NULL AND date_from < %s) "
-                "   OR (date_to   IS NOT NULL AND date_to   < %s)",
+                "WHERE (date_from IS NOT NULL AND date_from < ?) "
+                "   OR (date_to   IS NOT NULL AND date_to   < ?)",
                 [self._ORDINAL_THRESHOLD, self._ORDINAL_THRESHOLD],
             )
         except Exception as exc:
@@ -669,7 +730,7 @@ class StartupJobsService:
             def _apply() -> None:
                 for sets, params in batch:
                     db.sql(
-                        f"UPDATE anime SET {', '.join(sets)} WHERE id=%s",
+                        f"UPDATE anime SET {', '.join(sets)} WHERE id=?",
                         params,
                         save=False,
                     )
@@ -693,11 +754,11 @@ class StartupJobsService:
             sets: list[str] = []
             params: list[Any] = []
             if new_from is not None and new_from != date_from:
-                sets.append("date_from=%s")
+                sets.append("date_from=?")
                 params.append(new_from)
                 repaired_from += 1
             if new_to is not None and new_to != date_to:
-                sets.append("date_to=%s")
+                sets.append("date_to=?")
                 params.append(new_to)
                 repaired_to += 1
             if not sets:
@@ -893,7 +954,7 @@ class StartupJobsService:
                 "FROM anime "
                 "WHERE status='AIRING' "
                 "AND date_to IS NOT NULL "
-                "AND date_to <= %s",
+                "AND date_to <= ?",
                 [now_ts],
             )
         except Exception as exc:

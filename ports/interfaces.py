@@ -7,16 +7,21 @@ re-exports from here.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Protocol
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 
+from domain.catalog import RepairStrategy
 from domain.entities import AnimeEntity
-from shared.contracts import RepairStrategy
 
 
 class CatalogIndexPort(Protocol):
     """Lookup and allocation of internal ids in ``indexList``."""
 
     def find_by_external(self, provider_key: str, external_id: int) -> Optional[int]:
+        ...
+
+    def find_by_external_batch(
+        self, pairs: Sequence[Tuple[str, int]]
+    ) -> Dict[Tuple[str, int], int]:
         ...
 
     def get_external_ids(self, internal_id: int) -> Dict[str, int]:
@@ -263,6 +268,14 @@ class UserActionsPort(Protocol):
         """Remove stored progress when the underlying file is deleted."""
         ...
 
+    def list_anime_ids_by_tag(self, tag: str, user_id: int) -> list[int]:
+        """Return catalog ids whose library tag matches ``tag`` for ``user_id``."""
+        ...
+
+    def clear_episode_progress(self, anime_id: int, user_id: int) -> None:
+        """Remove all stored episode progress rows for one anime and user."""
+        ...
+
 
 class MediaLibraryPort(Protocol):
     def list_episode_files(self, anime_id: int) -> list[dict[str, Any]]:
@@ -271,6 +284,10 @@ class MediaLibraryPort(Protocol):
 
     def delete_episode_file(self, anime_id: int, file_id: str) -> bool:
         """Delete one on-disk episode file resolved from ``file_id``. Return success."""
+        ...
+
+    def delete_anime_folder(self, anime_id: int) -> bool:
+        """Delete the on-disk library folder for ``anime_id``. Return success."""
         ...
 
     def get_stream_cache_root(self) -> str:
@@ -306,6 +323,10 @@ class MediaTranscoderPort(Protocol):
 
     def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, Any]]]:
         """Return available audio/subtitle tracks for source_path."""
+        ...
+
+    def probe_media_info(self, source_path: str) -> dict[str, Any]:
+        """Return tracks and duration from a single ffprobe invocation."""
         ...
 
     def probe_media_duration(self, source_path: str) -> float:

@@ -251,3 +251,29 @@ def test_episode_progress_empty_file_id_raises(adapter_unique):
 def test_delete_episode_progress_noop_for_empty_file_id(adapter_unique):
     adapter, _ = adapter_unique
     adapter.delete_episode_progress(1, 1, "")
+
+
+def test_list_anime_ids_by_tag_returns_matching_rows(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_tag(1, "SEEN", 1)
+    adapter.set_tag(2, "WATCHING", 1)
+    adapter.set_tag(3, "seen", 1)
+    adapter.set_tag(4, "SEEN", 2)
+
+    assert adapter.list_anime_ids_by_tag("SEEN", 1) == [1, 3]
+    assert adapter.list_anime_ids_by_tag("WATCHING", 1) == [2]
+    assert adapter.list_anime_ids_by_tag("NONE", 1) == []
+
+
+def test_clear_episode_progress_removes_all_rows_for_anime(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(5, 1, "ep-001", "SEEN")
+    adapter.set_episode_progress(5, 1, "ep-002", "IN_PROGRESS", 12.0)
+    adapter.set_episode_progress(5, 2, "ep-001", "SEEN")
+    adapter.set_episode_progress(6, 1, "ep-001", "SEEN")
+
+    adapter.clear_episode_progress(5, 1)
+
+    assert adapter.get_episode_progress_map(5, 1) == {}
+    assert adapter.get_episode_progress_map(5, 2)["ep-001"]["status"] == "SEEN"
+    assert adapter.get_episode_progress_map(6, 1)["ep-001"]["status"] == "SEEN"
