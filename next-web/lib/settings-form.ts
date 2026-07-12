@@ -11,6 +11,7 @@ export const SECTION_ORDER = [
   "media",
   "api_credentials",
   "playback",
+  "library_sync",
   "database",
   "api",
   "ui",
@@ -32,6 +33,7 @@ export const SECTION_TIERS: Record<string, number> = {
   media: 1,
   api_credentials: 1,
   playback: 1,
+  library_sync: 1,
   database: 2,
   api: 2,
   ui: 2,
@@ -78,6 +80,10 @@ export const SECTION_META: Record<string, { label: string; description: string }
   playback: {
     label: "Playback",
     description: "In-browser HLS transcoding. Changes require an app restart.",
+  },
+  library_sync: {
+    label: "Library sync",
+    description: "Automatic tag promotion and SEEN-library cleanup on startup.",
   },
   database: {
     label: "Database (active)",
@@ -162,6 +168,8 @@ const LEAF_LABELS: Record<string, string> = {
   tagcolors: "Tag colors",
   torrentsStateColors: "Torrent state colors",
   video_encoder: "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
+  promote_watching_on_startup: "Promote NONE/WATCHLIST to WATCHING when local files exist",
+  purge_seen_on_startup: "Delete SEEN anime folders and torrents on startup",
 };
 
 const PASSWORD_TOKENS = ["password", "secret", "token", "api_key", "apikey"];
@@ -556,7 +564,23 @@ export function buildSections(
   ];
 
   return ordered.map((key) => {
-    const node = buildGroup(key, seeded[key], 0, ctx) as SectionNode;
+    const built = buildGroup(key, seeded[key], 0, ctx);
+    const node: SectionNode =
+      built.kind === "group"
+        ? (built as SectionNode)
+        : {
+            kind: "group",
+            name: key,
+            label: humanize(key),
+            children: [built],
+            depth: 0,
+            leaf_count: 1,
+            is_bool_only: built.kind === "bool",
+            section_label: "",
+            description: "",
+            tier: 2,
+            open_by_default: false,
+          };
     const meta = SECTION_META[key] ?? {};
     const tier = SECTION_TIERS[key] ?? 2;
     node.section_label = meta.label ?? humanize(key);
