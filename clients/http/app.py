@@ -19,19 +19,25 @@ import logging
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 
 try:
-    from ...domain.errors import NotFoundError, ValidationError
     from . import log_buffer as _log_buffer
     from . import web as _web
+    from .errors import map_error_to_http as _map_error
+    from .errors import register_exception_handlers
+    from .health import build_health_snapshot, build_metrics_snapshot, require_local_client
+    from .telemetry_middleware import install_telemetry_middleware
     from ..sdk import ClientSDK
 except ImportError:
     from clients.http import log_buffer as _log_buffer
     from clients.http import web as _web
+    from clients.http.errors import map_error_to_http as _map_error
+    from clients.http.errors import register_exception_handlers
+    from clients.http.health import build_health_snapshot, build_metrics_snapshot, require_local_client
+    from clients.http.telemetry_middleware import install_telemetry_middleware
     from clients.sdk import ClientSDK
-    from domain.errors import NotFoundError, ValidationError
 
 # Capture every logger feeding the root before FastAPI/uvicorn start
 # emitting their own startup chatter so the live log viewer shows the
@@ -39,6 +45,22 @@ except ImportError:
 _log_buffer.install()
 
 _LOG = logging.getLogger("animemanager.http")
+
+
+def _init_observability_exporters(_app: FastAPI) -> None:
+    """Wire optional Sentry/OpenTelemetry exporters when env vars are set."""
+    try:
+        from adapters.observability.sentry import init_sentry
+    except ImportError:
+        init_sentry = None  # type: ignore[assignment,misc]
+    if init_sentry is not None:
+        init_sentry(_app)
+    try:
+        from adapters.observability.otel import init_opentelemetry
+    except ImportError:
+        init_opentelemetry = None  # type: ignore[assignment,misc]
+    if init_opentelemetry is not None:
+        init_opentelemetry(_app)
 
 
 def _shutdown_embedded_background() -> None:
@@ -89,8 +111,38 @@ def _shutdown_embedded_background() -> None:
         _LOG.debug("download port shutdown skipped: %s", exc)
 
 
+def _warm_embedded_backend() -> None:
+    """Initialize the embedded SDK before accepting HTTP traffic.
+
+    Uvicorn runs lifespan startup before listening; warming here ensures
+    the first SSR/API request does not pay the full composition-root cost
+    while Next.js is already serving pages.
+    """
+    try:
+        sdk = get_sdk()
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("Embedded backend warm-up skipped: %s", exc)
+        return
+
+    kickoff = getattr(sdk, "kickoff_startup_jobs", None)
+    if callable(kickoff):
+        try:
+            kickoff()
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("startup jobs kickoff skipped: %s", exc)
+
+    schedule = getattr(sdk, "start_schedule_loop", None)
+    if callable(schedule):
+        try:
+            schedule()
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("schedule loop start skipped: %s", exc)
+
+
 @asynccontextmanager
-async def _http_lifespan(_app: FastAPI):
+async def _http_lifespan(app: FastAPI):
+    _init_observability_exporters(app)
+    _warm_embedded_backend()
     yield
     _shutdown_embedded_background()
 
@@ -99,6 +151,8 @@ app = FastAPI(
     title="AnimeManager HTTP Client Adapter",
     lifespan=_http_lifespan,
 )
+install_telemetry_middleware(app)
+register_exception_handlers(app)
 _web.mount_static(app)
 app.include_router(_web.router)
 
@@ -106,14 +160,6 @@ app.include_router(_web.router)
 @lru_cache(maxsize=1)
 def get_sdk() -> ClientSDK:
     return ClientSDK()
-
-
-def _map_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, ValidationError):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, NotFoundError):
-        return HTTPException(status_code=404, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/")
@@ -133,20 +179,27 @@ def root(request: Request):
     return {"service": "animemanager-http-client-adapter", "status": "ok"}
 
 
+@app.get("/health")
+def health():
+    """Process health derived from in-process telemetry counters."""
+    return build_health_snapshot()
+
+
+@app.get("/metrics")
+def metrics(request: Request):
+    """Full in-process telemetry snapshot (LAN-only)."""
+    require_local_client(request)
+    return build_metrics_snapshot()
+
+
 @app.get("/anime/{anime_id}")
 def get_anime(anime_id: int):
-    try:
-        return get_sdk().get_anime(anime_id)
-    except Exception as exc:  # pragma: no cover - mapping path
-        raise _map_error(exc) from exc
+    return get_sdk().get_anime(anime_id)
 
 
 @app.post("/anime/{anime_id}/refresh")
 def refresh_anime(anime_id: int):
-    try:
-        return get_sdk().refresh_anime_details(anime_id)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().refresh_anime_details(anime_id)
 
 
 @app.get("/animelist")
@@ -157,40 +210,28 @@ def get_anime_list(
     list_stop: int = 50,
     hide_rated: bool | None = None,
 ):
-    try:
-        return get_sdk().get_anime_list(
-            filter_name=filter,
-            user_id=user_id,
-            list_start=list_start,
-            list_stop=list_stop,
-            hide_rated=hide_rated,
-        )
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().get_anime_list(
+        filter_name=filter,
+        user_id=user_id,
+        list_start=list_start,
+        list_stop=list_stop,
+        hide_rated=hide_rated,
+    )
 
 
 @app.get("/search")
 def search(query: str, limit: int = 50):
-    try:
-        return get_sdk().search_anime(query=query, limit=limit)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().search_anime(query=query, limit=limit)
 
 
 @app.get("/season")
 def browse_season(year: int, season: str, limit: int = 50):
-    try:
-        return get_sdk().browse_season(year=year, season=season, limit=limit)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().browse_season(year=year, season=season, limit=limit)
 
 
 @app.get("/genre")
 def browse_genre(name: str, limit: int = 50):
-    try:
-        return get_sdk().browse_genre(genre=name, limit=limit)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().browse_genre(genre=name, limit=limit)
 
 
 @app.get("/genres")
@@ -202,35 +243,23 @@ def list_genres():
 
 @app.post("/download/{anime_id}")
 def start_download(anime_id: int, url: str | None = None, hash_value: str | None = None, user_id: int | None = None):
-    try:
-        started = get_sdk().start_download(anime_id, url=url, hash_value=hash_value, user_id=user_id)
-        return {"started": started}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    started = get_sdk().start_download(anime_id, url=url, hash_value=hash_value, user_id=user_id)
+    return {"started": started}
 
 
 @app.get("/download/progress/{anime_id}")
 def download_progress(anime_id: int):
-    try:
-        return get_sdk().get_download_progress(anime_id)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().get_download_progress(anime_id)
 
 
 @app.post("/download/cancel/{anime_id}")
 def cancel_download(anime_id: int):
-    try:
-        return {"cancelled": get_sdk().cancel_download(anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"cancelled": get_sdk().cancel_download(anime_id)}
 
 
 @app.get("/download/active")
 def active_downloads():
-    try:
-        return {"items": get_sdk().get_active_downloads()}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().get_active_downloads()}
 
 
 @app.get("/torrents/search")
@@ -241,182 +270,122 @@ def search_torrents(
     allow_nsfw: bool = False,
 ):
     terms = [part.strip() for part in term.split(",") if part.strip()]
-    try:
-        return get_sdk().search_torrents(
-            terms=terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
-        )
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().search_torrents(
+        terms=terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw
+    )
 
 
 @app.post("/tag/{anime_id}")
 def set_tag(anime_id: int, tag: str, user_id: int):
-    try:
-        get_sdk().set_tag(anime_id, tag, user_id)
-        return {"ok": True}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    get_sdk().set_tag(anime_id, tag, user_id)
+    return {"ok": True}
 
 
 @app.post("/like/{anime_id}")
 def set_like(anime_id: int, user_id: int, liked: bool = True):
-    try:
-        get_sdk().set_like(anime_id, user_id=user_id, liked=liked)
-        return {"ok": True}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    get_sdk().set_like(anime_id, user_id=user_id, liked=liked)
+    return {"ok": True}
 
 
 @app.post("/seen/{anime_id}")
 def mark_seen(anime_id: int, file_name: str, user_id: int):
-    try:
-        get_sdk().mark_seen(anime_id, file_name=file_name, user_id=user_id)
-        return {"ok": True}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    get_sdk().mark_seen(anime_id, file_name=file_name, user_id=user_id)
+    return {"ok": True}
 
 
 @app.get("/state/{anime_id}")
 def user_state(anime_id: int, user_id: int):
-    try:
-        return get_sdk().get_user_state(anime_id, user_id)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().get_user_state(anime_id, user_id)
 
 
 @app.get("/search-terms/{anime_id}")
 def search_terms(anime_id: int):
-    try:
-        return {"items": get_sdk().get_search_terms(anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().get_search_terms(anime_id)}
 
 
 @app.post("/search-terms/{anime_id}")
 def add_search_term(anime_id: int, term: str):
-    try:
-        return {"added": get_sdk().add_search_term(anime_id, term)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"added": get_sdk().add_search_term(anime_id, term)}
 
 
 @app.delete("/search-terms/{anime_id}")
 def remove_search_term(anime_id: int, term: str):
-    try:
-        return {"removed": get_sdk().remove_search_term(anime_id, term)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"removed": get_sdk().remove_search_term(anime_id, term)}
 
 
 @app.get("/anime/{anime_id}/relations")
 def anime_relations(anime_id: int):
-    try:
-        return {"items": get_sdk().get_relations(anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().get_relations(anime_id)}
 
 
 @app.get("/anime/{anime_id}/characters")
 def anime_characters(anime_id: int):
-    try:
-        return {"items": get_sdk().get_characters(anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().get_characters(anime_id)}
 
 
 @app.post("/anime/{anime_id}/characters/refresh")
 def refresh_anime_characters(anime_id: int):
-    try:
-        return {"items": get_sdk().refresh_anime_characters(anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().refresh_anime_characters(anime_id)}
 
 
 @app.get("/characters/{character_id}")
 def get_character(character_id: int):
-    try:
-        return get_sdk().get_character(character_id)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().get_character(character_id)
 
 
 @app.post("/characters/{character_id}/refresh")
 def refresh_character(character_id: int):
-    try:
-        return get_sdk().refresh_character(character_id)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().refresh_character(character_id)
 
 
 @app.get("/anime/{anime_id}/pictures")
 def anime_pictures(anime_id: int):
-    try:
-        return {"items": get_sdk().get_anime_pictures(anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().get_anime_pictures(anime_id)}
 
 
 @app.get("/anime/{anime_id}/episode-files")
 def anime_episode_files(anime_id: int, user_id: int = 1):
-    try:
-        return {"items": get_sdk().list_episode_files(anime_id, user_id=user_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": get_sdk().list_episode_files(anime_id, user_id=user_id)}
 
 
 @app.get("/anime/{anime_id}/library-torrents")
 def anime_library_torrents(anime_id: int):
     """Saved and in-flight torrents for the anime detail downloads table."""
-    try:
-        from . import web as web_module
+    from . import web as web_module
 
-        return {"items": web_module._collect_anime_torrents(get_sdk(), anime_id)}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return {"items": web_module._collect_anime_torrents(get_sdk(), anime_id)}
 
 
 @app.get("/anime/{anime_id}/torrent-search-options")
 def anime_torrent_search_options(anime_id: int):
     """Catalog title toggles, manual terms, and active search terms."""
-    try:
-        from . import web as web_module
+    from . import web as web_module
 
-        ctx = web_module._build_torrent_search_options_context(get_sdk(), anime_id)
-        return {
-            "catalog_title_states": ctx.get("catalog_title_states") or [],
-            "manual_terms": ctx.get("manual_terms") or [],
-            "active_terms": ctx.get("active_terms") or [],
-        }
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    ctx = web_module._build_torrent_search_options_context(get_sdk(), anime_id)
+    return {
+        "catalog_title_states": ctx.get("catalog_title_states") or [],
+        "manual_terms": ctx.get("manual_terms") or [],
+        "active_terms": ctx.get("active_terms") or [],
+    }
 
 
 @app.post("/anime/{anime_id}/search-titles/toggle")
 def toggle_search_title(anime_id: int, title: str, enabled: bool = True):
-    try:
-        sdk = get_sdk()
-        clean = title.strip()
-        if clean:
-            if enabled:
-                sdk.enable_search_title(anime_id, clean)
-            else:
-                sdk.disable_search_title(anime_id, clean)
-        return {"ok": True}
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    sdk = get_sdk()
+    clean = title.strip()
+    if clean:
+        if enabled:
+            sdk.enable_search_title(anime_id, clean)
+        else:
+            sdk.disable_search_title(anime_id, clean)
+    return {"ok": True}
 
 
 @app.get("/settings")
 def get_settings():
-    try:
-        return get_sdk().get_settings()
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().get_settings()
 
 
 @app.patch("/settings")
 def update_settings(updates: dict):
-    try:
-        return get_sdk().update_settings(updates)
-    except Exception as exc:  # pragma: no cover
-        raise _map_error(exc) from exc
+    return get_sdk().update_settings(updates)

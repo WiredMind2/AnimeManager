@@ -72,6 +72,7 @@ KNOWN_CATEGORIES: tuple[str, ...] = (
     "SEARCH",
     "STARTUP",
     "PLAYER",
+    "CLIENT",
     "OTHER",
 )
 
@@ -91,6 +92,7 @@ _LOGGER_PREFIX_MAP: tuple[tuple[str, str], ...] = (
     ("adapters.file", "DISK_ERROR"),
     ("adapters.torrent", "DOWNLOAD"),
     ("adapters.search", "SEARCH"),
+    ("animemanager.client", "CLIENT"),
     ("clients.http", "HTTP"),
     ("clients.tk", "HTTP"),
     ("clients.sdk", "MAIN_STATE"),

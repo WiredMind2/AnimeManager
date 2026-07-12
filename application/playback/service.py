@@ -43,6 +43,7 @@ from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
 from application.services import player_session_log
 from domain.errors import InfrastructureError, NotFoundError, UnauthorizedError, ValidationError
 from ports.interfaces import MediaLibraryPort, MediaTranscoderPort
+from shared.telemetry import get_telemetry
 
 _LOG = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ class PlaybackService:
         self._sessions: dict[str, PlaybackSessionDTO] = {}
         self._restart_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
+        self._telemetry = get_telemetry()
 
     def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
         out: list[EpisodeFileDTO] = []
@@ -254,6 +256,9 @@ class PlaybackService:
             write_manifest_file(dto)
 
         startup_ms = int((time.time() - started_at) * 1000)
+        self._telemetry.record_ms("playback.session_create_ms", float(startup_ms))
+        self._telemetry.increment("playback.sessions_created")
+        self._telemetry.set_gauge("playback.active_sessions", float(len(self._sessions)))
         _LOG.info(
             "media_session_started anime_id=%s session=%s startup_ms=%s file=%s duration=%.1f",
             command.anime_id,
@@ -319,11 +324,16 @@ class PlaybackService:
 
         if query.segment_name:
             segment_name = _validate_segment_name(query.segment_name)
+            resolve_started = time.perf_counter()
             target = (Path(session.output_dir) / segment_name).resolve()
             if not _is_within_dir(target, Path(session.output_dir).resolve()):
                 raise ValidationError("Segment path escapes stream directory.")
             self._ensure_segment(session, segment_name, target)
             target_path = str(target)
+            self._telemetry.record_ms(
+                "playback.segment_resolve_ms",
+                (time.perf_counter() - resolve_started) * 1000.0,
+            )
         else:
             if session.total_segments > 0:
                 write_manifest_file(session)

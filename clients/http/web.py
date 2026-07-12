@@ -57,10 +57,14 @@ try:  # pragma: no cover - import path differs depending on launch mode
     from ..sdk import ClientSDK
     from application.services import player_session_log
     from . import log_buffer, settings_form
+    from .errors import map_error_to_status
+    from .telemetry_events import ingest_client_events
 except ImportError:  # pragma: no cover
     from application.services import player_session_log  # type: ignore
     from clients.sdk import ClientSDK
     from clients.http import log_buffer, settings_form  # type: ignore  # noqa: F401
+    from clients.http.errors import map_error_to_status  # type: ignore
+    from clients.http.telemetry_events import ingest_client_events  # type: ignore
     from domain.errors import (  # type: ignore  # noqa: F401
         AnimeManagerError,
         NotFoundError,
@@ -529,15 +533,7 @@ def _episode_player_response(request: Request, anime_id: int) -> Response:
 
 
 def _map_error(exc: Exception) -> tuple[int, str]:
-    if isinstance(exc, ValidationError):
-        return 400, str(exc)
-    if isinstance(exc, NotFoundError):
-        return 404, str(exc)
-    if isinstance(exc, UnauthorizedError):
-        return 401, str(exc)
-    if isinstance(exc, AnimeManagerError):
-        return 500, str(exc)
-    return 500, "Unexpected error"
+    return map_error_to_status(exc)
 
 
 def _client_host(request: Request) -> str:
@@ -1884,6 +1880,23 @@ async def web_stream_player_log(
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="Expected { events: [...] }.")
     accepted = player_session_log.append_client_batch(output_dir, events)
+    return JSONResponse(
+        {"ok": True, "accepted": accepted},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/ui/telemetry/events", name="web_client_telemetry_events")
+async def web_client_telemetry_events(request: Request) -> JSONResponse:
+    """Ingest batched browser telemetry events into the live log viewer."""
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid JSON body.") from exc
+    events = body.get("events") if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="Expected { events: [...] }.")
+    accepted = ingest_client_events(events)
     return JSONResponse(
         {"ok": True, "accepted": accepted},
         headers={"Cache-Control": "no-store"},

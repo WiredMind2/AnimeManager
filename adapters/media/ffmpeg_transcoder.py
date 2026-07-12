@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from shared.telemetry import get_telemetry
+
 from domain.errors import InfrastructureError
 
 _LOG = logging.getLogger(__name__)
@@ -79,6 +81,15 @@ class FFmpegTranscoderAdapter:
         self._startup_timeout_seconds = max(3, int(startup_timeout_seconds))
         self._active: dict[str, _ActiveTranscode] = {}
         self._lock = threading.RLock()
+        self._telemetry = get_telemetry()
+
+    def _sync_active_gauge(self, *, _lock_held: bool = False) -> None:
+        if _lock_held:
+            count = len(self._active)
+        else:
+            with self._lock:
+                count = len(self._active)
+        self._telemetry.set_gauge("ffmpeg.active_sessions", float(count))
 
     # ------------------------------------------------------------------
     # MediaTranscoderPort
@@ -241,6 +252,7 @@ class FFmpegTranscoderAdapter:
                 manifest_path=manifest_path,
             )
 
+        self._sync_active_gauge()
         return {
             "manifest_path": manifest_path,
             "output_dir": output_dir,
@@ -256,6 +268,7 @@ class FFmpegTranscoderAdapter:
         if active is None:
             return
         self._terminate(active.process)
+        self._sync_active_gauge()
         _LOG.info("transcode_stopped session=%s", session_id)
 
     def is_hls_session_running(self, session_id: str) -> bool:
@@ -364,6 +377,7 @@ class FFmpegTranscoderAdapter:
     # ------------------------------------------------------------------
 
     def _reap_finished_locked(self) -> None:
+        removed = False
         for session_id, active in list(self._active.items()):
             if active.process.poll() is not None:
                 code = active.process.returncode
@@ -376,6 +390,9 @@ class FFmpegTranscoderAdapter:
                 )
                 self._log_exit_footer(active.output_dir, code)
                 self._active.pop(session_id, None)
+                removed = True
+        if removed:
+            self._sync_active_gauge(_lock_held=True)
 
     def _evict_oldest_locked(self, *, excluding: str) -> bool:
         """Stop the least-recently-started session to make room for a new encode.
@@ -399,6 +416,7 @@ class FFmpegTranscoderAdapter:
         )
         self._terminate(victim.process)
         self._active.pop(victim_id, None)
+        self._sync_active_gauge(_lock_held=True)
         return True
 
     @staticmethod
@@ -543,6 +561,7 @@ class FFmpegTranscoderAdapter:
             if process.poll() is not None:
                 with self._lock:
                     self._active.pop(session_id, None)
+                self._sync_active_gauge()
                 _LOG.warning("transcode_failed_early session=%s", session_id)
                 raise InfrastructureError(
                     "Transcoder exited before playlist became ready."

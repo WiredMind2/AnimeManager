@@ -1,4 +1,7 @@
 import { apiUrl, backendPath } from "./config";
+import { reportError } from "@/lib/telemetry/errors";
+
+export const REQUEST_ID_HEADER = "x-request-id";
 
 export class ApiError extends Error {
   constructor(
@@ -38,7 +41,16 @@ async function request<T>(
     } catch {
       detail = await res.text();
     }
-    throw new ApiError(`Request failed: ${path}`, res.status, detail);
+    const requestId = res.headers.get(REQUEST_ID_HEADER) ?? undefined;
+    const apiError = new ApiError(`Request failed: ${path}`, res.status, detail);
+    reportError(apiError, {
+      path,
+      method: init?.method ?? "GET",
+      status: res.status,
+      request_id: requestId,
+      source: "api.request",
+    });
+    throw apiError;
   }
 
   const contentType = res.headers.get("content-type") ?? "";
@@ -49,8 +61,13 @@ async function request<T>(
 }
 
 const SSR_RETRY_STATUSES = new Set([500, 502, 503]);
-const SSR_RETRY_ATTEMPTS = 3;
-const SSR_RETRY_DELAY_MS = 300;
+const SSR_RETRY_ATTEMPTS = 10;
+const SSR_RETRY_BASE_MS = 500;
+const SSR_RETRY_MAX_MS = 4000;
+
+function ssrRetryDelayMs(attempt: number): number {
+  return Math.min(SSR_RETRY_MAX_MS, SSR_RETRY_BASE_MS * 2 ** attempt);
+}
 
 async function sleepMs(ms: number): Promise<void> {
   await new Promise((resolve) => {
@@ -76,7 +93,7 @@ export async function requestWithSsrRetry<T>(path: string): Promise<T> {
       if (!SSR_RETRY_STATUSES.has(err.status) || attempt === SSR_RETRY_ATTEMPTS - 1) {
         throw err;
       }
-      await sleepMs(SSR_RETRY_DELAY_MS * (attempt + 1));
+      await sleepMs(ssrRetryDelayMs(attempt));
     }
   }
   throw lastError ?? new ApiError(`Request failed: ${path}`, 500);

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Instrument_Sans, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import PwaProvider from "@/components/PwaProvider";
+import TelemetryProvider from "@/lib/telemetry/provider";
 import "./globals.css";
 
 const instrumentSans = Instrument_Sans({
@@ -57,7 +58,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${instrumentSans.variable} ${instrumentSerif.variable} ${jetbrainsMono.variable}`}
     >
       <body className={instrumentSans.className}>
-        {children}
+        <TelemetryProvider>{children}</TelemetryProvider>
         <PwaProvider />
       </body>
     </html>

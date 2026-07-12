@@ -46,7 +46,7 @@ class _SDKBase:
     def get_active_downloads(self):
         return []
 
-    def search_torrents(self, terms, profile="interactive", limit=200):
+    def search_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=False):
         return []
 
     def set_tag(self, anime_id, tag, user_id):
@@ -98,15 +98,13 @@ class TestMapError:
         assert exc.status_code == 500
         assert exc.detail == "boom"
 
-    def test_infrastructure_error_maps_to_500(self):
+    def test_infrastructure_error_maps_to_502(self):
         exc = http_app_module._map_error(InfrastructureError("db down"))
-        assert exc.status_code == 500
+        assert exc.status_code == 502
 
-    def test_unauthorized_falls_through_to_500(self):
-        # The current mapping does not have a dedicated branch for
-        # UnauthorizedError; document the behavior.
+    def test_unauthorized_maps_to_401(self):
         exc = http_app_module._map_error(UnauthorizedError("nope"))
-        assert exc.status_code == 500
+        assert exc.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +116,7 @@ class TestMapError:
 def client_factory(monkeypatch):
     def _build(sdk):
         monkeypatch.setattr(http_app_module, "get_sdk", lambda: sdk)
-        return TestClient(http_app_module.app)
+        return TestClient(http_app_module.app, raise_server_exceptions=False)
 
     return _build
 
@@ -216,7 +214,7 @@ class TestEndpointParameterEdges:
         captured = {}
 
         class SDK(_SDKBase):
-            def search_torrents(self, terms, profile="interactive", limit=200):
+            def search_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=False):
                 captured["terms"] = list(terms)
                 return []
 
@@ -271,3 +269,22 @@ class TestEndpointParameterEdges:
         resp = client.patch("/settings", json={})
         assert resp.status_code == 200
         assert captured["updates"] == {}
+
+
+class TestEmbeddedBackendWarmUp:
+    def test_lifespan_warms_embedded_backend(self, monkeypatch):
+        calls: list[str] = []
+
+        class FakeSDK:
+            def kickoff_startup_jobs(self):
+                calls.append("kickoff")
+                return None
+
+            def start_schedule_loop(self):
+                calls.append("schedule")
+                return None
+
+        monkeypatch.setattr(http_app_module, "get_sdk", lambda: FakeSDK())
+        with TestClient(http_app_module.app) as client:
+            assert client.get("/").status_code == 200
+        assert calls == ["kickoff", "schedule"]

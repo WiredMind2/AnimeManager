@@ -469,6 +469,34 @@ Browser calls `/backend/ui/...` → [`next-web/app/backend/[...path]/route.ts`](
 | GET | `/anime/{anime_id}/episode-files` |
 | GET | `/anime/{anime_id}/library-torrents` |
 | GET/PATCH | `/settings` |
+| GET | `/health` — process health from telemetry counters |
+| GET | `/metrics` — full telemetry snapshot (LAN-only) |
+
+### Telemetry
+
+Hybrid observability: in-process metrics + log buffer (always on) with optional Sentry/OpenTelemetry export.
+
+| Layer | Path / module |
+|-------|----------------|
+| Backend metrics | [`shared/telemetry/collector.py`](shared/telemetry/collector.py) — `get_telemetry()` |
+| HTTP middleware | [`clients/http/telemetry_middleware.py`](clients/http/telemetry_middleware.py) — `x-request-id`, latency timers |
+| Error handlers | [`clients/http/errors.py`](clients/http/errors.py) — unified 400/401/404/502 mapping |
+| Client event ingest | `POST /ui/telemetry/events` → `CLIENT` category in [`/logs`](next-web/app/logs/page.tsx) |
+| Next.js client | [`next-web/lib/telemetry/`](next-web/lib/telemetry/) — errors, web-vitals, batched POST |
+| Optional Sentry | `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` → [`adapters/observability/sentry.py`](adapters/observability/sentry.py) |
+| Optional OTel | `OTEL_EXPORTER_OTLP_ENDPOINT` → [`adapters/observability/otel.py`](adapters/observability/otel.py) |
+
+Environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `TELEMETRY_SLOW_REQUEST_MS` | Backend slow-request log threshold (default 2000) |
+| `NEXT_PUBLIC_TELEMETRY_ENABLED` | Browser telemetry on/off (default on) |
+| `SENTRY_DSN` | Python Sentry (install `requirements-telemetry.txt`) |
+| `NEXT_PUBLIC_SENTRY_DSN` | Next.js Sentry (optional `@sentry/nextjs`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP export |
+
+Settings template (`telemetry` section in [`settings.json`](settings.json)): `enabled`, `slow_request_ms`, `client_error_reporting`.
 
 ### Legacy web UI
 
@@ -589,6 +617,7 @@ npm run test:playback-smoke           # Playwright smoke script
 12. **Watching tag** — `_has_completed_torrent` ignores `DELETED` torrents so library tags stay accurate when files are gone.
 13. **Playback API** — still under `/ui/anime/{id}/play`; Next.js proxies via `/backend/ui/...`.
 14. **Commits** — only when user explicitly asks; never force-push `main`.
+15. **Telemetry** — client errors appear in `/logs` under `CLIENT`; correlate with backend via `x-request-id` response header.
 
 ---
 
