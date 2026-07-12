@@ -53,6 +53,7 @@ SECTION_ORDER: tuple[str, ...] = (
     "database_managers",
     "media",
     "api_credentials",
+    "playback",
     # Tier 2 -- useful but rarely changed.
     "database",
     "api",
@@ -75,6 +76,7 @@ SECTION_TIERS: dict[str, int] = {
     "database_managers": 1,
     "media": 1,
     "api_credentials": 1,
+    "playback": 1,
     "database": 2,
     "api": 2,
     "ui": 2,
@@ -118,6 +120,10 @@ SECTION_META: dict[str, dict[str, str]] = {
     "api_credentials": {
         "label": "API credentials",
         "description": "OAuth client IDs/secrets for metadata providers.",
+    },
+    "playback": {
+        "label": "Playback",
+        "description": "In-browser HLS transcoding. Changes require an app restart.",
     },
     "database": {
         "label": "Database (active)",
@@ -203,6 +209,7 @@ _LEAF_LABELS: dict[str, str] = {
     "dateStates": "Airing-date states",
     "tagcolors": "Tag colors",
     "torrentsStateColors": "Torrent state colors",
+    "video_encoder": "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
 }
 
 # Substrings that mark a string field as a secret -> rendered as
@@ -384,6 +391,15 @@ def _build_select_sources(current: Mapping[str, Any]) -> dict[str, list[str]]:
         order = media.get("players_order")
         if isinstance(order, list) and order:
             sources["media.default_player"] = list(dict.fromkeys(order))
+
+    sources["playback.video_encoder"] = [
+        "auto",
+        "libx264",
+        "h264_nvenc",
+        "h264_qsv",
+        "h264_amf",
+        "h264_mf",
+    ]
 
     return sources
 

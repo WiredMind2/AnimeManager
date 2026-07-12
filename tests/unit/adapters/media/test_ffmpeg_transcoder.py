@@ -14,8 +14,9 @@ def _build(
     subtitle_track: int | None,
     start_segment_index: int,
     segment_seconds: int = 4,
+    video_encoder: str = "libx264",
 ) -> list[str]:
-    adapter = FFmpegTranscoderAdapter()
+    adapter = FFmpegTranscoderAdapter(video_encoder=video_encoder)
     return adapter._build_command(
         ffmpeg_cmd="ffmpeg",
         source_path="/tmp/sample.mkv",
@@ -112,6 +113,40 @@ def test_command_forces_browser_compatible_h264_output():
     assert command[command.index("-pix_fmt") + 1] == "yuv420p"
     assert "-profile:v" in command
     assert command[command.index("-profile:v") + 1] == "high"
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert "-crf" in command
+
+
+def test_build_command_nvenc_flags(monkeypatch):
+    monkeypatch.setattr(
+        "adapters.media.ffmpeg_transcoder.resolve_video_encoder",
+        lambda **kwargs: "h264_nvenc",
+    )
+    adapter = FFmpegTranscoderAdapter(video_encoder="auto")
+    command = adapter._build_command(
+        ffmpeg_cmd="ffmpeg",
+        source_path="/tmp/sample.mkv",
+        playlist_output="/tmp/out/index.m3u8",
+        output_dir="/tmp/out",
+        audio_track=None,
+        subtitle_track=None,
+        start_segment_index=0,
+        segment_seconds=4,
+    )
+    assert command[command.index("-c:v") + 1] == "h264_nvenc"
+    assert "-cq" in command
+    assert command[command.index("-cq") + 1] == "23"
+    assert "-pix_fmt" in command
+    assert "-force_key_frames" in command
+
+
+def test_adapter_resolves_requested_encoder(monkeypatch):
+    monkeypatch.setattr(
+        "adapters.media.ffmpeg_transcoder.resolve_video_encoder",
+        lambda **kwargs: "h264_qsv",
+    )
+    adapter = FFmpegTranscoderAdapter(video_encoder="auto")
+    assert adapter._video_encoder == "h264_qsv"
 
 
 def test_materialize_subtitle_tracks_extracts_vtt(monkeypatch, tmp_path: Path):

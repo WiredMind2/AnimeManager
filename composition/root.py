@@ -75,9 +75,11 @@ def build_embedded_facade() -> EmbeddedClientFacade:
     hydration.start()
 
     _SEGMENT_SECONDS = 4
+    playback_cfg = deps.config.settings.get("playback", {}) or {}
     media_transcoder = FFmpegTranscoderAdapter(
         max_active_sessions=2,
         segment_seconds=_SEGMENT_SECONDS,
+        video_encoder=str(playback_cfg.get("video_encoder", "auto")),
     )
     media_streaming = PlaybackService(
         media_library=media_library,

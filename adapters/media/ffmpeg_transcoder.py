@@ -31,9 +31,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from shared.telemetry import get_telemetry
-
+from adapters.media.ffmpeg_encoder import build_video_encode_args, resolve_video_encoder
 from domain.errors import InfrastructureError
+from shared.telemetry import get_telemetry
 
 _LOG = logging.getLogger(__name__)
 
@@ -73,15 +73,21 @@ class FFmpegTranscoderAdapter:
         max_active_sessions: int = 2,
         segment_seconds: int = 4,
         startup_timeout_seconds: int = 15,
+        video_encoder: str = "auto",
     ) -> None:
         self._ffmpeg_bin = ffmpeg_bin
         self._ffprobe_bin = ffprobe_bin
         self._max_active_sessions = max(1, int(max_active_sessions))
         self._segment_seconds = max(2, int(segment_seconds))
         self._startup_timeout_seconds = max(3, int(startup_timeout_seconds))
+        self._video_encoder = resolve_video_encoder(
+            requested=video_encoder,
+            ffmpeg_bin=ffmpeg_bin,
+        )
         self._active: dict[str, _ActiveTranscode] = {}
         self._lock = threading.RLock()
         self._telemetry = get_telemetry()
+        _LOG.info("ffmpeg_transcoder_init video_encoder=%s", self._video_encoder)
 
     def _sync_active_gauge(self, *, _lock_held: bool = False) -> None:
         if _lock_held:
@@ -484,25 +490,12 @@ class FFmpegTranscoderAdapter:
         # ``-force_key_frames`` guarantees a key-frame at every segment
         # boundary so the resulting .ts files are independently
         # decodable, which HLS requires for arbitrary seeking.
+        video_args = build_video_encode_args(
+            self._video_encoder,
+            keyframe_expr=keyframe_expr,
+        )
         output_args: list[str] = [
-                "-c:v",
-                "libx264",
-                # Keep H.264 output inside the broadest browser-decoder
-                # compatibility envelope. Some sources are 10-bit /
-                # 4:4:4 and libx264 mirrors that by default, which can
-                # make MediaSource append throw in Chromium.
-                "-pix_fmt",
-                "yuv420p",
-                "-profile:v",
-                "high",
-                "-level:v",
-                "4.1",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-force_key_frames",
-                keyframe_expr,
+                *video_args,
                 "-c:a",
                 "aac",
                 "-ar",

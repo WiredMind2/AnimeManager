@@ -248,5 +248,8 @@
     "enabled": true,
     "slow_request_ms": 2000,
     "client_error_reporting": true
+  },
+  "playback": {
+    "video_encoder": "auto"
   }
 }

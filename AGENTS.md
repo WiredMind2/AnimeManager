@@ -284,6 +284,7 @@ First run copies the repo template via [`shared/config/constants.py`](shared/con
 | `UI` | `tagcolors`, `torrentsStateColors`, … | Colors/styling (includes `DELETED`, `COMPLETE`, …) |
 | `anime` | API toggles, timeouts | Metadata providers |
 | `feature_flags` | e.g. `strict_download_url_validation` | Runtime flags |
+| `playback` | `video_encoder` | HLS transcoding encoder (`auto` picks GPU when available; requires restart) |
 
 **`dataPath` is critical:** empty value blocks file manager init. Torrent managers inherit `dataPath` from the active file manager ([`shared/config/getters.py`](shared/config/getters.py) `getTorrentManager()`).
 
@@ -412,7 +413,17 @@ On-demand **HLS** via FFmpeg:
 | `resume.py` | Resume segment anchoring |
 | `session_store.py` | Token-based session auth |
 
-Transcoder: [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transcoder.py) — `max_active_sessions=2`, 4-second segments.
+Transcoder: [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transcoder.py) — `max_active_sessions=2`, 4-second segments. Encoder selection lives in [`adapters/media/ffmpeg_encoder.py`](adapters/media/ffmpeg_encoder.py).
+
+**Video encoder** (`settings.json` → `playback.video_encoder`, default `auto`):
+
+| Value | Behavior |
+|-------|----------|
+| `auto` | Prefer hardware encoders: `h264_nvenc` → `h264_qsv` → `h264_amf` → `h264_mf` → `libx264` |
+| `libx264` | Force CPU software encoding |
+| `h264_nvenc` / `h264_qsv` / `h264_amf` / `h264_mf` | Force a specific encoder; falls back to `libx264` if unavailable |
+
+Changes take effect after restarting the app (transcoder is wired once in [`composition/root.py`](composition/root.py)). Session `_ffmpeg.log` files record the full ffmpeg command including the resolved encoder.
 
 **Critical:** `SEGMENT_SECONDS=4` must match in [`composition/root.py`](composition/root.py), `PlaybackService`, and `FFmpegTranscoderAdapter`.
 
@@ -635,6 +646,7 @@ npm run test:playback-smoke           # Playwright smoke script
 | Startup jobs | [`application/services/startup_jobs.py`](application/services/startup_jobs.py) |
 | Playback service | [`application/playback/service.py`](application/playback/service.py) |
 | FFmpeg adapter | [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transcoder.py) |
+| FFmpeg encoder selection | [`adapters/media/ffmpeg_encoder.py`](adapters/media/ffmpeg_encoder.py) |
 | Composition bootstrap | [`composition/bootstrap.py`](composition/bootstrap.py) |
 | Anime repository adapter | [`adapters/persistence/anime_repository.py`](adapters/persistence/anime_repository.py) |
 | User actions adapter | [`adapters/persistence/user_actions_repository.py`](adapters/persistence/user_actions_repository.py) |

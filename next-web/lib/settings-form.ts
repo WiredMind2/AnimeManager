@@ -10,6 +10,7 @@ export const SECTION_ORDER = [
   "database_managers",
   "media",
   "api_credentials",
+  "playback",
   "database",
   "api",
   "ui",
@@ -30,6 +31,7 @@ export const SECTION_TIERS: Record<string, number> = {
   database_managers: 1,
   media: 1,
   api_credentials: 1,
+  playback: 1,
   database: 2,
   api: 2,
   ui: 2,
@@ -72,6 +74,10 @@ export const SECTION_META: Record<string, { label: string; description: string }
   api_credentials: {
     label: "API credentials",
     description: "OAuth client IDs/secrets for metadata providers.",
+  },
+  playback: {
+    label: "Playback",
+    description: "In-browser HLS transcoding. Changes require an app restart.",
   },
   database: {
     label: "Database (active)",
@@ -155,6 +161,7 @@ const LEAF_LABELS: Record<string, string> = {
   dateStates: "Airing-date states",
   tagcolors: "Tag colors",
   torrentsStateColors: "Torrent state colors",
+  video_encoder: "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
 };
 
 const PASSWORD_TOKENS = ["password", "secret", "token", "api_key", "apikey"];
@@ -365,6 +372,15 @@ function buildSelectSources(current: Record<string, unknown>): Record<string, st
       sources["media.default_player"] = [...new Set(order.map(String))];
     }
   }
+
+  sources["playback.video_encoder"] = [
+    "auto",
+    "libx264",
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_amf",
+    "h264_mf",
+  ];
 
   return sources;
 }
