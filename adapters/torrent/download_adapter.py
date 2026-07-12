@@ -107,6 +107,12 @@ class DownloadAdapter:
             self._scanner.resolve_anime_folder,
         )
 
+    def purge_torrents_for_anime(self, anime_id: int) -> int:
+        return self._download_manager.purge_torrents_for_anime(
+            anime_id,
+            self._scanner.resolve_anime_folder,
+        )
+
     def repair_torrent_index(self, *, dry_run: bool = False) -> str:
         from application.services.torrent_index_repair import TorrentIndexRepairService
 

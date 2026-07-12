@@ -27,12 +27,16 @@ try:
     from clients.tk.dialogs import LoginDialog
     from .base import BaseTorrentManager, TorrentException, TorrentListFilter
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.torrent.base import (  # type: ignore
-        BaseTorrentManager,
-        TorrentException,
-        TorrentListFilter,
-    )
-    from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
+    try:
+        from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
+        from AnimeManager.adapters.torrent.base import (  # type: ignore
+            BaseTorrentManager,
+            TorrentException,
+            TorrentListFilter,
+        )
+    except ImportError:
+        LoginDialog = None  # type: ignore[assignment,misc]
+        from .base import BaseTorrentManager, TorrentException, TorrentListFilter
 
 _RESUME_DIR_NAME = ".libtorrent_resume"
 _RESUME_SUFFIX = ".resume"
@@ -542,6 +546,10 @@ class LibTorrent(BaseTorrentManager):
                 break
 
     def login_dialog(self, failed=False):
+        if LoginDialog is None:
+            raise TorrentException(
+                "LibTorrent interactive configuration is unavailable in this runtime"
+            )
         fields = {
             "download_path": self.settings.get("download_path", self.download_path)
         }

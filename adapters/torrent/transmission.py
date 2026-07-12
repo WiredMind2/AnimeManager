@@ -13,10 +13,16 @@ except ImportError:
 
 try:
     from adapters.persistence.models import Torrent
-    from clients.tk.dialogs import LoginDialog
-except Exception:  # pragma: no cover - packaged install fallback
+except ImportError:  # pragma: no cover - packaged install fallback
     from AnimeManager.adapters.persistence.models import Torrent  # type: ignore
-    from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
+
+try:
+    from clients.tk.dialogs import LoginDialog
+except ImportError:  # pragma: no cover - headless / Docker
+    try:
+        from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
+    except ImportError:
+        LoginDialog = None  # type: ignore[assignment,misc]
 
 
 class Transmission(BaseTorrentManager):

@@ -113,7 +113,6 @@ def _run_api(host: str = "0.0.0.0", port: int = 8081) -> int:
         _LOG.error("HTTP client adapter unavailable: %s", exc)
         return 2
 
-    _kickoff_startup_jobs()
     uvicorn.run(
         "clients.http.app:app",
         host=host,
@@ -220,8 +219,6 @@ def _run_web(
     backend_origin = _service_origin(host, port)
     frontend_origin = _service_origin("127.0.0.1", next_port)
 
-    _kickoff_startup_jobs()
-
     api_env = os.environ.copy()
     api_env["WEB_FRONTEND_URL"] = frontend_origin
 
@@ -263,7 +260,7 @@ def _run_web(
         return 2
 
     next_proc = subprocess.Popen(
-        [npm_cmd, "run", "dev", "--", "--port", str(next_port)],
+        [npm_cmd, "run", "dev"],
         cwd=next_web_dir,
         env=next_env,
     )
