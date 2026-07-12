@@ -100,6 +100,39 @@ class LibTorrent(BaseTorrentManager):
         if not self._session_ready.wait(timeout=_SESSION_READY_TIMEOUT_S):
             raise TorrentException("LibTorrent session restore timed out")
 
+    def purge_deleted_torrents(self) -> int:
+        """Drop resume files and live handles for torrents marked deleted in the DB."""
+        purged = 0
+        resume_dir = self._resume_dir()
+        for path in sorted(glob.glob(os.path.join(resume_dir, f"*{_RESUME_SUFFIX}"))):
+            try:
+                basename = os.path.basename(path)
+                if not basename.endswith(_RESUME_SUFFIX):
+                    continue
+                info_hash = self._normalise_hash(
+                    basename[: -len(_RESUME_SUFFIX)]
+                )
+                if self._torrent_status(info_hash) != "deleted":
+                    continue
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                purged += 1
+            except Exception:
+                continue
+
+        if self.session is not None and lt is not None:
+            for key in list(self.handles.keys()):
+                if self._torrent_status(key) != "deleted":
+                    continue
+                try:
+                    self.delete(key, delete_files=False)
+                    purged += 1
+                except Exception:
+                    continue
+        return purged
+
     @staticmethod
     def _normalise_hash(info_hash: Any) -> str:
         if isinstance(info_hash, (bytes, bytearray)):

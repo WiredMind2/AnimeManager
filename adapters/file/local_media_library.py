@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Any
+from typing import Any, Callable
 
 from adapters.file.local_episode_scanner import LocalEpisodeScanner
 from application.services.database_manager import DatabaseManager
@@ -30,6 +30,13 @@ class LocalMediaLibraryAdapter:
         self._scanner = scanner
         self._fm = file_manager
         self._db_manager = db_manager
+        self._on_torrents_deleted: Callable[[list[str]], None] | None = None
+
+    def set_on_torrents_deleted(
+        self, callback: Callable[[list[str]], None] | None
+    ) -> None:
+        """Notify when torrent rows are marked deleted after episode file removal."""
+        self._on_torrents_deleted = callback
 
     @property
     def _database(self):
@@ -119,6 +126,7 @@ class LocalMediaLibraryAdapter:
             )
         except Exception:
             return
+        deleted_hashes: list[str] = []
         for row in rows or []:
             if not row:
                 continue
@@ -135,6 +143,13 @@ class LocalMediaLibraryAdapter:
                     ("deleted", hash_val),
                     save=True,
                 )
+                deleted_hashes.append(str(hash_val))
+            except Exception:
+                pass
+
+        if deleted_hashes and self._on_torrents_deleted is not None:
+            try:
+                self._on_torrents_deleted(deleted_hashes)
             except Exception:
                 pass
 

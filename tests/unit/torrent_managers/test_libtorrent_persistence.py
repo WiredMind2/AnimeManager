@@ -240,6 +240,35 @@ def test_restore_from_resume_skips_deleted_status(libtorrent_manager, tmp_path, 
     manager.session.add_torrent.assert_not_called()
 
 
+def test_purge_deleted_torrents_removes_resume_and_handles(
+    libtorrent_manager, tmp_path, monkeypatch
+):
+    manager = libtorrent_manager
+    resume_dir = tmp_path / ".libtorrent_resume"
+    resume_dir.mkdir()
+    deleted_hash = "b" * 40
+    active_hash = "c" * 40
+    deleted_resume = resume_dir / f"{deleted_hash}.resume"
+    active_resume = resume_dir / f"{active_hash}.resume"
+    deleted_resume.write_bytes(b"x" * 250)
+    active_resume.write_bytes(b"x" * 250)
+
+    monkeypatch.setattr(manager, "_resume_dir", lambda: str(resume_dir))
+    manager._torrent_status_callback = (
+        lambda h: "deleted" if h == deleted_hash else None
+    )
+    manager.session = MagicMock()
+    deleted_handle = MagicMock()
+    manager.handles = {deleted_hash: deleted_handle}
+
+    count = manager.purge_deleted_torrents()
+
+    assert count >= 1
+    assert not deleted_resume.exists()
+    assert active_resume.exists()
+    assert deleted_hash not in manager.handles
+
+
 def test_resume_write_uses_unique_temp_and_succeeds(libtorrent_manager):
     path = libtorrent_manager._resume_file_path("f" * 40)
     libtorrent_manager._atomic_write_bytes(path, b"unique-temp-test")

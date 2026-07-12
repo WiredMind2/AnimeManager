@@ -148,10 +148,11 @@ def test_startup_pipeline_runs_lean_jobs_only():
         "repair_date_from",
         "fetch_latest_anime",
         "update_status",
+        "purge_deleted_torrents",
         "restore_libtorrent_sessions",
         "reconcile_deleted_torrents",
     ]
-    assert report.total == 5
+    assert report.total == 6
     assert db.enrich_calls == []
 
 
@@ -183,8 +184,8 @@ def test_fetch_latest_persists_deduped_batch():
 
     assert isinstance(report, StartupJobReport)
     # Lean pipeline: ``repair_date_from``, ``fetch_latest_anime``,
-    # ``update_status``, ``restore_libtorrent_sessions``,
-    # ``reconcile_deleted_torrents``. Non-fetch jobs short-circuit
+    # ``update_status``, ``purge_deleted_torrents``,
+    # ``restore_libtorrent_sessions``, ``reconcile_deleted_torrents``.
     # cleanly here because ``_RecordingDBManager.get_database()`` returns
     # ``None``.
     assert report.total == 5
@@ -281,6 +282,20 @@ def test_run_in_background_returns_thread_and_completes():
     assert service.last_report.total >= 1
 
 
+def test_run_in_background_is_idempotent_while_thread_alive():
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    try:
+        thread1 = service.run_in_background(daemon=True)
+        thread2 = service.run_in_background(daemon=True)
+        assert thread1 is thread2
+        thread1.join(timeout=10.0)
+        assert not thread1.is_alive()
+    finally:
+        service._api_coordinator.close()
+
+
 def test_facade_exposes_kickoff():
     """The facade must accept a startup-jobs service and route through it."""
     from ....composition.facade import EmbeddedClientFacade
@@ -336,6 +351,34 @@ def test_reconcile_deleted_torrents_job_runs_with_adapter():
     finally:
         coord.close()
     assert detail == "marked 2 torrent(s) deleted"
+
+
+def test_purge_deleted_torrents_job_runs_before_restore():
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    adapter = SimpleNamespace(purge_deleted_torrents=lambda: 3)
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db)
+    coord.log = lambda *a, **k: None
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db,
+        config=SimpleNamespace(settings={}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+        download_adapter=adapter,
+        schedule_limit=10,
+    )
+    try:
+        names = [job.name for job in service._jobs()]
+        assert names.index("purge_deleted_torrents") < names.index(
+            "restore_libtorrent_sessions"
+        )
+        detail = service._job_purge_deleted_torrents()
+    finally:
+        coord.close()
+    assert detail == "purged 3 deleted torrent artifact(s)"
 
 
 def test_schedule_timeout_clamped_to_daily_minimum():

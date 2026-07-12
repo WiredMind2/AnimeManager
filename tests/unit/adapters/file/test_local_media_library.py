@@ -143,6 +143,9 @@ def test_delete_episode_file_marks_torrent_deleted_when_folder_empty(tmp_path):
     db.conn.execute("INSERT INTO torrentsIndex VALUES (7, 'hash1')")
     db.conn.commit()
 
+    removed_hashes: list[str] = []
+    adapter.set_on_torrents_deleted(removed_hashes.extend)
+
     file_id = adapter.list_episode_files(7)[0]["file_id"]
     assert adapter.delete_episode_file(7, file_id) is True
 
@@ -150,6 +153,7 @@ def test_delete_episode_file_marks_torrent_deleted_when_folder_empty(tmp_path):
         "SELECT status FROM torrents WHERE hash='hash1'"
     ).fetchone()
     assert row[0] == "deleted"
+    assert removed_hashes == ["hash1"]
 
 
 def test_get_stream_cache_root_creates_directory(tmp_path):

@@ -490,7 +490,7 @@ class DatabaseManager(BaseComponent):
                 self._ensure_torrent_columns(db)
                 rows = db.sql(
                     (
-                        "SELECT t.hash, t.save_path, t.status, i.id "
+                        "SELECT t.hash, t.save_path, t.status, i.id, t.name "
                         "FROM torrents AS t "
                         "INNER JOIN torrentsIndex AS i "
                         "ON LOWER(i.value) = LOWER(t.hash)"
@@ -515,6 +515,7 @@ class DatabaseManager(BaseComponent):
             save_path = row[1]
             status = row[2]
             anime_id = row[3]
+            name = row[4] if len(row) > 4 else None
             out.append(
                 {
                     "hash": hash_val,
@@ -523,6 +524,7 @@ class DatabaseManager(BaseComponent):
                         str(status).strip().lower() if status is not None else None
                     ),
                     "anime_id": anime_id,
+                    "name": str(name).strip() if name else None,
                 }
             )
         return out

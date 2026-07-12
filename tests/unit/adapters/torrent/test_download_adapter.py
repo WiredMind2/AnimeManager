@@ -35,6 +35,7 @@ def test_libtorrent_restore_callbacks_wired():
     tm.name = "LibTorrent"
     restore_rows = []
     status_calls = []
+    purge_calls = []
 
     def _set_restore(cb):
         restore_rows.append(cb())
@@ -44,6 +45,7 @@ def test_libtorrent_restore_callbacks_wired():
 
     tm.set_restore_callback = _set_restore
     tm.set_torrent_status_callback = _set_status
+    tm.purge_deleted_torrents = lambda: purge_calls.append(True) or 1
 
     db = MagicMock()
     db.list_torrents_for_restore.return_value = [{"hash": "abc"}]
@@ -60,6 +62,7 @@ def test_libtorrent_restore_callbacks_wired():
 
     assert restore_rows == [[{"hash": "abc"}]]
     assert status_calls == ["complete"]
+    assert purge_calls == [True]
 
 
 def test_libtorrent_skipped_for_non_libtorrent_manager():

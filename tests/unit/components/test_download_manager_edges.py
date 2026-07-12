@@ -1097,6 +1097,7 @@ class TestTorrentDeletedStatus:
                 "save_path": str(folder),
                 "status": "complete",
                 "anime_id": 7,
+                "name": "Example - 01.mkv",
             }
         ]
         tm = MagicMock()
@@ -1107,6 +1108,65 @@ class TestTorrentDeletedStatus:
             assert count == 1
             db.update_torrent_status.assert_called_with("abc123", "deleted")
             tm.delete.assert_called_once_with("abc123", delete_files=False)
+        finally:
+            mgr.close()
+
+    def test_reconcile_marks_batch_deleted_when_range_files_missing(
+        self, DownloadManager, tmp_path
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        folder = tmp_path / "Show - 1"
+        folder.mkdir()
+        (folder / "Show - 14.mkv").write_bytes(b"x")
+        db = MagicMock()
+        db.list_torrents_for_reconcile.return_value = [
+            {
+                "hash": "batch123",
+                "save_path": str(folder),
+                "status": "complete",
+                "anime_id": 7,
+                "name": "[SubsPlease] Example (01-13) (720p) [Batch]",
+            }
+        ]
+        tm = MagicMock()
+        tm.list.return_value = []
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            count = mgr.reconcile_deleted_torrents(lambda _aid: str(folder))
+            assert count == 1
+            db.update_torrent_status.assert_called_with("batch123", "deleted")
+            tm.delete.assert_called_once_with("batch123", delete_files=False)
+        finally:
+            mgr.close()
+
+    def test_reconcile_marks_error_torrent_without_files(self, DownloadManager, tmp_path):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        folder = tmp_path / "Show - 1"
+        folder.mkdir()
+        db = MagicMock()
+        db.list_torrents_for_reconcile.return_value = [
+            {
+                "hash": "err123",
+                "save_path": str(folder),
+                "status": None,
+                "anime_id": 7,
+                "name": "Example - 01.mkv",
+            }
+        ]
+        tm = MagicMock()
+        tm.list.return_value = [
+            {"hash": "err123", "state": "missingfiles", "progress": 0.5}
+        ]
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            count = mgr.reconcile_deleted_torrents(lambda _aid: str(folder))
+            assert count == 1
+            db.update_torrent_status.assert_called_with("err123", "deleted")
+            tm.delete.assert_called_once_with("err123", delete_files=False)
         finally:
             mgr.close()
 

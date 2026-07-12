@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from shared.base_component import BaseComponent
 from shared.security import validate_url
+from shared.telemetry import get_telemetry
 from adapters.persistence.models import Magnet, Torrent
 
 
@@ -51,6 +52,7 @@ class DownloadManager(BaseComponent):
         self._lock = threading.RLock()
         self._last_status_refresh: float = 0.0
         self._watching_tag_callback: Optional[Callable[[int, int], None]] = None
+        self._telemetry = get_telemetry()
         # Self-initialize so adapters don't have to drive a lifecycle.
         self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
             max_workers=max_concurrent_downloads
@@ -122,7 +124,9 @@ class DownloadManager(BaseComponent):
         self._clear_deleted_status_for_redownload(hash_value)
 
         task = DownloadTask(anime_id, url, hash_value, user_id)
-        self._download_queue.put(task)
+        with self._telemetry.time("download.enqueue_ms"):
+            self._download_queue.put(task)
+        self._sync_queue_gauge()
 
         self.log("DOWNLOAD_MANAGER", f"Queued download for anime {anime_id}")
         return task.status_queue
@@ -708,8 +712,8 @@ class DownloadManager(BaseComponent):
     ) -> int:
         """Mark completed torrents with missing files as deleted and stop restore."""
         from application.services.torrent_file_presence import (
-            paths_have_video_files,
-            should_mark_deleted,
+            TorrentReconcileAction,
+            should_reconcile_torrent,
         )
 
         db_manager = self._database_manager
@@ -728,9 +732,7 @@ class DownloadManager(BaseComponent):
             if not hash_val:
                 continue
             status = row.get("status")
-            if str(status or "").lower() == "deleted":
-                self._remove_torrent_from_client(hash_val, delete_files=False)
-                continue
+            torrent_name = row.get("name")
 
             anime_id = row.get("anime_id")
             anime_folder: Optional[str] = None
@@ -742,17 +744,26 @@ class DownloadManager(BaseComponent):
 
             save_path = row.get("save_path")
             live = self._lookup_live_torrent(hash_val)
-            if live and self._is_live_complete(live.get("state"), live.get("progress")):
+            live_state = live.get("state") if live else None
+            live_progress = live.get("progress") if live else None
+            if live and self._is_live_complete(live_state, live_progress):
                 updater(hash_val, "complete")
                 status = "complete"
                 if live.get("path") and not save_path:
                     save_path = str(live.get("path"))
 
-            if should_mark_deleted(
+            action = should_reconcile_torrent(
                 status=status,
                 save_path=save_path,
                 anime_folder=anime_folder,
-            ):
+                torrent_name=torrent_name,
+                live_state=live_state,
+                live_progress=live_progress,
+            )
+            if action == TorrentReconcileAction.REMOVE_FROM_CLIENT:
+                self._remove_torrent_from_client(hash_val, delete_files=False)
+                continue
+            if action == TorrentReconcileAction.MARK_DELETED:
                 updater(hash_val, "deleted")
                 self._remove_torrent_from_client(hash_val, delete_files=False)
                 marked += 1
@@ -764,6 +775,22 @@ class DownloadManager(BaseComponent):
             )
         return marked
 
+    def remove_torrents_from_client(
+        self, hashes: List[str], *, delete_files: bool = False
+    ) -> None:
+        """Remove one or more torrents from the torrent client without DB changes."""
+        for hash_val in hashes or []:
+            key = str(hash_val or "").strip()
+            if key:
+                self._remove_torrent_from_client(key, delete_files=delete_files)
+
+    def _sync_queue_gauge(self) -> None:
+        try:
+            depth = self._download_queue.qsize()
+        except NotImplementedError:
+            depth = 0
+        self._telemetry.set_gauge("download.queue_depth", float(depth))
+
     def _process_download_queue(self) -> None:
         """Drain the download queue until :meth:`close` is invoked."""
         while not self._stopping.is_set():
@@ -771,6 +798,7 @@ class DownloadManager(BaseComponent):
                 task = self._download_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
+            self._sync_queue_gauge()
             executor = self._executor
             if task is None or executor is None:
                 continue

@@ -86,6 +86,8 @@ class StartupJobsService:
       endpoint (at most once per :attr:`_SCHEDULE_MIN_INTERVAL_S`).
     * ``update_status`` -- transition stale lifecycle rows
       (``UPCOMING`` / ``AIRING``) based on airing dates.
+    * ``purge_deleted_torrents`` -- remove resume artifacts for DB-
+      deleted torrents before session restore.
     * ``restore_libtorrent_sessions`` -- wait for embedded LibTorrent
       session restore when that backend is active.
     * ``reconcile_deleted_torrents`` -- mark completed torrents whose
@@ -136,6 +138,7 @@ class StartupJobsService:
         self._lock = threading.Lock()
         self._last_report: Optional[StartupJobReport] = None
         self._running = False
+        self._background_thread: Optional[threading.Thread] = None
         self._schedule_loop_thread: Optional[threading.Thread] = None
         self._schedule_loop_stop = threading.Event()
 
@@ -194,12 +197,20 @@ class StartupJobsService:
         default so it does not block process exit. The thread name is
         prefixed with ``AM-StartupJobs`` so it is easy to identify in
         thread dumps.
+
+        Idempotent: a second call while the background thread is alive
+        returns the existing thread instead of spawning a duplicate
+        pipeline.
         """
-        thread = threading.Thread(
-            target=self.run,
-            name="AM-StartupJobs",
-            daemon=daemon,
-        )
+        with self._lock:
+            if self._background_thread is not None and self._background_thread.is_alive():
+                return self._background_thread
+            thread = threading.Thread(
+                target=self.run,
+                name="AM-StartupJobs",
+                daemon=daemon,
+            )
+            self._background_thread = thread
         thread.start()
         return thread
 
@@ -409,11 +420,29 @@ class StartupJobsService:
             )
         yield StartupJob("update_status", self._job_update_status)
         yield StartupJob(
+            "purge_deleted_torrents", self._job_purge_deleted_torrents
+        )
+        yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
         )
         yield StartupJob(
             "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
         )
+
+    def _job_purge_deleted_torrents(self) -> str:
+        adapter = self._download_adapter
+        if adapter is None:
+            return "skipped (no download adapter)"
+        purge = getattr(adapter, "purge_deleted_torrents", None)
+        if not callable(purge):
+            return "skipped (no purge_deleted_torrents)"
+        try:
+            count = int(purge())
+        except Exception as exc:
+            return f"purge failed: {exc}"
+        if count == 0:
+            return "no deleted torrent resume files purged"
+        return f"purged {count} deleted torrent artifact(s)"
 
     def _job_reconcile_deleted_torrents(self) -> str:
         adapter = self._download_adapter

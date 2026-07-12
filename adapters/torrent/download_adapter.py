@@ -70,6 +70,28 @@ class DownloadAdapter:
 
             status_setter(_status)
 
+        purge = getattr(tm, "purge_deleted_torrents", None)
+        if callable(purge):
+            try:
+                purge()
+            except Exception:
+                pass
+
+    def purge_deleted_torrents(self) -> int:
+        tm = self._torrent_manager
+        if tm is None or getattr(tm, "name", None) != "LibTorrent":
+            return 0
+        purge = getattr(tm, "purge_deleted_torrents", None)
+        if not callable(purge):
+            return 0
+        try:
+            return int(purge() or 0)
+        except Exception:
+            return 0
+
+    def remove_torrents_from_client(self, hashes: list[str]) -> None:
+        self._download_manager.remove_torrents_from_client(hashes, delete_files=False)
+
     def reconcile_deleted_torrents(self) -> int:
         return self._download_manager.reconcile_deleted_torrents(
             self._scanner.resolve_anime_folder
