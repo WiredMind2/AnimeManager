@@ -144,6 +144,17 @@ Every mode (except isolated GUI child processes) kicks off [`StartupJobsService`
 
 Jobs include metadata fetch, status repair, LibTorrent session restore, and torrent reconciliation (see [Downloads](#downloads-and-torrent-lifecycle)).
 
+### Docker (production self-host)
+
+Full-stack Compose (app + Elastic telemetry, 7 services):
+
+```powershell
+Copy-Item .env.docker.example .env
+docker compose up -d --build
+```
+
+See [`docker/README.md`](docker/README.md). LibTorrent runs in a **`torrent`** sidecar; `docker compose restart backend` does not interrupt downloads. UI: http://localhost:3000 — Kibana: http://127.0.0.1:5601.
+
 ### URLs (local dev)
 
 | Service | URL |
@@ -169,7 +180,7 @@ The **repo root is the Python package** (ADR 0006). Top-level packages:
 | [`shared/`](shared/) | Config (`Constants`, `Getters`, `ConfigProvider`), telemetry, security, utilities. |
 | [`clients/`](clients/) | Peer client adapters — all use [`clients/sdk.py`](clients/sdk.py). |
 | [`search_engines/`](search_engines/) | Nova3 torrent search framework (used by adapters). |
-| [`next-web/`](next-web/) | **Default UI** — Next.js 15 + React 19 (separate Node project). |
+| [`next-web/`](next-web/) | **Default UI** — Next.js 16 + React 19 (Turbopack default; separate Node project). |
 | [`bootstrap.py`](bootstrap.py) | In-package mode dispatcher. |
 | [`run.py`](run.py) | Root launcher (args only). |
 | [`settings.json`](settings.json) | Default settings template (copied to appdata on first run). |
@@ -284,6 +295,7 @@ First run copies the repo template via [`shared/config/constants.py`](shared/con
 | `UI` | `tagcolors`, `torrentsStateColors`, … | Colors/styling (includes `DELETED`, `COMPLETE`, …) |
 | `anime` | API toggles, timeouts | Metadata providers |
 | `feature_flags` | e.g. `strict_download_url_validation` | Runtime flags |
+| `library_sync` | `promote_watching_on_startup`, `purge_seen_on_startup` | Startup tag promotion and SEEN-library cleanup |
 | `playback` | `video_encoder` | HLS transcoding encoder (`auto` picks GPU when available; requires restart) |
 
 **`dataPath` is critical:** empty value blocks file manager init. Torrent managers inherit `dataPath` from the active file manager ([`shared/config/getters.py`](shared/config/getters.py) `getTorrentManager()`).
@@ -378,11 +390,16 @@ Resolved by `DownloadManager._get_anime_folder()`.
 Order:
 
 1. `repair_date_from`
-2. `repair_duplicate_anime`
-3. `fetch_latest_anime`
-4. `update_status`
-5. `restore_libtorrent_sessions` — `LibTorrent.ensure_restored()` when active
-6. `reconcile_deleted_torrents` — via `LegacyDownloadAdapter.reconcile_deleted_torrents()`
+2. `fetch_latest_anime`
+3. `update_status`
+4. `sync_watching_tags` — optional; promotes `NONE` / `WATCHLIST` to `WATCHING` when local episode files exist ([`library_sync.promote_watching_on_startup`](settings.json))
+5. `purge_seen_libraries` — optional; deletes on-disk folders and torrents for `SEEN`-tagged anime ([`library_sync.purge_seen_on_startup`](settings.json)); runs **before** LibTorrent restore
+6. `purge_deleted_torrents` — remove resume artifacts for DB-deleted torrents
+7. `restore_libtorrent_sessions` — `LibTorrent.ensure_restored()` when active
+8. `repair_torrent_index` — backfill missing `torrentsIndex` rows
+9. `reconcile_deleted_torrents` — via [`DownloadAdapter.reconcile_deleted_torrents()`](adapters/torrent/download_adapter.py)
+
+Library sync logic lives in [`application/services/library_startup_sync.py`](application/services/library_startup_sync.py).
 
 ### Download API
 
@@ -495,7 +512,8 @@ Hybrid observability: in-process metrics + log buffer (always on) with optional 
 | Client event ingest | `POST /ui/telemetry/events` → `CLIENT` category in [`/logs`](next-web/app/logs/page.tsx) |
 | Next.js client | [`next-web/lib/telemetry/`](next-web/lib/telemetry/) — errors, web-vitals, batched POST |
 | Optional Sentry | `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` → [`adapters/observability/sentry.py`](adapters/observability/sentry.py) |
-| Optional OTel | `OTEL_EXPORTER_OTLP_ENDPOINT` → [`adapters/observability/otel.py`](adapters/observability/otel.py) |
+| Optional OTel | `OTEL_EXPORTER_OTLP_ENDPOINT` → [`adapters/observability/otel.py`](adapters/observability/otel.py) (traces, metrics, logs) |
+| Local Kibana stack | [tetrazero-observability](https://github.com/WiredMind2/tetrazero-observability) — shared Elasticsearch + Kibana + EDOT collector |
 
 Environment variables:
 
@@ -504,10 +522,49 @@ Environment variables:
 | `TELEMETRY_SLOW_REQUEST_MS` | Backend slow-request log threshold (default 2000) |
 | `NEXT_PUBLIC_TELEMETRY_ENABLED` | Browser telemetry on/off (default on) |
 | `SENTRY_DSN` | Python Sentry (install `requirements-telemetry.txt`) |
-| `NEXT_PUBLIC_SENTRY_DSN` | Next.js Sentry (optional `@sentry/nextjs`) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP export |
+| `SENTRY_TRACES_SAMPLE_RATE` | Transaction sampling (default `0.1`; use `1.0` while verifying) |
+| `SENTRY_SEND_DEFAULT_PII` | Include request IP/headers in Sentry events (`true`/`false`) |
+| `SENTRY_ENABLE_LOGS` | Forward Python logs to Sentry (default `true` when DSN set) |
+| `SENTRY_PROFILE_SESSION_SAMPLE_RATE` | Continuous profiling sample rate (`0` disables) |
+| `SENTRY_PROFILE_LIFECYCLE` | Profiling mode when enabled (default `trace`) |
+| `NEXT_PUBLIC_SENTRY_DSN` | Next.js Sentry (`@sentry/nextjs`; see `next-web/.env.local.example`) |
+| `NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE` | Browser transaction sampling |
+| `NEXT_PUBLIC_SENTRY_SEND_DEFAULT_PII` | Browser `sendDefaultPii` |
+| `NEXT_PUBLIC_SENTRY_ENABLE_LOGS` | Forward browser logs to Sentry |
+| `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN` | Optional source map upload on `next build` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP intake (default local: `http://127.0.0.1:4318`) |
+| `OTEL_SERVICE_NAME` | Service name in Kibana (`animemanager-http` / `animemanager-next-web`) |
+| `OTEL_METRICS_EXPORT_INTERVAL_MS` | Backend collector metrics export interval (default `15000`) |
+| `OTEL_LOG_LEVEL` | Minimum log level exported via OTLP (default `INFO`) |
+
+**Local Kibana (dev only):**
+
+```powershell
+# Start stack: clone tetrazero-observability and run docker compose up -d
+# Kibana: http://127.0.0.1:5601  (elastic / elastic)
+```
+
+Install optional deps: `pip install -r requirements-telemetry.txt`. Set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` (backend) and `next-web/.env.local` (Next.js server). Sentry remains optional and independent.
 
 Settings template (`telemetry` section in [`settings.json`](settings.json)): `enabled`, `slow_request_ms`, `client_error_reporting`.
+
+### Metric/span emissions
+
+In-process metrics (counters/gauges/timers) flow `TelemetryCollector` → [`telemetry_bridge`](adapters/observability/telemetry_bridge.py) → OTLP metrics → EDOT collector → Elasticsearch `metrics-*.otel-*` (OTel mapping mode: values land in `metrics.<name>` fields; dimensions are baked into the metric name). Manual spans use `shared.telemetry.get_tracer(__name__)` (no-op when opentelemetry is not installed). Key emissions:
+
+- HTTP: `http.requests`, `http.responses.{status}`, `http.errors`, `http.errors.{status}`, `http.errors.{ExceptionClass}`, `http.slow_requests`, `http.request_ms`, `http.route_ms.{method}.{route}`
+- DB: `db.commits`, `db.queries`, `db.upserts_committed`, `db.queued_writes_flushed`, `db.queued_write_errors`, `db.upsert_anime_batch_ms`
+- Ingestion/coordinator: `ingestion.records_collected`, `ingestion.records_persisted`, `ingestion.failed_providers`, `ingestion.total_ms`, `ingestion.sink_flush_ms`, `coordinator.last_search_records`, `coordinator.last_search_failed`, `coordinator.last_{schedule,season,genre}_records`
+- Startup: `startup.total_ms`, `startup.total_jobs`, `startup.failed_jobs`, `startup.job.{name}_{ms,errors,commits,queries}`
+- Catalog/writes: `catalog.merge`, `catalog.identity.conflict`, `catalog.enrichment.{merges,lookups}`, `anime_write.source.{source}`, `anime_write.persisted`, `anime_write.errors`, `anime_write.persist_records_ms`
+- Downloads: `download.started`, `download.completed`, `download.failed`, `download.active` (gauge), `download.queue_depth` (gauge), `download.enqueue_ms`; span `download.process`
+- Torrents: `torrent.active` (gauge), `torrent.restore_count`, `torrent.reconcile_deleted` (emitted from backend via `LibTorrentRemote`/`DownloadManager`; the torrent sidecar has no OTLP)
+- Playback: `playback.sessions_created`, `playback.active_sessions` (gauge), `playback.session_create_ms`, `playback.segment_resolve_ms`; spans `playback.create_session`, `playback.resolve_segment`
+- FFmpeg: `ffmpeg.transcodes_started`, `ffmpeg.failures`, `ffmpeg.active_sessions` (gauge); span `ffmpeg.transcode`
+
+### Kibana dashboards
+
+Ten dashboards are generated from [`observability/dashboards/build.py`](observability/dashboards/build.py): Overview, HTTP & APM, Client UX, Database, Ingestion, Startup, Playback, Downloads & Torrents, HTTP Errors, Catalog & Writes. Regenerate the bundle with `build.py --offline` (no Kibana needed) and import with `scripts/install-kibana-dashboards.ps1`. See [`observability/README.md`](observability/README.md).
 
 ### Legacy web UI
 
@@ -644,6 +701,7 @@ npm run test:playback-smoke           # Playwright smoke script
 | Torrent file presence | [`application/services/torrent_file_presence.py`](application/services/torrent_file_presence.py) |
 | DB gateway | [`application/services/database_manager.py`](application/services/database_manager.py) |
 | Startup jobs | [`application/services/startup_jobs.py`](application/services/startup_jobs.py) |
+| Library startup sync | [`application/services/library_startup_sync.py`](application/services/library_startup_sync.py) |
 | Playback service | [`application/playback/service.py`](application/playback/service.py) |
 | FFmpeg adapter | [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transcoder.py) |
 | FFmpeg encoder selection | [`adapters/media/ffmpeg_encoder.py`](adapters/media/ffmpeg_encoder.py) |

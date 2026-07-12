@@ -14,6 +14,7 @@ from starlette.responses import Response
 from shared.telemetry import get_telemetry
 
 from .request_context import REQUEST_ID_HEADER, reset_request_id, set_request_id
+from .route_template import route_metric_key, route_template_for_request
 
 _LOG = logging.getLogger("animemanager.http")
 
@@ -40,6 +41,7 @@ def install_telemetry_middleware(app) -> None:
         token = set_request_id(request_id)
         started = time.perf_counter()
         status_code = 500
+        route_template = route_template_for_request(request)
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -54,15 +56,25 @@ def install_telemetry_middleware(app) -> None:
             telemetry.increment("http.requests")
             telemetry.increment(f"http.responses.{status_code}")
             telemetry.record_ms("http.request_ms", elapsed_ms)
+            telemetry.record_ms(route_metric_key(request.method, route_template), elapsed_ms)
             threshold = _slow_request_threshold_ms()
             if elapsed_ms >= threshold:
                 _LOG.warning(
-                    "slow_request request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+                    "slow_request request_id=%s method=%s route=%s path=%s status=%s duration_ms=%.1f",
                     request_id,
                     request.method,
+                    route_template,
                     request.url.path,
                     status_code,
                     elapsed_ms,
+                    extra={
+                        "request_id": request_id,
+                        "http.method": request.method,
+                        "http.route": route_template,
+                        "http.path": request.url.path,
+                        "http.status_code": status_code,
+                        "duration_ms": elapsed_ms,
+                    },
                 )
                 telemetry.increment("http.slow_requests")
             reset_request_id(token)

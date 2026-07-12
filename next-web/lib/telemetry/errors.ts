@@ -1,4 +1,5 @@
 import { ApiError } from "@/lib/api";
+import { captureSentryException } from "@/lib/sentry/capture";
 import { trackEvent } from "@/lib/telemetry/client";
 
 type ErrorContext = Record<string, unknown>;
@@ -51,6 +52,7 @@ export function reportError(error: unknown, context: ErrorContext = {}): void {
     api_detail: detail,
     ...context,
   });
+  captureSentryException(error, context);
 }
 
 export function installGlobalErrorHandlers(): void {

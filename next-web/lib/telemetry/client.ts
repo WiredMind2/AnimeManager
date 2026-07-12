@@ -1,4 +1,5 @@
 import { backendPath } from "@/lib/config";
+import { injectTraceHeaders } from "@/lib/telemetry/trace-context";
 
 export type TelemetryLevel = "debug" | "info" | "warn" | "error";
 
@@ -48,7 +49,11 @@ function flushNow(): void {
   fetch(url, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: (() => {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      injectTraceHeaders(headers);
+      return headers;
+    })(),
     body,
     keepalive: true,
   }).catch(() => {});

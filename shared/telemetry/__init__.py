@@ -8,6 +8,7 @@ in-process :class:`TelemetryCollector` used by the API->DB pipeline.
 from .logger import Logger, log
 from .logger_service import LoggerService, get_default_logger_service
 from .collector import TelemetryCollector, get_telemetry, reset_telemetry
+from .tracer import get_tracer
 
 __all__ = [
     "Logger",
@@ -17,4 +18,5 @@ __all__ = [
     "TelemetryCollector",
     "get_telemetry",
     "reset_telemetry",
+    "get_tracer",
 ]

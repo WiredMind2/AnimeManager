@@ -37,6 +37,7 @@ def test_middleware_propagates_request_id_and_records_latency():
     assert snap["counters"]["http.requests"] == 1.0
     assert snap["counters"]["http.responses.200"] == 1.0
     assert snap["timers"]["http.request_ms"]["count"] == 1.0
+    assert snap["timers"]["http.route_ms.get.ping"]["count"] == 1.0
 
 
 def test_middleware_generates_request_id_when_missing():
