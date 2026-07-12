@@ -1,11 +1,17 @@
 import shutil
 
 try:
-    from clients.tk.dialogs import LoginDialog
     from shared.telemetry.logger import Logger
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
     from AnimeManager.shared.telemetry.logger import Logger  # type: ignore
+
+try:
+    from clients.tk.dialogs import LoginDialog
+except ImportError:  # pragma: no cover - headless / Docker
+    try:
+        from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
+    except ImportError:
+        LoginDialog = None  # type: ignore[assignment,misc]
 
 
 class BaseFileManager(Logger):

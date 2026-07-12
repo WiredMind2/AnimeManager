@@ -34,6 +34,11 @@ class _FakeFM:
     def isfile(self, path: str) -> bool:
         return os.path.isfile(path)
 
+    def delete(self, path: str) -> None:
+        import shutil
+
+        shutil.rmtree(path)
+
 
 class _FakeDB:
     def __init__(self) -> None:
@@ -227,3 +232,22 @@ def test_list_episode_files_skips_invalid_entries(tmp_path, monkeypatch):
     files = adapter.list_episode_files(7)
     assert len(files) == 1
     assert files[0]["path"] == valid_path
+
+
+def test_delete_anime_folder_removes_entire_directory(tmp_path):
+    adapter, _, anime_dir = _build_adapter(tmp_path, [("Episode 01.mkv", "x")])
+    assert anime_dir.exists()
+    assert adapter.delete_anime_folder(7) is True
+    assert not anime_dir.exists()
+
+
+def test_delete_anime_folder_rejects_path_outside_anime_root(tmp_path, monkeypatch):
+    adapter, _, anime_dir = _build_adapter(tmp_path, [("Episode 01.mkv", "x")])
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(adapter._scanner, "resolve_anime_folder", lambda _aid: str(outside))
+
+    assert adapter.delete_anime_folder(7) is False
+    assert outside.exists()
+    assert anime_dir.exists()
