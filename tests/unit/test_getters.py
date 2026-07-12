@@ -214,6 +214,35 @@ class TestGettersInstanceMethods:
                 assert result == mock_instance
 
     @pytest.mark.timeout(30)
+    def test_getDatabase_sqlite_empty_dbpath_falls_back_to_constants_dbpath(self):
+        """Empty SQLite.dbPath in settings should resolve to Constants.dbPath."""
+        import shared.config.getters as getters_mod
+
+        getters_mod._database_instances.clear()
+
+        mock_getters = MagicMock(spec=Getters)
+        mock_getters.dbPath = "/srv/Anime Manager/animeData.db"
+        mock_getters.settings = {
+            "database_managers": {
+                "last_db_used": "SQLite",
+                "SQLite": {"dbPath": ""},
+            }
+        }
+
+        with patch("shared.config.getters.db_managers") as mock_db_managers:
+            mock_db_class = MagicMock()
+            mock_db_managers.databases = {"SQLite": mock_db_class}
+            mock_instance = MagicMock()
+            mock_db_class.return_value = mock_instance
+
+            result = Getters.getDatabase(mock_getters)
+
+            mock_db_class.assert_called_once_with(
+                {"dbPath": "/srv/Anime Manager/animeData.db"}
+            )
+            assert result == mock_instance
+
+    @pytest.mark.timeout(30)
     def test_getTorrents_no_id(self):
         """Test getTorrents without id."""
         mock_getters = MagicMock(spec=Getters)

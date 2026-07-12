@@ -1,0 +1,256 @@
+{
+  "database": {
+    "type": "sqlite",
+    "path": "./data/anime.db"
+  },
+  "ui": {
+    "theme": "default",
+    "language": "en",
+    "window_size": [
+      1200,
+      800
+    ]
+  },
+  "media": {
+    "players_order": [
+      "mpv",
+      "vlc",
+      "ffplay"
+    ],
+    "default_player": "mpv"
+  },
+  "downloads": {
+    "max_concurrent": 3,
+    "default_folder": "./downloads"
+  },
+  "api": {
+    "timeout": 30,
+    "rate_limit": 60
+  },
+  "feature_flags": {
+    "new_ingestion_pipeline": true,
+    "db_gateway_writes_only": true,
+    "strict_download_url_validation": true,
+    "secure_db_bootstrap": true,
+    "batched_db_writes": true
+  },
+  "startup_migrations": {},
+  "api_credentials": {
+    "myanimelist": {
+      "client_id": "",
+      "client_secret": ""
+    }
+  },
+  "file_managers": {
+    "last_fm_used": "Local",
+    "Local": {
+      "dataPath": "/data"
+    },
+    "FTP": {
+      "url": "",
+      "login": "",
+      "password": "",
+      "dataPath": ""
+    }
+  },
+  "torrent_managers": {
+    "last_tm_used": "LibTorrent",
+    "qBittorrent": {
+      "url": "",
+      "login": "",
+      "password": "",
+      "qb_settings": {}
+    },
+    "Transmission": {},
+    "LibTorrent": {}
+  },
+  "UI": {
+    "colors": {
+      "Blue": "#56D8EF",
+      "Gray": "#676760",
+      "Gray2": "#181915",
+      "Gray3": "#282923",
+      "Gray4": "#373734",
+      "Green": "#98E22B",
+      "Orange": "#E79622",
+      "Red": "#F92472",
+      "White": "#F0F0FF"
+    },
+    "dateStates": {
+      "AIRING": {
+        "color": "Orange",
+        "text": "Airing"
+      },
+      "FINISHED": {
+        "color": "Green",
+        "text": "Finished!"
+      },
+      "UNKNOWN": {
+        "color": "Red",
+        "text": "Unknown!"
+      },
+      "UPCOMING": {
+        "color": "Blue",
+        "text": "Upcoming!"
+      }
+    },
+    "fileMarkers": {
+      "Green": [
+        ".*\\Wdual.*",
+        ".*\\Wdub\\W.*"
+      ],
+      "Red": [
+        ".*\\Wunc.*"
+      ]
+    },
+    "tagcolors": {
+      "NONE": "White",
+      "SEEN": "Green",
+      "WATCHING": "Orange",
+      "WATCHLIST": "Blue"
+    },
+    "torrentsStateColors": {
+      "COMPLETE": "Green",
+      "DOWNLOADING": "Orange",
+      "UNKNOWN": "Gray4",
+      "DELETED": "White",
+      "NOT_FOUND": "Red"
+    }
+  },
+  "anime": {
+    "animePerRow": 4,
+    "animePerPage": 48,
+    "apiHost": "kitsu.io",
+    "hideRated": true,
+    "maxTimeout": 30,
+    "scheduleTimeout": 86400,
+    "lastSchedule": 0,
+    "scheduleRecencyDays": 90,
+    "enrichCatalogLimit": 200,
+    "maxTrendingAnime": 50,
+    "topPublishers": [
+      "SubsPlease",
+      "SSA",
+      "LostYears",
+      "HorribleSubs",
+      "Judas",
+      "EMBER",
+      "HorribleRips",
+      "Erai-raws"
+    ]
+  },
+  "logs": {
+    "logBracketWidth": 13,
+    "logs": [
+      "DB_ERROR",
+      "MAIN_STATE",
+      "NETWORK",
+      "SERVER",
+      "SETTINGS",
+      "TIME",
+      "THREAD",
+      "DISK_ERROR",
+      "NETWORK_DATA",
+      "DB_UPDATE"
+    ],
+    "maxLogsSize": 50000
+  },
+  "paths": {
+    "cache": "",
+    "iconPath": "",
+    "logsPath": ""
+  },
+  "database_managers": {
+    "last_db_used": "SQLite",
+    "EmbeddedMariaDB": {
+      "database": "",
+      "password": "",
+      "port": 3307,
+      "user": "",
+      "relaxed_durability": true,
+      "innodb_flush_log_at_trx_commit": 2,
+      "innodb_buffer_pool_size": "256M"
+    },
+    "MySQL": {
+      "host": "",
+      "user": "",
+      "password": "",
+      "database": ""
+    },
+    "SQLite": {
+      "dbPath": ""
+    }
+  },
+  "phoneSyncServer": {
+    "enableServer": false,
+    "hostName": "0.0.0.0",
+    "serverPort": 8081
+  },
+  "player": {
+    "playerKeyBindings": {
+      "Alt": {
+        "Down": "subTrackBack",
+        "Left": "chapterBack",
+        "Right": "chapterNext",
+        "Up": "subTrackNext"
+      },
+      "Ctrl": {
+        "Down": "audioTrackBack",
+        "Left": "timeBack - 60",
+        "Right": "timeForward - 60",
+        "Up": "audioTrackNext"
+      },
+      "None": {
+        "Down": "volumeDown - 10",
+        "Left": "timeBack - 10",
+        "Right": "timeForward - 10",
+        "Up": "volumeUp - 10",
+        "f": "toggleFullscreen",
+        "h": "toggle_iconify",
+        "space": "togglePause"
+      },
+      "Shift": {
+        "Left": "playlistBack",
+        "Right": "playlistNext"
+      }
+    },
+    "playerOrder": [
+      "mpv_player",
+      "vlc_player",
+      "ff_player"
+    ]
+  },
+  "windows": {
+    "characterWindowWindowMinHeight": 300,
+    "characterWindowWindowMinWidth": 300,
+    "characterListWindowMinHeight": 500,
+    "characterListWindowMinWidth": 1000,
+    "diskWindowMinHeight": 300,
+    "diskWindowMinWidth": 700,
+    "infoWindowMinHeight": 0,
+    "infoWindowMinWidth": 1000,
+    "mainWindowHeight": 500,
+    "mainWindowTitle": "Anime Manager - Browser",
+    "mainWindowWidth": 920,
+    "publisherDDLWindowMinHeight": 410,
+    "publisherDDLWindowMinWidth": 250,
+    "searchTermsWindowMinHeight": 750,
+    "searchTermsWindowMinWidth": 1000,
+    "seasonSelectorMinHeight": 750,
+    "seasonSelectorMinWidth": 750,
+    "settingsWindowMinHeight": 400,
+    "settingsWindowMinWidth": 600,
+    "torrentDDLWindowMinHeight": 500,
+    "torrentDDLWindowMinWidth": 1500,
+    "torrentFilesWindowMinHeight": 500,
+    "torrentFilesWindowMinWidth": 1500
+  },
+  "telemetry": {
+    "enabled": true,
+    "slow_request_ms": 2000,
+    "client_error_reporting": true
+  },
+  "playback": {
+    "video_encoder": "libx264"
+  }
+}

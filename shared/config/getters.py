@@ -15,7 +15,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import requests
-from PIL import Image, ImageTk
+from PIL import Image
+
+try:
+    from PIL import ImageTk
+except ImportError:  # pragma: no cover - headless / Docker
+    ImageTk = None  # type: ignore[assignment,misc]
 
 from shared.utils.broadcast_schedule import (
     latest_episode_label,
@@ -174,7 +179,9 @@ class Getters:
         if db is None:
             raise ModuleNotFoundError(f"Database manager {db_name} was not found")
 
-        args = self.settings["database_managers"].get(db_name, {})
+        args = dict(self.settings["database_managers"].get(db_name, {}))
+        if db_name == "SQLite" and not str(args.get("dbPath", "")).strip():
+            args["dbPath"] = getattr(self, "dbPath", "")
 
         # Reuse a single DB manager instance per db backend to keep
         # connection lifecycle and locks coherent across components/wrappers.

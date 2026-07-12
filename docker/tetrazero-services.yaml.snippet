@@ -1,0 +1,24 @@
+# Copy into /home/william/TetrazeroDashboard/services.yaml on tetrazero.
+# Then: python proxy/generate_caddyfile.py && cd proxy && docker compose up -d
+
+  animemanager:
+    label: AnimeManager
+    path: /home/william/AnimeManager
+    compose_files: [docker-compose.yml]
+    autostart: true
+    startup_order: 10
+    port: 3010
+    hostname: anime.tetrazero.com
+    group: apps
+    notes: Docker app stack; requires tetrazero-observability network
+
+  observability:
+    label: Observability (Elastic)
+    path: /home/william/tetrazero-observability
+    compose_files: [docker-compose.yml]
+    autostart: true
+    startup_order: 5
+    port: 5601
+    hostname: observability.tetrazero.com
+    group: infrastructure
+    notes: Shared ES/Kibana/OTLP; Kibana on 127.0.0.1:5601

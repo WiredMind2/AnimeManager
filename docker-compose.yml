@@ -1,0 +1,201 @@
+name: animemanager
+
+
+
+networks:
+
+  app:
+
+    driver: bridge
+
+  observability:
+
+    external: true
+
+    name: tetrazero-observability
+
+
+
+services:
+
+  torrent:
+
+    build:
+
+      context: .
+
+      dockerfile: Dockerfile.torrent
+
+    env_file: .env
+
+    networks: [app]
+
+    environment:
+
+      LIBTORRENT_DATA_PATH: /data
+
+      LIBTORRENT_DAEMON_TOKEN: ${LIBTORRENT_DAEMON_TOKEN:-changeme}
+
+      LIBTORRENT_LISTEN_PORT: "6881"
+
+    volumes:
+
+      - ${LIBRARY_PATH:-./data/library}:/data
+
+    expose:
+
+      - "8090"
+
+    restart: unless-stopped
+
+    healthcheck:
+
+      test:
+
+        [
+
+          "CMD-SHELL",
+
+          "curl -fsS http://127.0.0.1:8090/health | grep -q ready",
+
+        ]
+
+      interval: 15s
+
+      timeout: 5s
+
+      start_period: 90s
+
+      retries: 5
+
+
+
+  backend:
+
+    build:
+
+      context: .
+
+      dockerfile: Dockerfile.backend
+
+    env_file: .env
+
+    networks: [app, observability]
+
+    environment:
+
+      ANIMEMANAGER_APPDATA: ${ANIMEMANAGER_APPDATA:-/srv/Anime Manager}
+
+      WEB_FRONTEND_URL: ${APP_URL:-http://localhost:3000}
+
+      LIBTORRENT_DAEMON_URL: http://torrent:8090
+
+      LIBTORRENT_DAEMON_TOKEN: ${LIBTORRENT_DAEMON_TOKEN:-changeme}
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+
+      OTEL_SERVICE_NAME: animemanager-http
+
+      OTEL_METRICS_EXPORT_INTERVAL_MS: ${OTEL_METRICS_EXPORT_INTERVAL_MS:-15000}
+
+      OTEL_LOG_LEVEL: ${OTEL_LOG_LEVEL:-INFO}
+
+      SENTRY_DSN: ${SENTRY_DSN:-}
+
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+
+      SENTRY_PROFILE_SESSION_SAMPLE_RATE: ${SENTRY_PROFILE_SESSION_SAMPLE_RATE:-0}
+
+    volumes:
+
+      - animemanager-data:${ANIMEMANAGER_APPDATA:-/srv/Anime Manager}
+
+      - ${LIBRARY_PATH:-./data/library}:/data
+
+    expose:
+
+      - "8081"
+
+    depends_on:
+
+      torrent:
+
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    healthcheck:
+
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health || exit 1"]
+
+      interval: 15s
+
+      timeout: 5s
+
+      start_period: 60s
+
+      retries: 5
+
+
+
+  web:
+
+    build:
+
+      context: ./next-web
+
+      dockerfile: Dockerfile
+
+      args:
+
+        NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:3000}
+
+        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+
+        NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE:-0.1}
+
+        NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+
+    env_file: .env
+
+    networks: [app, observability]
+
+    ports:
+
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+
+    environment:
+
+      BACKEND_URL: http://backend:8081
+
+      NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:3000}
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+
+      OTEL_SERVICE_NAME: animemanager-next-web
+
+      OTEL_LOG_LEVEL: ${OTEL_LOG_LEVEL:-INFO}
+
+      NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+
+      NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE:-0.1}
+
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+
+    depends_on:
+
+      backend:
+
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
+
+volumes:
+
+  animemanager-data:
+
+
