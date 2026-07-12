@@ -16,6 +16,7 @@ export type AmPlaybackSubtitlesApi = {
   disposeOctopus: (inst: { dispose?: () => void } | null) => void;
   createShakaTextDisplayFactory: () => (player: ShakaPlayerForTextDisplay) => unknown;
   installAssTextBridge: (video: HTMLVideoElement) => void;
+  disposeSubtitleAutohideGuard: (video: HTMLVideoElement | null | undefined) => void;
 };
 
 /** Minimal Shaka player surface used by the text-display factory (4.10+). */
@@ -65,17 +66,151 @@ function supportsLibass(): boolean {
   );
 }
 
+const SUBTITLE_OVERLAY_SELECTOR = ".shaka-text-container, .libassjs-canvas-parent";
+
+function ensureNoAutohide(el: HTMLElement | null | undefined): void {
+  if (!el || el.hasAttribute("noautohide")) return;
+  el.setAttribute("noautohide", "");
+}
+
+function markSubtitleOverlaysNoAutohide(root: ParentNode | null | undefined): void {
+  if (!root) return;
+  root.querySelectorAll<HTMLElement>(SUBTITLE_OVERLAY_SELECTOR).forEach(ensureNoAutohide);
+}
+
+type SubtitleAutohideGuard = {
+  disconnect: () => void;
+};
+
+function installSubtitleAutohideGuard(video: HTMLVideoElement): SubtitleAutohideGuard | null {
+  const controller =
+    (video.closest?.(".watch-view__controller") as HTMLElement | null) ??
+    (video.closest?.("media-controller") as HTMLElement | null);
+  if (!controller) return null;
+
+  markSubtitleOverlaysNoAutohide(controller);
+
+  const observer = new MutationObserver(() => {
+    markSubtitleOverlaysNoAutohide(controller);
+  });
+  observer.observe(controller, { childList: true, subtree: true });
+
+  return {
+    disconnect() {
+      observer.disconnect();
+    },
+  };
+}
+
 type LibassOctopusInstance = {
   dispose?: () => void;
   canvasParent?: HTMLElement;
   canvas?: HTMLCanvasElement;
   setCurrentTime?: (t: number) => void;
-  resize?: () => void;
+  resize?: (...args: unknown[]) => void;
+  resizeWithTimeout?: () => void;
   lastRenderTime?: number;
-  video?: HTMLVideoElement;
+  video?: HTMLVideoElement | null;
   timeOffset?: number;
+  __amDisposed?: boolean;
+  __amResizeTimer?: ReturnType<typeof setTimeout> | null;
   __amSyncCleanup?: () => void;
 };
+
+const VIDEO_LAYOUT_WAIT_MS = 3000;
+
+function hasVideoLayout(video: HTMLVideoElement): boolean {
+  return video.offsetWidth > 0 && video.offsetHeight > 0 && video.videoWidth > 0;
+}
+
+function waitForVideoLayout(
+  video: HTMLVideoElement,
+  timeoutMs = VIDEO_LAYOUT_WAIT_MS,
+): Promise<boolean> {
+  if (hasVideoLayout(video)) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let ro: ResizeObserver | null = null;
+
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      video.removeEventListener("loadedmetadata", onLayoutEvent);
+      video.removeEventListener("loadeddata", onLayoutEvent);
+      ro?.disconnect();
+      if (timer != null) clearTimeout(timer);
+      resolve(ok);
+    };
+
+    const onLayoutEvent = () => {
+      if (hasVideoLayout(video)) {
+        finish(true);
+      }
+    };
+
+    video.addEventListener("loadedmetadata", onLayoutEvent);
+    video.addEventListener("loadeddata", onLayoutEvent);
+
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(onLayoutEvent);
+      ro.observe(video);
+    }
+
+    timer = setTimeout(() => finish(hasVideoLayout(video)), timeoutMs);
+  });
+}
+
+function clearOctopusResizeTimer(inst: LibassOctopusInstance): void {
+  if (inst.__amResizeTimer != null) {
+    clearTimeout(inst.__amResizeTimer);
+    inst.__amResizeTimer = null;
+  }
+}
+
+function guardOctopusResize(inst: LibassOctopusInstance): void {
+  const originalResize = inst.resize?.bind(inst);
+  if (!originalResize) return;
+
+  inst.resize = (...args: unknown[]) => {
+    if (inst.__amDisposed) return;
+    if (!inst.video) return;
+
+    const width = args[0] as number | undefined;
+    const height = args[1] as number | undefined;
+    if ((!width || !height) && !hasVideoLayout(inst.video)) {
+      return;
+    }
+
+    try {
+      originalResize(...args);
+    } catch {
+      /* ignore resize failures during layout transitions */
+    }
+  };
+
+  inst.resizeWithTimeout = () => {
+    if (inst.__amDisposed) return;
+    clearOctopusResizeTimer(inst);
+    inst.resize?.();
+    inst.__amResizeTimer = setTimeout(() => {
+      inst.__amResizeTimer = null;
+      if (!inst.__amDisposed) {
+        inst.resize?.();
+      }
+    }, 100);
+  };
+}
+
+function silenceOctopusResize(inst: LibassOctopusInstance): void {
+  clearOctopusResizeTimer(inst);
+  const noop = () => {};
+  inst.resize = noop;
+  inst.resizeWithTimeout = noop;
+}
 
 function bindOctopusVideoSync(inst: LibassOctopusInstance, video: HTMLVideoElement) {
   const syncTime = () => {
@@ -85,40 +220,32 @@ function bindOctopusVideoSync(inst: LibassOctopusInstance, video: HTMLVideoEleme
       /* ignore */
     }
   };
+  const onSeeked = () => {
+    syncTime();
+  };
   const onPlaying = () => {
-    syncOctopusAfterReady(inst, video);
+    syncTime();
+  };
+  const onLoadedData = () => {
+    if (!inst.__amDisposed) {
+      inst.resize?.();
+    }
+  };
+  const onSeeking = () => {
     syncTime();
   };
   video.addEventListener("timeupdate", syncTime);
-  video.addEventListener("seeked", syncTime);
+  video.addEventListener("seeking", onSeeking);
+  video.addEventListener("seeked", onSeeked);
   video.addEventListener("playing", onPlaying);
+  video.addEventListener("loadeddata", onLoadedData);
   inst.__amSyncCleanup = () => {
     video.removeEventListener("timeupdate", syncTime);
-    video.removeEventListener("seeked", syncTime);
+    video.removeEventListener("seeking", onSeeking);
+    video.removeEventListener("seeked", onSeeked);
     video.removeEventListener("playing", onPlaying);
+    video.removeEventListener("loadeddata", onLoadedData);
   };
-}
-
-function syncOctopusAfterReady(inst: LibassOctopusInstance, video: HTMLVideoElement) {
-  try {
-    inst.resize?.();
-  } catch {
-    /* ignore */
-  }
-  try {
-    inst.setCurrentTime?.(Number(video.currentTime || 0));
-  } catch {
-    /* ignore */
-  }
-  const parent = inst.canvasParent;
-  if (parent?.style) {
-    parent.style.position = "absolute";
-    parent.style.inset = "0";
-    parent.style.width = "100%";
-    parent.style.height = "100%";
-    parent.style.pointerEvents = "none";
-    parent.style.visibility = "visible";
-  }
 }
 
 async function startLibassOctopus(
@@ -129,6 +256,11 @@ async function startLibassOctopus(
   if (!supportsLibass()) return null;
   const absoluteAssUrl = toAbsoluteUrl(assUrl);
   try {
+    const layoutReady = await waitForVideoLayout(video);
+    if (!layoutReady) {
+      return null;
+    }
+
     let subContent: string;
     try {
       const resp = await fetch(absoluteAssUrl, { credentials: "include" });
@@ -151,13 +283,15 @@ async function startLibassOctopus(
       legacyWorkerUrl: libassAsset("subtitles-octopus-worker-legacy.js"),
       fallbackFont: libassAsset("default.woff2"),
       onReady: () => {
-        syncOctopusAfterReady(inst as LibassOctopusInstance, video);
+        if (inst.__amDisposed) return;
+        ensureNoAutohide((inst as LibassOctopusInstance).canvasParent ?? null);
         bindOctopusVideoSync(inst as LibassOctopusInstance, video);
         try {
           inst.setCurrentTime?.(Number(video.currentTime || 0));
         } catch {
           /* ignore */
         }
+        inst.resize?.();
       },
       onError:
         onError ||
@@ -165,6 +299,8 @@ async function startLibassOctopus(
           console.error("[AnimeManager libass]", err);
         }),
     }) as LibassOctopusInstance;
+    guardOctopusResize(inst);
+    ensureNoAutohide(inst.canvasParent ?? null);
     return inst as unknown as { dispose: () => void; canvasParent?: HTMLElement };
   } catch (e) {
     onError?.(e);
@@ -172,13 +308,12 @@ async function startLibassOctopus(
   }
 }
 
-function disposeOctopus(inst: { dispose?: () => void; __amSyncCleanup?: () => void } | null) {
+function disposeOctopus(inst: LibassOctopusInstance | null) {
   if (!inst) return;
-  try {
-    inst.__amSyncCleanup?.();
-  } catch {
-    /* ignore */
-  }
+  inst.__amDisposed = true;
+  clearOctopusResizeTimer(inst);
+  inst.__amSyncCleanup?.();
+  silenceOctopusResize(inst);
   if (!inst.dispose) return;
   try {
     inst.dispose();
@@ -250,6 +385,22 @@ function buildAssTextBridge(video: HTMLVideoElement): ShakaTextBridge {
 
 function installAssTextBridge(video: HTMLVideoElement): void {
   buildAssTextBridge(video);
+  disposeSubtitleAutohideGuard(video);
+  const guard = installSubtitleAutohideGuard(video);
+  if (guard) {
+    (video as HTMLVideoElement & { __amSubtitleAutohideGuard?: SubtitleAutohideGuard }).__amSubtitleAutohideGuard =
+      guard;
+  }
+}
+
+function disposeSubtitleAutohideGuard(video: HTMLVideoElement | null | undefined): void {
+  const guard = (video as HTMLVideoElement & { __amSubtitleAutohideGuard?: SubtitleAutohideGuard })
+    ?.__amSubtitleAutohideGuard;
+  guard?.disconnect();
+  if (video) {
+    delete (video as HTMLVideoElement & { __amSubtitleAutohideGuard?: SubtitleAutohideGuard })
+      .__amSubtitleAutohideGuard;
+  }
 }
 
 function createShakaTextDisplayFactory() {
@@ -328,6 +479,7 @@ export const AmPlaybackSubtitles: AmPlaybackSubtitlesApi = {
   disposeOctopus,
   createShakaTextDisplayFactory,
   installAssTextBridge,
+  disposeSubtitleAutohideGuard,
 };
 
 export function installSubtitleBridge(): void {

@@ -26,6 +26,13 @@ import {
 } from "@/lib/playback/session-api";
 import { shouldStopSession } from "@/lib/playback/session-guard";
 import {
+  isSeekRecoverableShakaError,
+  MAX_SEEK_RECOVERY_ATTEMPTS,
+  performSeek,
+  SEEK_DEBOUNCE_MS,
+  SEEK_RECOVERY_DELAY_MS,
+} from "@/lib/playback/seek";
+import {
   buildShakaConfig,
   createShakaPlayer,
   loadStartTimeFromPayload,
@@ -117,6 +124,15 @@ export function usePlayback(
   const lastBufferingDiagnosticAtRef = useRef(0);
   const startupStallReportedRef = useRef(false);
   const shakaAttachInProgressRef = useRef(false);
+  const manifestUrlRef = useRef("");
+  const pendingSeekTargetRef = useRef<number | null>(null);
+  const isSeekingRef = useRef(false);
+  const seekRecoveryAttemptsRef = useRef(0);
+  const seekRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seekFromUserRef = useRef(false);
+  const recoverFromSeekFailureRef = useRef<
+    (reason: string, targetSeconds: number) => boolean
+  >(() => false);
   const progressReporterRef = useRef(createProgressReporter(animeId));
 
   const anchorProgressOpts = useCallback(
@@ -235,9 +251,116 @@ export function usePlayback(
     postEpisodeProgress("IN_PROGRESS", t);
   }, [postEpisodeProgress, videoRef, videoTimeToSourceSeconds]);
 
+  const sanitizeTimeline = useCallback((video: HTMLVideoElement, expectedSeconds?: number) => {
+    const knownDuration = streamDurationRef.current;
+    if (!knownDuration || knownDuration <= 0) return;
+    const dur = video.duration;
+    const t = video.currentTime;
+    const expected = expectedSeconds ?? t;
+    const durationAbsurd = Number.isFinite(dur) && dur > knownDuration * 1.2;
+    const timeAbsurd = Number.isFinite(t) && t > knownDuration * 1.2;
+    const wrongEndWhenStartingFromZero =
+      expected <= 0.05 && Number.isFinite(t) && t > knownDuration * 0.85;
+    if (durationAbsurd || timeAbsurd || wrongEndWhenStartingFromZero) {
+      const corrected = expected <= 0.05 ? 0 : Math.min(expected, knownDuration - 1);
+      video.currentTime = corrected;
+      playerLoggerRef.current?.log("warn", "timeline_sanity_seek", {
+        reported_duration: dur,
+        reported_current_time: t,
+        expected_start: expected,
+        known_duration: knownDuration,
+        wrong_end: wrongEndWhenStartingFromZero,
+      });
+    }
+  }, []);
+
+  const recoverFromSeekFailure = useCallback(
+    (reason: string, targetSeconds: number): boolean => {
+      if (seekRecoveryAttemptsRef.current >= MAX_SEEK_RECOVERY_ATTEMPTS) {
+        return false;
+      }
+      if (seekRecoveryTimerRef.current) {
+        return false;
+      }
+      const player = shakaPlayerRef.current;
+      const manifestUrl = manifestUrlRef.current;
+      if (!player || !manifestUrl) {
+        return false;
+      }
+
+      seekRecoveryAttemptsRef.current += 1;
+      playerLoggerRef.current?.log("warn", "seek_recovery_scheduled", {
+        reason,
+        target_seconds: targetSeconds,
+        attempt: seekRecoveryAttemptsRef.current,
+      });
+
+      seekRecoveryTimerRef.current = setTimeout(() => {
+        seekRecoveryTimerRef.current = null;
+        void (async () => {
+          try {
+            explicitPlaybackErrorRef.current = null;
+            setError("");
+            setStatus("Recovering after seek…");
+            await player.load(manifestUrl, targetSeconds);
+            seekRecoveryAttemptsRef.current = 0;
+            pendingSeekTargetRef.current = targetSeconds;
+            isSeekingRef.current = false;
+            setStatus("Playing");
+            playerLoggerRef.current?.log("info", "seek_recovery_ok", {
+              reason,
+              target_seconds: targetSeconds,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            playerLoggerRef.current?.log("error", "seek_recovery_failed", {
+              reason,
+              target_seconds: targetSeconds,
+              error: message,
+              attempt: seekRecoveryAttemptsRef.current,
+            });
+            if (seekRecoveryAttemptsRef.current >= MAX_SEEK_RECOVERY_ATTEMPTS) {
+              setError("Playback error after seek. Please retry.");
+              setStatus("Playback error.");
+            }
+          }
+        })();
+      }, SEEK_RECOVERY_DELAY_MS);
+      return true;
+    },
+    [setStatus],
+  );
+
+  recoverFromSeekFailureRef.current = recoverFromSeekFailure;
+
+  const seekTo = useCallback(
+    async (targetSeconds: number) => {
+      const video = videoRef.current;
+      const player = shakaPlayerRef.current;
+      if (!video) return;
+      let safeTarget = Math.max(0, targetSeconds);
+      const max = streamDurationRef.current;
+      if (max && max > 0) {
+        safeTarget = Math.min(safeTarget, max - 0.5);
+      }
+      pendingSeekTargetRef.current = safeTarget;
+      isSeekingRef.current = true;
+      savePosition();
+      setStatus("Seeking…");
+      seekFromUserRef.current = true;
+      try {
+        await performSeek(player, video, safeTarget);
+      } finally {
+        seekFromUserRef.current = false;
+      }
+    },
+    [savePosition, setStatus, videoRef],
+  );
+
   const destroyPlayer = useCallback(async () => {
     AmPlaybackSubtitles.disposeOctopus(subtitleStateRef.current.libassInst);
     subtitleStateRef.current.libassInst = null;
+    AmPlaybackSubtitles.disposeSubtitleAutohideGuard(videoRef.current);
     if (panelRef.current) {
       (panelRef.current as HTMLElement & { __amLibassOctopus?: unknown }).__amLibassOctopus =
         null;
@@ -419,6 +542,8 @@ export function usePlayback(
       if (abortIfStale("after_session_create")) return;
 
       const manifestUrl = resolveBackendUrl(payload.manifest_url);
+      manifestUrlRef.current = manifestUrl;
+      seekRecoveryAttemptsRef.current = 0;
       const playbackStartSeconds = Number(payload.playback_start_seconds ?? 0);
       const hlsAnchorSegment = Math.max(0, Number(payload.hls_anchor_segment ?? 0));
       const segmentSeconds = Math.max(1, Number(payload.segment_seconds ?? 4));
@@ -485,6 +610,14 @@ export function usePlayback(
                     String(response.uri || "").includes("index.m3u8")
                   ) {
                     scheduleStaleSessionRecoveryRef.current("manifest_404");
+                  } else if (
+                    response.code === 404 &&
+                    /segment_\d+\.ts/.test(String(response.uri || ""))
+                  ) {
+                    const video = videoRef.current;
+                    const target =
+                      pendingSeekTargetRef.current ?? Number(video?.currentTime ?? 0);
+                    recoverFromSeekFailureRef.current("segment_404", target);
                   }
                 }
               },
@@ -531,6 +664,21 @@ export function usePlayback(
           const detail = event.detail;
           const plain = shakaErrorToPlain(shaka, detail);
           const errData = Array.isArray(detail?.data) ? detail.data : [];
+          if (
+            (isSeekingRef.current || pendingSeekTargetRef.current != null) &&
+            isSeekRecoverableShakaError(detail)
+          ) {
+            const target =
+              pendingSeekTargetRef.current ??
+              Number(videoRef.current?.currentTime ?? 0);
+            if (recoverFromSeekFailureRef.current("shaka_error", target)) {
+              playerLoggerRef.current?.log("warn", "shaka_seek_error_recovery", {
+                ...plain,
+                segment_uri: errData[2] != null ? String(errData[2]) : null,
+              });
+              return;
+            }
+          }
           playerLoggerRef.current?.log("error", "shaka_player_error", {
             ...plain,
             ...playerFaultFields("playback_runtime_error", "shaka_error_event", false),
@@ -557,26 +705,7 @@ export function usePlayback(
 
         const expectedStart = loadStartTime ?? 0;
         if (knownDuration > 0) {
-          const dur = video.duration;
-          const t = video.currentTime;
-          const durationAbsurd =
-            Number.isFinite(dur) && dur > knownDuration * 1.2;
-          const timeAbsurd =
-            Number.isFinite(t) && t > knownDuration * 1.2;
-          const wrongEndWhenStartingFromZero =
-            expectedStart <= 0.05 &&
-            Number.isFinite(t) &&
-            t > knownDuration * 0.85;
-          if (durationAbsurd || timeAbsurd || wrongEndWhenStartingFromZero) {
-            video.currentTime = expectedStart;
-            playerLoggerRef.current?.log("warn", "timeline_sanity_seek", {
-              reported_duration: dur,
-              reported_current_time: t,
-              expected_start: expectedStart,
-              known_duration: knownDuration,
-              wrong_end: wrongEndWhenStartingFromZero,
-            });
-          }
+          sanitizeTimeline(video, expectedStart);
         }
 
         shakaPlayerRef.current = player;
@@ -666,6 +795,7 @@ export function usePlayback(
       markLoadPhase,
       panelRef,
       postEpisodeProgress,
+      sanitizeTimeline,
       setStatus,
       stopSession,
       videoRef,
@@ -727,6 +857,44 @@ export function usePlayback(
   );
 
   scheduleStaleSessionRecoveryRef.current = scheduleStaleSessionRecovery;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const onSeeking = () => {
+      if (seekFromUserRef.current) return;
+      const target = Number(video.currentTime || 0);
+      pendingSeekTargetRef.current = target;
+      isSeekingRef.current = true;
+      savePosition();
+      setStatus("Seeking…");
+
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        const player = shakaPlayerRef.current;
+        void performSeek(player, video, target).catch(() => {});
+      }, SEEK_DEBOUNCE_MS);
+    };
+
+    const onSeeked = () => {
+      isSeekingRef.current = false;
+      seekRecoveryAttemptsRef.current = 0;
+      sanitizeTimeline(video, pendingSeekTargetRef.current ?? undefined);
+      setStatus(video.paused ? "Paused" : "Playing");
+    };
+
+    video.addEventListener("seeking", onSeeking);
+    video.addEventListener("seeked", onSeeked);
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      video.removeEventListener("seeking", onSeeking);
+      video.removeEventListener("seeked", onSeeked);
+    };
+  }, [sanitizeTimeline, savePosition, setStatus, videoRef]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -828,6 +996,10 @@ export function usePlayback(
   useEffect(() => {
     return () => {
       savePosition();
+      if (seekRecoveryTimerRef.current) {
+        clearTimeout(seekRecoveryTimerRef.current);
+        seekRecoveryTimerRef.current = null;
+      }
       if (activeLoadGenerationRef.current !== null) {
         playerLoggerRef.current?.log("info", "session_stop_skipped", {
           reason: "unmount_during_active_load",
@@ -882,6 +1054,7 @@ export function usePlayback(
     queueReplayCurrent,
     loadPlayback,
     stopSession,
+    seekTo,
     streamDurationSeconds,
     playbackStartSeconds,
   };

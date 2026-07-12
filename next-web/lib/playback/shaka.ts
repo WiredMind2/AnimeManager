@@ -12,7 +12,7 @@ export function buildShakaConfig(resume: boolean): Record<string, unknown> {
         baseDelay: 800,
         backoffFactor: 1.6,
         fuzzFactor: 0.4,
-        timeout: 30000,
+        timeout: 45000,
       },
     },
     manifest: {
@@ -30,6 +30,8 @@ export function buildShakaConfig(resume: boolean): Record<string, unknown> {
 
 export function loadStartTimeFromPayload(payload: {
   playback_start_seconds?: number;
+  hls_anchor_segment?: number;
+  segment_seconds?: number;
 }): number | undefined {
   const start = Number(payload.playback_start_seconds ?? 0);
   return Number.isFinite(start) && start > 0 ? start : undefined;

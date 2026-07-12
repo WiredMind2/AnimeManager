@@ -12,7 +12,7 @@ export function clampPlaybackSeconds(seconds: number, maxSeconds?: number | null
   return seconds;
 }
 
-/** Map ``video.currentTime`` to absolute source seconds for anchored HLS windows. */
+/** Map ``video.currentTime`` to absolute source seconds. */
 export function toAbsoluteSourceSeconds(
   videoSeconds: number,
   opts: {
@@ -21,16 +21,9 @@ export function toAbsoluteSourceSeconds(
     maxSeconds?: number | null;
   },
 ): number {
-  const anchor = Math.max(0, Number(opts.hlsAnchorSegment ?? 0));
-  const segSecs = Math.max(1, Number(opts.segmentSeconds ?? 4));
   const t = Number(videoSeconds || 0);
   if (!Number.isFinite(t) || t < 0) return 0;
-  if (anchor <= 0) {
-    return clampPlaybackSeconds(t, opts.maxSeconds);
-  }
-  const anchorSource = anchor * segSecs;
-  const absolute = t >= anchorSource - 1 ? t : anchorSource + t;
-  return clampPlaybackSeconds(absolute, opts.maxSeconds);
+  return clampPlaybackSeconds(t, opts.maxSeconds);
 }
 
 export function saveLocalPosition(

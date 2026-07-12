@@ -100,6 +100,7 @@ declare global {
       disposeOctopus: (inst: { dispose?: () => void } | null) => void;
       createShakaTextDisplayFactory: () => unknown;
       installAssTextBridge: (video: HTMLVideoElement) => void;
+      disposeSubtitleAutohideGuard: (video: HTMLVideoElement | null | undefined) => void;
     };
   }
 }

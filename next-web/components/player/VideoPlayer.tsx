@@ -27,6 +27,7 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
     queueReplayCurrent,
     streamDurationSeconds,
     playbackStartSeconds,
+    seekTo,
   } = session;
 
   // MSE/HLS can report UINT32-scale durations when segment PTS is wrong.
@@ -52,7 +53,11 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         controller.mediaDuration = streamDurationSeconds;
       }
       if (durationAbsurd || timeAbsurd) {
-        controller.mediaCurrentTime = playbackStartSeconds > 0 ? playbackStartSeconds : 0;
+        controller.mediaCurrentTime = Number.isFinite(reportedTime)
+          ? reportedTime
+          : playbackStartSeconds > 0
+            ? playbackStartSeconds
+            : 0;
       }
     };
 
@@ -83,10 +88,10 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         else video.pause();
       } else if (ev.key === "ArrowLeft") {
         ev.preventDefault();
-        video.currentTime = Math.max(0, (video.currentTime || 0) - 10);
+        void seekTo(Math.max(0, (video.currentTime || 0) - 10));
       } else if (ev.key === "ArrowRight") {
         ev.preventDefault();
-        video.currentTime = (video.currentTime || 0) + 10;
+        void seekTo((video.currentTime || 0) + 10);
       } else if (ev.key === "m") {
         ev.preventDefault();
         video.muted = !video.muted;
@@ -108,7 +113,7 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         }
       }
     },
-    [videoRef, panelRef],
+    [videoRef, panelRef, seekTo],
   );
 
   return (
