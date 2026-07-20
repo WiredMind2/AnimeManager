@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+
+FROM python:3.11-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    ANIMEMANAGER_APPDATA="/srv/Anime Manager" \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-runtime.txt requirements-telemetry.txt ./
+RUN pip install -r requirements-runtime.txt \
+    && pip install -r requirements-telemetry.txt
+
+COPY . .
+
+RUN sed -i 's/\r$//' docker/entrypoint-backend.sh \
+    && chmod +x docker/entrypoint-backend.sh
+
+EXPOSE 8081
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
+    CMD curl -fsS "http://127.0.0.1:8081/health" || exit 1
+
+ENTRYPOINT ["/bin/bash", "/app/docker/entrypoint-backend.sh"]

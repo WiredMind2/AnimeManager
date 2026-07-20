@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+
+FROM python:3.11-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LIBTORRENT_DATA_PATH=/data \
+    PYTHONPATH=/usr/lib/python3/dist-packages:/app
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        python3-libtorrent \
+        libtorrent-rasterbar2.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-runtime.txt requirements-torrent.txt ./
+RUN pip install -r requirements-runtime.txt \
+    && python -c "import libtorrent as lt; print('libtorrent', lt.__version__)"
+
+COPY . .
+
+RUN sed -i 's/\r$//' docker/entrypoint-torrent.sh \
+    && chmod +x docker/entrypoint-torrent.sh \
+    && python -c "import libtorrent"
+
+EXPOSE 8090
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \
+    CMD curl -fsS "http://127.0.0.1:8090/health" | grep -q ready || exit 1
+
+ENTRYPOINT ["/bin/bash", "/app/docker/entrypoint-torrent.sh"]
