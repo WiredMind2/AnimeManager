@@ -175,7 +175,7 @@ class TestPipelineSearch:
 
         bad_result = IngestionResult(
             status=IngestionStatus.FAILED,
-            records=[],
+            payloads=[],
             failed_providers=1,
             total_providers=1,
             elapsed_ms=10,
@@ -193,7 +193,7 @@ class TestPipelineSearch:
 
         ok_empty = IngestionResult(
             status=IngestionStatus.COMPLETE,
-            records=[],
+            payloads=[],
             failed_providers=0,
             total_providers=1,
             elapsed_ms=10,
@@ -215,19 +215,40 @@ class TestPipelineSearch:
         """
         c = _coord(APICoordinator, api=_FakeAPI([_FakeProvider("Jikan")]))
 
-        from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus, ProviderName
+        from shared.contracts import (
+            AnimeRecord,
+            IngestionResult,
+            IngestionStatus,
+            ProviderAnimePayload,
+            ProviderName,
+        )
 
-        rec = AnimeRecord(id=1, title="Naruto", source_provider=ProviderName.UNKNOWN)
+        payload = ProviderAnimePayload(
+            title="Naruto",
+            external_ids={"mal_id": 1},
+            source_provider=ProviderName.JIKAN,
+        )
         ok = IngestionResult(
             status=IngestionStatus.COMPLETE,
-            records=[rec],
+            payloads=[payload],
             failed_providers=0,
             total_providers=1,
             elapsed_ms=10,
         )
         try:
             with patch.object(c._pipeline, "run", return_value=ok):
-                animelist = c.search_anime("naruto")
+                with patch.object(
+                    c,
+                    "_finalize_catalog_records",
+                    return_value=[
+                        AnimeRecord(
+                            id=1,
+                            title="Naruto",
+                            source_provider=ProviderName.JIKAN,
+                        )
+                    ],
+                ):
+                    animelist = c.search_anime("naruto")
                 assert animelist is not None
         finally:
             c.close()
@@ -277,19 +298,40 @@ class TestPipelineSearch:
         """
         c = _coord(APICoordinator, api=_FakeAPI([_FakeProvider("Jikan")]))
 
-        from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus, ProviderName
+        from shared.contracts import (
+            AnimeRecord,
+            IngestionResult,
+            IngestionStatus,
+            ProviderAnimePayload,
+            ProviderName,
+        )
 
-        rec = AnimeRecord(id=1, title="Naruto", source_provider=ProviderName.UNKNOWN)
+        payload = ProviderAnimePayload(
+            title="Naruto",
+            external_ids={"mal_id": 1},
+            source_provider=ProviderName.JIKAN,
+        )
         ok = IngestionResult(
             status=IngestionStatus.COMPLETE,
-            records=[rec],
+            payloads=[payload],
             failed_providers=0,
             total_providers=1,
             elapsed_ms=10,
         )
         try:
             with patch.object(c._pipeline, "run", return_value=ok):
-                result = c._search_via_pipeline("naruto", 10)
+                with patch.object(
+                    c,
+                    "_finalize_catalog_records",
+                    return_value=[
+                        AnimeRecord(
+                            id=1,
+                            title="Naruto",
+                            source_provider=ProviderName.JIKAN,
+                        )
+                    ],
+                ):
+                    result = c._search_via_pipeline("naruto", 10)
                 assert result is not None
         finally:
             c.close()
@@ -304,7 +346,7 @@ class TestPipelineSearch:
 
         ok = IngestionResult(
             status=IngestionStatus.COMPLETE,
-            records=[],
+            payloads=[],
             failed_providers=0,
             total_providers=1,
             elapsed_ms=10,
@@ -328,7 +370,7 @@ class TestPipelineSearch:
 
         ok = IngestionResult(
             status=IngestionStatus.COMPLETE,
-            records=[],
+            payloads=[],
             failed_providers=0,
             total_providers=1,
             elapsed_ms=10,
@@ -352,59 +394,80 @@ class TestPipelineSearch:
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyAdapter:
+class TestProjectProviderRaw:
     def test_none_returns_none(self, APICoordinator):
-        assert APICoordinator._project_legacy_anime(None) is None
+        c = _coord(APICoordinator)
+        try:
+            assert c.project_provider_raw(None) is None
+        finally:
+            c.close()
 
-    def test_missing_id_returns_none(self, APICoordinator):
-        raw = SimpleNamespace(title="x")
-        assert APICoordinator._project_legacy_anime(raw) is None
-
-    def test_non_int_id_returns_none(self, APICoordinator):
-        raw = SimpleNamespace(id="not-int", title="x")
-        assert APICoordinator._project_legacy_anime(raw) is None
-
-    def test_int_id_returns_record(self, APICoordinator):
+    def test_missing_external_ids_returns_none(self, APICoordinator):
         raw = SimpleNamespace(id=42, title="naruto")
-        rec = APICoordinator._project_legacy_anime(raw)
-        assert rec is not None
-        assert rec.id == 42
-        assert rec.title == "naruto"
+        c = _coord(APICoordinator)
+        try:
+            assert c.project_provider_raw(raw) is None
+        finally:
+            c.close()
 
-    def test_str_int_id_coerced(self, APICoordinator):
-        raw = SimpleNamespace(id="42", title="naruto")
-        rec = APICoordinator._project_legacy_anime(raw)
-        assert rec is not None
-        assert rec.id == 42
+    def test_schedule_external_ids_returns_payload(self, APICoordinator):
+        from shared.contracts import ProviderAnimePayload
 
-    def test_no_title_uses_empty(self, APICoordinator):
-        raw = SimpleNamespace(id=1)
-        rec = APICoordinator._project_legacy_anime(raw)
-        assert rec is not None
-        assert rec.title == ""
-
-    def test_non_string_str_fields_cleaned(self, APICoordinator):
         raw = SimpleNamespace(
-            id=1, title="x",
-            status="     ", rating="OK",
-            picture="", trailer="",
-            broadcast="    air    ",
+            id=42,
+            title="naruto",
+            _schedule_external_ids={"mal_id": 42},
         )
-        rec = APICoordinator._project_legacy_anime(raw)
-        assert rec is not None
-        # _safe_str returns None for empty after strip.
-        assert rec.status is None
-        assert rec.rating == "OK"
-        assert rec.picture is None
-        assert rec.trailer is None
-        # Whitespace stripped but content preserved.
-        assert rec.broadcast == "air"
+        c = _coord(APICoordinator)
+        try:
+            payload = c.project_provider_raw(raw, provider_name="JikanMoe")
+            assert payload is not None
+            assert isinstance(payload, ProviderAnimePayload)
+            assert payload.title == "naruto"
+            assert payload.external_ids == {"mal_id": 42}
+        finally:
+            c.close()
 
-    def test_non_int_episodes_coerced_to_none(self, APICoordinator):
-        raw = SimpleNamespace(id=1, title="x", episodes="abc")
-        rec = APICoordinator._project_legacy_anime(raw)
-        assert rec is not None
-        assert rec.episodes is None
+    def test_provider_payload_passthrough(self, APICoordinator):
+        from shared.contracts import ProviderAnimePayload, ProviderName
+
+        payload = ProviderAnimePayload(
+            title="x",
+            external_ids={"mal_id": 1},
+            source_provider=ProviderName.JIKAN,
+        )
+        c = _coord(APICoordinator)
+        try:
+            assert c.project_provider_raw(payload) is payload
+        finally:
+            c.close()
+
+
+class TestAnimeToProviderPayload:
+    def test_normalizes_metadata_fields(self):
+        from adapters.api.provider_payload import anime_to_provider_payload
+        from shared.contracts import ProviderName
+
+        raw = SimpleNamespace(
+            title="x",
+            _schedule_external_ids={"mal_id": 1},
+            status="     ",
+            rating="OK",
+            picture="",
+            trailer="",
+            broadcast="    air    ",
+            episodes="abc",
+        )
+        payload = anime_to_provider_payload(
+            raw,
+            source_provider=ProviderName.JIKAN,
+        )
+        assert payload.status is None
+        assert payload.rating == "OK"
+        assert payload.picture is None
+        assert payload.trailer is None
+        assert payload.broadcast == "air"
+        assert payload.episodes is None
 
 
 class TestRecordToAnime:
@@ -489,47 +552,96 @@ class TestSink:
             c.close()
 
     def test_build_sink_persists_via_db(self, APICoordinator):
-        from shared.contracts import AnimeRecord, ProviderName
+        from shared.contracts import ProviderAnimePayload, ProviderName
+
+        class _Identity:
+            def resolve_external_ids_batch(self, entries):
+                return [
+                    SimpleNamespace(
+                        catalog_id=entry["mal_id"],
+                        external_ids=dict(entry),
+                    )
+                    for entry in entries
+                ]
 
         db = MagicMock()
         db.upsert_anime_batch.return_value = 2
         c = _coord(APICoordinator, db=db)
+        c._catalog_identity = _Identity()
         try:
             sink = c._build_sink()
-            rec1 = AnimeRecord(id=1, title="a", source_provider=ProviderName.UNKNOWN)
-            rec2 = AnimeRecord(id=2, title="b", source_provider=ProviderName.UNKNOWN)
-            count = sink([rec1, rec2])
+            p1 = ProviderAnimePayload(
+                title="a",
+                external_ids={"mal_id": 1},
+                source_provider=ProviderName.JIKAN,
+            )
+            p2 = ProviderAnimePayload(
+                title="b",
+                external_ids={"mal_id": 2},
+                source_provider=ProviderName.JIKAN,
+            )
+            count = sink([p1, p2])
             assert count == 2
             db.upsert_anime_batch.assert_called_once()
         finally:
             c.close()
 
     def test_build_sink_swallows_db_exceptions(self, APICoordinator):
-        from shared.contracts import AnimeRecord, ProviderName
+        from shared.contracts import ProviderAnimePayload, ProviderName
+
+        class _Identity:
+            def resolve_external_ids_batch(self, entries):
+                return [
+                    SimpleNamespace(
+                        catalog_id=entry["mal_id"],
+                        external_ids=dict(entry),
+                    )
+                    for entry in entries
+                ]
 
         db = MagicMock()
         db.upsert_anime_batch.side_effect = RuntimeError("oops")
         c = _coord(APICoordinator, db=db)
+        c._catalog_identity = _Identity()
         try:
             sink = c._build_sink()
-            rec = AnimeRecord(id=1, title="x", source_provider=ProviderName.UNKNOWN)
-            assert sink([rec]) == 0
+            payload = ProviderAnimePayload(
+                title="x",
+                external_ids={"mal_id": 1},
+                source_provider=ProviderName.JIKAN,
+            )
+            assert sink([payload]) == 0
         finally:
             c.close()
 
     def test_build_sink_schedules_enrichment_in_background(self, APICoordinator):
-        from shared.contracts import AnimeRecord, ProviderName
+        from shared.contracts import ProviderAnimePayload, ProviderName
+
+        class _Identity:
+            def resolve_external_ids_batch(self, entries):
+                return [
+                    SimpleNamespace(
+                        catalog_id=entry["mal_id"],
+                        external_ids=dict(entry),
+                    )
+                    for entry in entries
+                ]
 
         db = MagicMock()
         db.upsert_anime_batch.return_value = 1
         c = _coord(APICoordinator, db=db)
+        c._catalog_identity = _Identity()
         try:
             sink = c._build_sink()
-            rec = AnimeRecord(id=5, title="Naruto", source_provider=ProviderName.JIKAN)
+            payload = ProviderAnimePayload(
+                title="Naruto",
+                external_ids={"mal_id": 5},
+                source_provider=ProviderName.JIKAN,
+            )
             with patch("application.services.api_coordinator.threading.Thread") as thread_cls:
                 thread = MagicMock()
                 thread_cls.return_value = thread
-                count = sink([rec])
+                count = sink([payload])
             assert count == 1
             thread_cls.assert_called_once()
             thread.start.assert_called_once()

@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from adapters.persistence.catalog_repository import CatalogIndexRepository, _batched_writes
 from application.services.catalog_merge import CatalogMergeService
+from domain.catalog import preferred_catalog_id
 from shared.contracts import (
     INDEX_PROVIDER_KEYS,
     ProviderAnimePayload,
@@ -33,12 +34,15 @@ class CatalogIdentityService:
         self,
         db: Any,
         *,
+        index_repo: Optional[CatalogIndexRepository] = None,
         merge_service: Optional[CatalogMergeService] = None,
+        batched_writes: Optional[Callable[..., Any]] = None,
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._db = db
-        self._index = CatalogIndexRepository(db)
+        self._index = index_repo or CatalogIndexRepository(db)
         self._merge = merge_service or CatalogMergeService(db, log_fn=log_fn)
+        self._batched_writes = batched_writes or _batched_writes
         self._telemetry = get_telemetry()
 
     @classmethod
@@ -69,7 +73,7 @@ class CatalogIdentityService:
 
         merged_from: list[int] = []
         if len(found) > 1:
-            canonical = min(found)
+            canonical = preferred_catalog_id(*found)
             for duplicate in sorted(found):
                 if duplicate == canonical:
                     continue
@@ -110,7 +114,7 @@ class CatalogIdentityService:
         ]
         lookup = self._index.find_by_external_batch(pairs)
         results: List[ResolvedCatalogEntry] = []
-        with _batched_writes(self._db):
+        with self._batched_writes(self._db):
             for normalized in normalized_list:
                 if not normalized:
                     raise ValueError(
@@ -137,7 +141,7 @@ class CatalogIdentityService:
 
         merged_from: list[int] = []
         if len(found) > 1:
-            canonical = min(found)
+            canonical = preferred_catalog_id(*found)
             for duplicate in sorted(found):
                 if duplicate == canonical:
                     continue

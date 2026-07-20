@@ -11,21 +11,30 @@ from application.services.ingestion_pipeline import (
     IngestionPipeline,
     ProviderSpec,
     _deduplicate,
+    _deduplicate_payloads,
     deduplicate_records,
 )
-from shared.contracts import AnimeRecord, IngestionStatus, ProviderName
+from shared.contracts import (
+    AnimeRecord,
+    IngestionStatus,
+    ProviderAnimePayload,
+    ProviderName,
+)
 
 
-def _rec(rid, title="t"):
-    return AnimeRecord(id=rid, title=title)
+def _payload(rid, title="t"):
+    return ProviderAnimePayload(
+        title=title,
+        external_ids={"mal_id": int(rid)},
+    )
 
 
 def _identity_adapter(raw):
     if raw is None:
         return None
-    if isinstance(raw, AnimeRecord):
+    if isinstance(raw, ProviderAnimePayload):
         return raw
-    return _rec(raw)
+    return _payload(raw)
 
 
 @pytest.fixture
@@ -75,7 +84,7 @@ class TestRunEdges:
     def test_empty_provider_list_returns_complete(self, pipeline):
         out = pipeline.run([], "term")
         assert out.status == IngestionStatus.COMPLETE
-        assert out.records == []
+        assert out.payloads == []
         assert out.total_providers == 0
         assert out.failed_providers == 0
 
@@ -85,7 +94,7 @@ class TestRunEdges:
 
         specs = [ProviderSpec(name="src", search=src, adapter=_identity_adapter)]
         out = pipeline.run(specs, "term", limit=5)
-        assert [r.id for r in out.records] == [5]
+        assert [p.external_ids["mal_id"] for p in out.payloads] == [5]
 
     def test_adapter_returning_none_drops_record(self, pipeline):
         def src(terms, limit):
@@ -96,7 +105,7 @@ class TestRunEdges:
 
         specs = [ProviderSpec(name="src", search=src, adapter=adapter)]
         out = pipeline.run(specs, "term", limit=10)
-        assert out.records == []
+        assert out.payloads == []
         assert out.status == IngestionStatus.COMPLETE
 
     def test_limit_zero_yields_no_records(self, pipeline):
@@ -106,7 +115,7 @@ class TestRunEdges:
         specs = [ProviderSpec(name="src", search=src, adapter=_identity_adapter)]
         out = pipeline.run(specs, "term", limit=0)
         # per_provider_limit = max(1, 0 // 1) = 1
-        assert len(out.records) <= 1
+        assert len(out.payloads) <= 1
 
     def test_provider_can_yield_generators(self, pipeline):
         def src(terms, limit):
@@ -115,7 +124,7 @@ class TestRunEdges:
 
         specs = [ProviderSpec(name="src", search=src, adapter=_identity_adapter)]
         out = pipeline.run(specs, "term", limit=5)
-        assert sorted(r.id for r in out.records) == [0, 1, 2, 3, 4]
+        assert sorted(p.external_ids["mal_id"] for p in out.payloads) == [0, 1, 2, 3, 4]
 
     def test_provider_returning_empty_iter_completes_cleanly(self, pipeline):
         def src(terms, limit):
@@ -124,7 +133,7 @@ class TestRunEdges:
         specs = [ProviderSpec(name="src", search=src, adapter=_identity_adapter)]
         out = pipeline.run(specs, "term")
         assert out.status == IngestionStatus.COMPLETE
-        assert out.records == []
+        assert out.payloads == []
         assert out.failed_providers == 0
 
     def test_provider_raising_value_error_marks_partial(self, pipeline):
@@ -158,9 +167,9 @@ class TestRunEdges:
     def test_sink_only_called_with_non_empty_records(self, pipeline):
         called = []
 
-        def sink(records):
-            called.append(list(records))
-            return len(records)
+        def sink(payloads):
+            called.append(list(payloads))
+            return len(payloads)
 
         def src(terms, limit):
             return []
@@ -170,7 +179,7 @@ class TestRunEdges:
             "term",
             sink=sink,
         )
-        assert called == []  # no records => no sink call
+        assert called == []  # no payloads => no sink call
 
     def test_sink_called_with_deduped_records_only(self, pipeline):
         def src(terms, limit):
@@ -178,22 +187,23 @@ class TestRunEdges:
 
         captured = []
 
-        def sink(records):
-            captured.extend(records)
-            return len(records)
+        def sink(payloads):
+            captured.extend(payloads)
+            return len(payloads)
 
         pipeline.run(
             [ProviderSpec(name="src", search=src, adapter=_identity_adapter)],
             "term",
             sink=sink,
         )
-        ids = sorted(r.id for r in captured)
+        ids = sorted(p.external_ids["mal_id"] for p in captured)
         assert ids == [1, 2, 3]
 
 
 class TestDeduplicate:
     def test_empty_input(self):
         assert _deduplicate([]) == []
+        assert _deduplicate_payloads([]) == []
 
     def test_preserves_first_seen_order(self):
         records = [_rec(2), _rec(1), _rec(2), _rec(3)]
@@ -204,9 +214,40 @@ class TestDeduplicate:
         records = [_rec(i) for i in range(5)]
         assert _deduplicate(records) == records
 
-    def test_deduplicate_records_collapses_shared_external_ids(self):
-        from shared.contracts import AnimeRecord, ProviderName
+    def test_payload_dedupe_collapses_identical_external_ids(self):
+        payloads = [
+            ProviderAnimePayload(
+                title="First",
+                external_ids={"mal_id": 1, "anilist_id": 99},
+                source_provider=ProviderName.KITSU,
+            ),
+            ProviderAnimePayload(
+                title="Second",
+                external_ids={"mal_id": 1, "anilist_id": 99},
+                source_provider=ProviderName.JIKAN,
+            ),
+        ]
+        out = _deduplicate_payloads(payloads)
+        assert len(out) == 1
+        assert out[0].title == "First"
 
+    def test_payload_dedupe_keeps_distinct_external_id_sets(self):
+        payloads = [
+            ProviderAnimePayload(
+                title="Kitsu title",
+                external_ids={"kitsu_id": 50805, "anilist_id": 198709},
+                source_provider=ProviderName.KITSU,
+            ),
+            ProviderAnimePayload(
+                title="MAL title",
+                external_ids={"mal_id": 62476, "anilist_id": 198709},
+                source_provider=ProviderName.JIKAN,
+            ),
+        ]
+        out = _deduplicate_payloads(payloads)
+        assert len(out) == 2
+
+    def test_deduplicate_records_collapses_shared_external_ids(self):
         records = [
             AnimeRecord(
                 id=2434,
@@ -224,3 +265,27 @@ class TestDeduplicate:
         out = deduplicate_records(records)
         assert len(out) == 1
         assert out[0].id == 1904
+
+    def test_deduplicate_records_prefers_positive_over_provisional(self):
+        records = [
+            AnimeRecord(
+                id=-1426116332,
+                title="Provisional",
+                external_ids={"mal_id": 40938, "anilist_id": 114232},
+                source_provider=ProviderName.KITSU,
+            ),
+            AnimeRecord(
+                id=2808,
+                title="Canonical",
+                external_ids={"mal_id": 40938, "anilist_id": 114232},
+                source_provider=ProviderName.JIKAN,
+            ),
+        ]
+        out = deduplicate_records(records)
+        assert len(out) == 1
+        assert out[0].id == 2808
+        assert out[0].title == "Canonical"
+
+
+def _rec(rid, title="t"):
+    return AnimeRecord(id=rid, title=title)

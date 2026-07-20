@@ -300,3 +300,59 @@ class TestGettersInstanceMethods:
         result = Getters.getDateText(mock_getters, anime)
 
         assert result == []
+
+
+class TestGetTorrentManagerFallback:
+    @pytest.mark.timeout(30)
+    def test_falls_back_when_configured_manager_missing(self):
+        """Missing LibTorrent must not crash bootstrap; fall back and persist."""
+        saved = {}
+
+        class _FakeTM:
+            name = "qBittorrent"
+
+            def __init__(self, args, update=False):
+                self.settings = dict(args)
+
+        mock_getters = MagicMock()
+        mock_getters.settings = {
+            "torrent_managers": {
+                "last_tm_used": "LibTorrent",
+                "qBittorrent": {"url": "http://localhost:8080"},
+            }
+        }
+        mock_getters.fm = None
+        mock_getters.log = MagicMock()
+        mock_getters.setSettings = lambda payload: saved.update(payload)
+
+        with patch.dict(
+            "shared.config.getters.torrent_managers.managers",
+            {"qBittorrent": _FakeTM},
+            clear=True,
+        ):
+            Getters.getTorrentManager(mock_getters)
+
+        assert isinstance(mock_getters.tm, _FakeTM)
+        assert saved.get("last_tm_used") == "qBittorrent"
+        mock_getters.log.assert_any_call(
+            "SETTINGS",
+            "Torrent manager 'LibTorrent' was not found; falling back to 'qBittorrent'",
+        )
+
+    @pytest.mark.timeout(30)
+    def test_raises_when_no_managers_registered(self):
+        mock_getters = MagicMock()
+        mock_getters.settings = {
+            "torrent_managers": {"last_tm_used": "LibTorrent"}
+        }
+        mock_getters.fm = None
+        mock_getters.log = MagicMock()
+
+        with patch.dict(
+            "shared.config.getters.torrent_managers.managers",
+            {},
+            clear=True,
+        ):
+            with pytest.raises(ModuleNotFoundError, match="LibTorrent"):
+                Getters.getTorrentManager(mock_getters)
+

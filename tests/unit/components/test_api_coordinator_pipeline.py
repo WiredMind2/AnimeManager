@@ -80,11 +80,33 @@ class _RecordingDBManager:
         return SimpleNamespace(looked_up=len(catalog_ids), enriched=0, merged=0)
 
 
-def _build_coordinator(api, db):
+class _MalIdentity:
+    """Resolve ``mal_id`` (or first external id) to the same catalogue id."""
+
+    def resolve_external_ids_batch(self, entries):
+        out = []
+        for entry in entries:
+            catalog_id = entry.get("mal_id")
+            if catalog_id is None and entry:
+                catalog_id = next(iter(entry.values()))
+            out.append(
+                SimpleNamespace(
+                    catalog_id=int(catalog_id),
+                    external_ids=dict(entry),
+                )
+            )
+        return out
+
+
+def _build_coordinator(api, db, *, identity=None):
     coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
     coord.set_api(api)
     coord.set_database_manager(db)
     coord.log = lambda *args, **kwargs: None
+    if identity is not None:
+        coord._catalog_identity = identity
+    else:
+        coord._catalog_identity = _MalIdentity()
     return coord
 
 
@@ -103,6 +125,7 @@ def _anime_like(rid, title="t", date_from=None, title_synonyms=None):
         trailer=None,
         broadcast=None,
         title_synonyms=title_synonyms or (title, f"{title} Alt"),
+        _schedule_external_ids={"mal_id": int(rid)},
     )
 
 
@@ -288,23 +311,105 @@ def test_fetch_latest_resolves_schedule_external_ids_in_batch():
 
 def test_schedule_light_anime_retains_external_ids_for_adapter():
     """Real Anime objects must keep _schedule_external_ids through __setattr__."""
+    from shared.contracts import ProviderAnimePayload
+
     anime = Anime()
     external_ids = {"mal_id": 123}
     anime._schedule_external_ids = external_ids
     assert getattr(anime, "_schedule_external_ids", None) == external_ids
 
-    record = APICoordinator._project_legacy_anime(
-        anime, provider_name="JikanMoeWrapper"
-    )
-    assert record is not None
-    assert record.id < 0
-    assert record.external_ids == external_ids
-    assert record.title == ""
+    coord = _build_coordinator(_FakeAPI([]), _RecordingDBManager())
+    try:
+        payload = coord.project_provider_raw(anime, provider_name="JikanMoeWrapper")
+    finally:
+        coord.close()
+
+    assert payload is not None
+    assert isinstance(payload, ProviderAnimePayload)
+    assert payload.external_ids == external_ids
+    assert payload.title == ""
+
+
+def test_project_provider_raw_resolves_catalog_id_via_identity():
+    """Batch identity assignment should map schedule externals to catalogue ids."""
+    from adapters.persistence.catalog_repository import CatalogIndexRepository
+    from application.services.catalog_identity import CatalogIdentityService
+    from tests.unit.application.test_catalog_enrichment import _EnrichmentDB
+
+    db = _EnrichmentDB()
+    identity = CatalogIdentityService.from_database(db)
+
+    class _DBManager:
+        def __init__(self):
+            self._mapping_port = None
+            self.upserts = []
+            self.enrich_calls = []
+
+        def get_database(self):
+            return db
+
+        def upsert_anime_batch(self, records):
+            self.upserts.append(list(records))
+            return len(records)
+
+        def enrich_catalog_identities_for_ids(self, catalog_ids):
+            self.enrich_calls.append(list(catalog_ids))
+            return SimpleNamespace(looked_up=len(catalog_ids), enriched=0, merged=0)
+
+    anime = Anime()
+    anime.title = "Higehiro"
+    anime._schedule_external_ids = {"mal_id": 40938}
+
+    coord = _build_coordinator(_FakeAPI([]), _DBManager(), identity=identity)
+    try:
+        payload = coord.project_provider_raw(anime, provider_name="JikanMoeWrapper")
+        records = coord._assign_payloads_to_records([payload])
+    finally:
+        coord.close()
+
+    assert payload is not None
+    assert len(records) == 1
+    assert records[0].id > 0
+    assert records[0].external_ids.get("mal_id") == 40938
+    assert CatalogIndexRepository(db).get_external_ids(records[0].id)["mal_id"] == 40938
+
+
+def test_finalize_catalog_records_drops_unresolved_provisional():
+    from shared.contracts import ProviderAnimePayload, ProviderName
+
+    coord = _build_coordinator(_FakeAPI([]), _RecordingDBManager())
+    coord._catalog_identity = None
+    try:
+        # No identity service → payloads cannot resolve → dropped.
+        out = coord._finalize_catalog_records(
+            [
+                ProviderAnimePayload(
+                    title="Ghost",
+                    external_ids={"mal_id": 1},
+                    source_provider=ProviderName.JIKAN,
+                ),
+                ProviderAnimePayload(
+                    title="Real",
+                    external_ids={"mal_id": 2},
+                    source_provider=ProviderName.JIKAN,
+                ),
+            ]
+        )
+    finally:
+        coord.close()
+
+    assert out == []
 
 
 def test_fetch_latest_merges_cross_provider_schedule_rows():
     """Same show from Kitsu and MAL should resolve to one catalogue id."""
+    from adapters.persistence.catalog_repository import (
+        CatalogIndexRepository,
+        CatalogMergeRepository,
+        _batched_writes,
+    )
     from application.services.catalog_identity import CatalogIdentityService
+    from application.services.catalog_merge import CatalogMergeService
     from tests.unit.application.test_catalog_enrichment import _EnrichmentDB, _FakeMappingPort
 
     class _MappingDBManager:
@@ -373,7 +478,16 @@ def test_fetch_latest_merges_cross_provider_schedule_rows():
     coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
     coord.set_api(api)
     coord.set_database_manager(db_manager)
-    coord.set_catalog_identity(CatalogIdentityService.from_database(db))
+    index_repo = CatalogIndexRepository(db)
+    merge_service = CatalogMergeService(CatalogMergeRepository(db))
+    coord.set_catalog_identity(
+        CatalogIdentityService.from_database(
+            db,
+            index_repo=index_repo,
+            merge_service=merge_service,
+            batched_writes=_batched_writes,
+        )
+    )
     coord.log = lambda *args, **kwargs: None
     try:
         result = coord.fetch_latest(limit=10, per_provider=False)

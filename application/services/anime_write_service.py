@@ -16,6 +16,7 @@ class WriteSource(str, Enum):
     SCHEDULE = "schedule"
     SEASON = "season"
     GENRE = "genre"
+    TOP = "top"
     HYDRATION = "hydration"
     BACKFILL = "backfill"
     REPAIR = "repair"
@@ -64,16 +65,55 @@ class AnimeWriteService:
 
         metadata_counts = {"title_synonyms": 0, "genres": 0}
         animes = []
+        skipped_provisional = 0
         for record in records:
+            try:
+                rid = int(record.id)
+            except (TypeError, ValueError):
+                skipped_provisional += 1
+                continue
+            if rid <= 0:
+                skipped_provisional += 1
+                continue
             if record.title_synonyms:
                 metadata_counts["title_synonyms"] += 1
             if record.genres:
                 metadata_counts["genres"] += 1
             animes.append(self._record_to_anime(record))
 
+        if skipped_provisional:
+            self._telemetry.increment(
+                "anime_write.provisional_skipped", skipped_provisional
+            )
+            if self._log:
+                self._log(
+                    f"persist_records skipped {skipped_provisional} provisional "
+                    f"id(s) for source={source.value}"
+                )
+
+        if not animes:
+            return PersistResult(metadata_keys_written=metadata_counts)
+
         try:
             with self._telemetry.time("anime_write.persist_records_ms"):
                 persisted = int(self._db_manager.upsert_anime_batch(animes))
+            for record in records:
+                try:
+                    rid = int(record.id)
+                except (TypeError, ValueError):
+                    continue
+                if rid <= 0:
+                    continue
+                variants = getattr(record, "picture_variants", None) or ()
+                if variants:
+                    try:
+                        self._db_manager.upsert_pictures(rid, list(variants))
+                    except Exception as pic_exc:
+                        if self._log:
+                            self._log(
+                                f"upsert_pictures failed for id={rid}: "
+                                f"{type(pic_exc).__name__}: {pic_exc}"
+                            )
             self._telemetry.increment(f"anime_write.source.{source.value}", persisted)
             self._telemetry.increment("anime_write.persisted", persisted)
             return PersistResult(
@@ -158,6 +198,8 @@ class AnimeWriteService:
             rid = int(rid)
         except (TypeError, ValueError):
             return None
+        if rid <= 0:
+            return None
 
         normalized_external = {}
         for key, value in (external_ids or {}).items():
@@ -187,6 +229,34 @@ class AnimeWriteService:
                 return tuple(str(item) for item in value if item)
             return (str(value),)
 
+        def _picture_variants(value: Any) -> tuple[dict[str, Any], ...]:
+            if not value:
+                return ()
+            if not isinstance(value, (list, tuple)):
+                return ()
+            out: list[dict[str, Any]] = []
+            for item in value:
+                if not isinstance(item, dict) or not item.get("url"):
+                    continue
+                entry: dict[str, Any] = {
+                    "url": str(item["url"]),
+                    "size": str(item.get("size") or "medium"),
+                }
+                for dim in ("width", "height"):
+                    raw = item.get(dim)
+                    if raw is None:
+                        continue
+                    try:
+                        entry[dim] = int(raw)
+                    except (TypeError, ValueError):
+                        pass
+                out.append(entry)
+            return tuple(out)
+
+        pending_pictures = _field("_pending_pictures")
+        if pending_pictures is None and not isinstance(anime, dict):
+            pending_pictures = getattr(anime, "_pending_pictures", None)
+
         return AnimeRecord(
             id=rid,
             title=str(_field("title") or ""),
@@ -203,6 +273,7 @@ class AnimeWriteService:
             broadcast=_safe_str(_field("broadcast")),
             genres=_tupled(_field("genres")),
             external_ids=normalized_external,
+            picture_variants=_picture_variants(pending_pictures),
         )
 
 

@@ -15,7 +15,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import requests
-from PIL import Image, ImageTk
+from PIL import Image
+
+try:
+    from PIL import ImageTk
+except ImportError:  # pragma: no cover - headless / Docker without Tk
+    ImageTk = None  # type: ignore[assignment,misc]
 
 from shared.utils.broadcast_schedule import (
     latest_episode_label,
@@ -230,9 +235,27 @@ class Getters:
         if manager is None:
             manager = self.settings["torrent_managers"]["last_tm_used"]
 
+        requested = manager
         tm = torrent_managers.managers.get(manager, None)
         if tm is None:
-            raise ModuleNotFoundError(f"Torrent manager {manager} was not found")
+            # Prefer registered managers in a stable order so Docker/backend
+            # images without python-libtorrent still boot when last_tm_used
+            # points at LibTorrent.
+            for candidate in ("qBittorrent", "Transmission"):
+                fallback = torrent_managers.managers.get(candidate)
+                if fallback is not None:
+                    self.log(
+                        "SETTINGS",
+                        f"Torrent manager {requested!r} was not found; "
+                        f"falling back to {candidate!r}",
+                    )
+                    manager = candidate
+                    tm = fallback
+                    break
+            if tm is None:
+                raise ModuleNotFoundError(
+                    f"Torrent manager {requested} was not found"
+                )
 
         # Prepare manager args and inject application-level dataPath when available
         args = dict(self.settings["torrent_managers"].get(manager, {}))
@@ -869,14 +892,28 @@ class Getters:
     def getAnimePictures(self, id):
         # Cache wasn't initialized
         database = self.getDatabase()
-        data = database.sql(
-            "SELECT url, size FROM pictures WHERE id=?", (id,), to_dict=True
-        )
-        if len(data) == 0:
-            database.save()  # Anime data might not be saved yet
+        try:
+            data = database.sql(
+                "SELECT url, size, width, height FROM pictures WHERE id=?",
+                (id,),
+                to_dict=True,
+            )
+        except Exception:
             data = database.sql(
                 "SELECT url, size FROM pictures WHERE id=?", (id,), to_dict=True
             )
+        if len(data) == 0:
+            database.save()  # Anime data might not be saved yet
+            try:
+                data = database.sql(
+                    "SELECT url, size, width, height FROM pictures WHERE id=?",
+                    (id,),
+                    to_dict=True,
+                )
+            except Exception:
+                data = database.sql(
+                    "SELECT url, size FROM pictures WHERE id=?", (id,), to_dict=True
+                )
 
         return data
 
@@ -888,9 +925,13 @@ class Getters:
 
         # SQL injection fix: Use parameterized query instead of string concatenation
         placeholders = ",".join(["?" for _ in ids])
-        sql = f"SELECT id, url, size FROM pictures WHERE id IN ({placeholders})"
+        sql = f"SELECT id, url, size, width, height FROM pictures WHERE id IN ({placeholders})"
         database = self.getDatabase()
-        data = database.sql(sql, ids, to_dict=True)
+        try:
+            data = database.sql(sql, ids, to_dict=True)
+        except Exception:
+            sql = f"SELECT id, url, size FROM pictures WHERE id IN ({placeholders})"
+            data = database.sql(sql, ids, to_dict=True)
 
         # Group by ID
         animePicturesCache = {}

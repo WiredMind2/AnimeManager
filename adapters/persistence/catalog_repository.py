@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
+from domain.catalog import preferred_catalog_id_from
 from shared.contracts import INDEX_PROVIDER_KEYS, RepairStrategy
 
 _DELETE_ID_TABLES = (
@@ -436,7 +437,7 @@ class CatalogMergeRepository:
             for ids in groups.values():
                 if len(ids) < 2:
                     continue
-                canonical = min(ids)
+                canonical = preferred_catalog_id_from(ids)
                 for duplicate in ids:
                     if duplicate == canonical:
                         continue
@@ -466,10 +467,53 @@ class CatalogMergeRepository:
             ids = [int(part) for part in str(id_blob).split(",") if part.strip()]
             if len(ids) < 2:
                 continue
-            canonical = min(ids)
+            canonical = preferred_catalog_id_from(ids)
             for duplicate in ids:
                 if duplicate == canonical:
                     continue
                 self.merge(duplicate, canonical)
                 merged += 1
         return merged
+
+    def purge_provisional_anime_rows(self) -> int:
+        """Delete orphan anime rows whose primary key is a provisional (negative) id.
+
+        These rows are created when schedule-light fingerprints leak into
+        persistence without catalogue identity assignment. They have no
+        usable ``indexList`` mapping and break UI detail links.
+        """
+        try:
+            rows = self._db.sql("SELECT id FROM anime WHERE id < 0")
+        except Exception as exc:
+            self._warn(f"provisional purge scan: {exc}")
+            return 0
+
+        deleted = 0
+        for row in rows or []:
+            orphan_id = int(row[0])
+            with _batched_writes(self._db):
+                for table in _DELETE_ID_TABLES:
+                    try:
+                        self._db.sql(
+                            f"DELETE FROM {table} WHERE id=?",
+                            (orphan_id,),
+                            save=False,
+                        )
+                    except Exception as exc:
+                        self._warn(f"provisional purge delete {table}: {exc}")
+                for sql, params in (
+                    (
+                        "DELETE FROM characterRelations WHERE anime_id=?",
+                        (orphan_id,),
+                    ),
+                    (
+                        "DELETE FROM user_tags WHERE anime_id=?",
+                        (orphan_id,),
+                    ),
+                ):
+                    try:
+                        self._db.sql(sql, params, save=False)
+                    except Exception as exc:
+                        self._warn(f"provisional purge relations: {exc}")
+            deleted += 1
+        return deleted

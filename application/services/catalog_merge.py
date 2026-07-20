@@ -17,7 +17,10 @@ class CatalogMergeService:
         *,
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
-        self._repo = CatalogMergeRepository(db, log_fn=log_fn)
+        if isinstance(db, CatalogMergeRepository):
+            self._repo = db
+        else:
+            self._repo = CatalogMergeRepository(db, log_fn=log_fn)
 
     def merge(self, duplicate_id: int, canonical_id: int) -> int:
         return self._repo.merge(duplicate_id, canonical_id)
@@ -26,3 +29,6 @@ class CatalogMergeService:
         self, *, strategy: RepairStrategy = RepairStrategy.PROVIDER_ID
     ) -> int:
         return self._repo.repair_duplicates(strategy=strategy)
+
+    def purge_provisional_anime_rows(self) -> int:
+        return self._repo.purge_provisional_anime_rows()

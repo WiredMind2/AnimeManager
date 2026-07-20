@@ -228,6 +228,13 @@ class Constants:
                 setattr(self, var, value)
                 # self.log('CONFIG', " ", var.ljust(30), '-', value)
 
+        sqlite_cfg = self.settings.get("database_managers", {}).get("SQLite", {})
+        if isinstance(sqlite_cfg, dict) and not str(sqlite_cfg.get("dbPath", "")).strip():
+            self.settings.setdefault("database_managers", {})["SQLite"]["dbPath"] = (
+                self.dbPath
+            )
+            update = True
+
         # Always save settings when update flag is True to ensure changes are persisted
         if update:
             try:
@@ -245,6 +252,9 @@ class Constants:
 
     @classmethod
     def getAppdata(cls):
+        override = os.getenv("ANIMEMANAGER_APPDATA", "").strip()
+        if override:
+            return override
         if sys.platform == "win32":
             appdata_env = os.getenv("APPDATA")
             if appdata_env is None:

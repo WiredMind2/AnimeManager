@@ -39,6 +39,10 @@
     "myanimelist": {
       "client_id": "",
       "client_secret": ""
+    },
+    "anidb": {
+      "client": "",
+      "clientver": "1"
     }
   },
   "file_managers": {
