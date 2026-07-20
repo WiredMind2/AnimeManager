@@ -103,6 +103,14 @@ export default function Rail({ activeNav = "library", activeFilter }: RailProps)
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
             By season
           </NavLink>
+          <NavLink href="/library/genre" active={pathname === "/library/genre"} onNavigate={closeMenu}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h16M4 12h10M4 18h14" /></svg>
+            By genre
+          </NavLink>
+          <NavLink href="/library/top" active={pathname === "/library/top"} onNavigate={closeMenu}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.9 7.2 18l.9-5.4L4.2 8.7l5.4-.8z" /></svg>
+            Top
+          </NavLink>
         </nav>
 
         <nav className="rail__group" aria-label="Workflow">
