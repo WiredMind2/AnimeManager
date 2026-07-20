@@ -734,6 +734,37 @@ class TestLifecycle:
         finally:
             mgr.close()
 
+    def test_get_anime_folder_reuses_existing_folder_when_title_changes(
+        self, DownloadManager, tmp_path
+    ):
+        data_path = tmp_path / "library"
+        animes_root = data_path / "Animes"
+        existing = animes_root / "Old Title - 2210"
+        existing.mkdir(parents=True)
+
+        fm = MagicMock()
+        fm.settings = {"dataPath": str(data_path)}
+        fm.list.return_value = ["Old Title - 2210"]
+        fm.isdir.return_value = True
+
+        db = MagicMock()
+        db.get_database.return_value.get.return_value = {
+            "id": 2210,
+            "title": "New Title",
+        }
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "abc", "save_path": str(existing)}
+        ]
+
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        mgr.set_file_manager(fm)
+        mgr.set_database_manager(db)
+        try:
+            assert mgr._get_anime_folder(2210) == str(existing)
+        finally:
+            mgr.close()
+
 
 # ---------------------------------------------------------------------------
 # Live progress refresh (covers the bug where the Active Downloads progress
@@ -1225,5 +1256,114 @@ class TestTorrentDeletedStatus:
             assert count == 1
             db.update_torrent_status.assert_called_once_with("ani123", "deleted")
             tm.delete.assert_called_once_with("ani123", delete_files=False)
+        finally:
+            mgr.close()
+
+    def test_mark_torrents_deleted_for_seen_anime(self, DownloadManager, tmp_path):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        root = tmp_path / "Animes"
+        folder = root / "Show - 7"
+        folder.mkdir(parents=True)
+        (folder / "ep01.mkv").write_bytes(b"x")
+
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {
+                "hash": "alive1",
+                "name": "Show - 01",
+                "save_path": str(folder),
+                "status": None,
+            },
+            {
+                "hash": "gone2",
+                "name": "Show - 02",
+                "save_path": str(folder),
+                "status": "deleted",
+            },
+            {
+                "hash": "done3",
+                "name": "Show - 03",
+                "save_path": str(folder),
+                "status": "complete",
+            },
+        ]
+        tm = MagicMock()
+        fm = MagicMock()
+        fm.exists.return_value = True
+        fm.settings = {"dataPath": str(tmp_path)}
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        mgr.set_file_manager(fm)
+        cancelled = []
+        mgr.cancel_download = lambda aid: cancelled.append(aid) or True
+        try:
+            count = mgr.mark_torrents_deleted_for_seen_anime(
+                7,
+                lambda _aid: str(folder),
+                animes_root=str(root),
+            )
+            assert count == 2
+            assert cancelled == [7]
+            db.update_torrent_status.assert_any_call("alive1", "deleted")
+            db.update_torrent_status.assert_any_call("done3", "deleted")
+            assert db.update_torrent_status.call_count == 2
+            tm.delete.assert_any_call("alive1", delete_files=True)
+            tm.delete.assert_any_call("done3", delete_files=True)
+            assert tm.delete.call_count == 2
+            fm.delete.assert_called_once_with(str(folder))
+        finally:
+            mgr.close()
+
+    def test_mark_torrents_deleted_for_seen_anime_skips_missing_folder(
+        self, DownloadManager, tmp_path
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        root = tmp_path / "Animes"
+        root.mkdir()
+        missing = root / "Missing - 9"
+
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = []
+        fm = MagicMock()
+        fm.exists.return_value = False
+        mgr.set_database_manager(db)
+        mgr.set_file_manager(fm)
+        try:
+            count = mgr.mark_torrents_deleted_for_seen_anime(
+                9,
+                lambda _aid: str(missing),
+                animes_root=str(root),
+            )
+            assert count == 0
+            fm.delete.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_mark_torrents_deleted_for_seen_anime_refuses_outside_root(
+        self, DownloadManager, tmp_path
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        root = tmp_path / "Animes"
+        root.mkdir()
+        outside = tmp_path / "other" / "Show - 3"
+        outside.mkdir(parents=True)
+
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = []
+        fm = MagicMock()
+        fm.exists.return_value = True
+        mgr.set_database_manager(db)
+        mgr.set_file_manager(fm)
+        try:
+            count = mgr.mark_torrents_deleted_for_seen_anime(
+                3,
+                lambda _aid: str(outside),
+                animes_root=str(root),
+            )
+            assert count == 0
+            fm.delete.assert_not_called()
         finally:
             mgr.close()

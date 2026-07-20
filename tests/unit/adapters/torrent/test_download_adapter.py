@@ -149,6 +149,28 @@ def test_reconcile_deleted_torrents():
     assert adapter.reconcile_deleted_torrents() == 3
 
 
+def test_mark_torrents_deleted_for_seen_anime():
+    adapter, dm = _make_adapter()
+    dm.mark_torrents_deleted_for_seen_anime.return_value = 2
+    assert adapter.mark_torrents_deleted_for_seen_anime(9) == 2
+    dm.mark_torrents_deleted_for_seen_anime.assert_called_once()
+    args, kwargs = dm.mark_torrents_deleted_for_seen_anime.call_args
+    assert args[0] == 9
+    assert callable(args[1])
+    assert "animes_root" in kwargs
+
+
+def test_reconcile_seen_anime_torrents():
+    user_actions = MagicMock(
+        list_anime_ids_with_tag=MagicMock(return_value=[1, 2, 3])
+    )
+    adapter, dm = _make_adapter(user_actions=user_actions)
+    dm.mark_torrents_deleted_for_seen_anime.side_effect = [1, 0, 2]
+    assert adapter.reconcile_seen_anime_torrents() == 3
+    user_actions.list_anime_ids_with_tag.assert_called_once_with("SEEN")
+    assert dm.mark_torrents_deleted_for_seen_anime.call_count == 3
+
+
 def test_search_torrents_sorts_by_seeds():
     adapter, _ = _make_adapter()
     rows = [

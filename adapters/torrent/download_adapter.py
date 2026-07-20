@@ -107,6 +107,31 @@ class DownloadAdapter:
             self._scanner.resolve_anime_folder,
         )
 
+    def mark_torrents_deleted_for_seen_anime(self, anime_id: int) -> int:
+        anime_path = str(getattr(self._scanner, "_anime_path", "") or "")
+        return self._download_manager.mark_torrents_deleted_for_seen_anime(
+            anime_id,
+            self._scanner.resolve_anime_folder,
+            animes_root=anime_path,
+        )
+
+    def reconcile_seen_anime_torrents(self) -> int:
+        """Mark/remove torrents and folders for every anime already tagged SEEN."""
+        lister = getattr(self._user_actions, "list_anime_ids_with_tag", None)
+        if not callable(lister):
+            return 0
+        try:
+            anime_ids = list(lister("SEEN") or [])
+        except Exception:
+            return 0
+        marked = 0
+        for anime_id in anime_ids:
+            try:
+                marked += int(self.mark_torrents_deleted_for_seen_anime(int(anime_id)) or 0)
+            except Exception:
+                continue
+        return marked
+
     def repair_torrent_index(self, *, dry_run: bool = False) -> str:
         from application.services.torrent_index_repair import TorrentIndexRepairService
 
