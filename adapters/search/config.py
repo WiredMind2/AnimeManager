@@ -32,7 +32,9 @@ class SearchLimits:
             the same time across all terms.
         per_job_timeout_s: Wall-clock budget for one ``nova3.nova2`` job.
         request_deadline_s: Global budget for an entire search request.
-        max_results: Maximum results returned to the caller (post dedupe).
+        max_results_per_term: Cap on rows accepted from a single planned
+            search term. There is no separate global row ceiling — total
+            results scale with the number of planned terms.
         max_output_bytes: Maximum total stdout bytes read per worker. Guards
             against runaway children writing unbounded data.
         max_line_bytes: Maximum length of a single stdout line.
@@ -45,7 +47,7 @@ class SearchLimits:
     max_concurrent_jobs: int = 4
     per_job_timeout_s: float = 45.0
     request_deadline_s: float = 90.0
-    max_results: int = 500
+    max_results_per_term: int = 50
     max_output_bytes: int = 8 * 1024 * 1024
     max_line_bytes: int = 16 * 1024
     queue_capacity: int = 256
@@ -84,11 +86,14 @@ class SearchProfile:
 INTERACTIVE_PROFILE = SearchProfile(
     name="interactive",
     limits=SearchLimits(
-        max_terms=8,
+        max_terms=12,
         max_concurrent_jobs=6,
         per_job_timeout_s=45.0,
         request_deadline_s=120.0,
-        max_results=750,
+        max_results_per_term=50,
+        # Room for max_terms * max_results_per_term without dropping
+        # mid-stream when many synonym queries finish together.
+        queue_capacity=1024,
     ),
     allow_insecure_engines=False,
     allow_no_timeout_engines=True,
@@ -102,7 +107,8 @@ STRICT_PROFILE = SearchProfile(
         max_concurrent_jobs=3,
         per_job_timeout_s=20.0,
         request_deadline_s=45.0,
-        max_results=200,
+        max_results_per_term=40,
+        queue_capacity=256,
     ),
     allow_insecure_engines=False,
     allow_no_timeout_engines=False,
@@ -145,6 +151,8 @@ def load_profile(name: str = DEFAULT_PROFILE) -> SearchProfile:
     prefix = f"ANIME_SEARCH_{base.name.upper()}_"
 
     limits = base.limits
+    # Prefer MAX_RESULTS_PER_TERM; fall back to legacy MAX_RESULTS env key.
+    per_term_default = _env_int(prefix + "MAX_RESULTS", limits.max_results_per_term)
     overrides = {
         "max_terms": _env_int(prefix + "MAX_TERMS", limits.max_terms),
         "max_term_length": _env_int(prefix + "MAX_TERM_LENGTH", limits.max_term_length),
@@ -157,7 +165,9 @@ def load_profile(name: str = DEFAULT_PROFILE) -> SearchProfile:
         "request_deadline_s": _env_float(
             prefix + "REQUEST_DEADLINE_S", limits.request_deadline_s
         ),
-        "max_results": _env_int(prefix + "MAX_RESULTS", limits.max_results),
+        "max_results_per_term": _env_int(
+            prefix + "MAX_RESULTS_PER_TERM", per_term_default
+        ),
         "max_output_bytes": _env_int(
             prefix + "MAX_OUTPUT_BYTES", limits.max_output_bytes
         ),

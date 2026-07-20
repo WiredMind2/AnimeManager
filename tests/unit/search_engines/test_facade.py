@@ -89,7 +89,7 @@ def _profile(**overrides) -> SearchProfile:
             max_concurrent_jobs=2,
             per_job_timeout_s=2.0,
             request_deadline_s=3.0,
-            max_results=20,
+            max_results_per_term=20,
             max_output_bytes=8192,
             max_line_bytes=2048,
             queue_capacity=64,
@@ -130,7 +130,7 @@ def test_facade_streams_dedup_and_emits_dicts(monkeypatch, facade):
     assert all(item["link"].startswith("magnet:?xt=urn:btih:") for item in out)
 
 
-def test_facade_caps_results(monkeypatch, policy_factory):
+def test_facade_caps_results_per_term(monkeypatch, policy_factory):
     policy = policy_factory(
         engines={"nyaasi": {"enabled": True, "risk_level": "low"}}
     )
@@ -140,7 +140,7 @@ def test_facade_caps_results(monkeypatch, policy_factory):
             max_concurrent_jobs=1,
             per_job_timeout_s=2.0,
             request_deadline_s=3.0,
-            max_results=2,
+            max_results_per_term=2,
             max_output_bytes=8192,
             max_line_bytes=2048,
             queue_capacity=64,
@@ -156,6 +156,36 @@ def test_facade_caps_results(monkeypatch, policy_factory):
 
     out = list(facade.search(["Series"]))
     assert len(out) == 2
+
+
+def test_facade_allows_total_above_per_term_across_terms(monkeypatch, policy_factory):
+    """Each term is capped independently; totals scale with term count."""
+    policy = policy_factory(
+        engines={"nyaasi": {"enabled": True, "risk_level": "low"}}
+    )
+    profile = _profile(
+        limits=SearchLimits(
+            max_terms=2,
+            max_concurrent_jobs=2,
+            per_job_timeout_s=2.0,
+            request_deadline_s=3.0,
+            max_results_per_term=2,
+            max_output_bytes=8192,
+            max_line_bytes=2048,
+            queue_capacity=64,
+        )
+    )
+    facade = SearchFacade(profile=profile, policy=policy)
+
+    payload_a = b"".join(_row(f"aaaa{i:04x}", f"Alpha {i}") for i in range(10))
+    payload_b = b"".join(_row(f"bbbb{i:04x}", f"Beta {i}") for i in range(10))
+    runner = _ScriptedRunner({"Alpha": payload_a, "Beta": payload_b})
+    monkeypatch.setattr(
+        "search_engines.worker._ProcessRunner.spawn", runner.spawn
+    )
+
+    out = list(facade.search(["Alpha", "Beta"]))
+    assert len(out) == 4
 
 
 def test_facade_returns_empty_when_no_engines_allowed(monkeypatch, policy_factory):

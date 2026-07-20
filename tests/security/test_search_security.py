@@ -95,7 +95,7 @@ def test_shell_metacharacters_arrive_as_single_argv_slot(monkeypatch, term):
             max_concurrent_jobs=1,
             per_job_timeout_s=0.5,
             request_deadline_s=1.0,
-            max_results=10,
+            max_results_per_term=10,
             max_output_bytes=1024,
             max_line_bytes=512,
             queue_capacity=32,
