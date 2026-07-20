@@ -1,7 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { GENRES, genreBrowseUrl } from "@/lib/genres";
+import { useEffect, useState } from "react";
+import {
+  GENRES,
+  defaultGenreSelection,
+  genreBrowseUrl,
+  toggleGenre,
+  type GenreName,
+} from "@/lib/genres";
 
 type GenreSelectorModalProps = {
   open: boolean;
@@ -10,11 +17,16 @@ type GenreSelectorModalProps = {
 
 export default function GenreSelectorModal({ open, onClose }: GenreSelectorModalProps) {
   const router = useRouter();
+  const [selected, setSelected] = useState<GenreName[]>(defaultGenreSelection());
+
+  useEffect(() => {
+    if (open) setSelected(defaultGenreSelection());
+  }, [open]);
 
   if (!open) return null;
 
-  function selectGenre(name: string) {
-    router.push(genreBrowseUrl(name));
+  function apply() {
+    router.push(genreBrowseUrl(selected));
     onClose();
   }
 
@@ -36,27 +48,33 @@ export default function GenreSelectorModal({ open, onClose }: GenreSelectorModal
           </button>
         </header>
         <div className="modal__body">
-          <div className="chip-row" role="listbox" aria-label="Genres">
-            {GENRES.map((genre) => (
-              <button
-                key={genre}
-                type="button"
-                className="chip"
-                role="option"
-                onClick={() => selectGenre(genre)}
-              >
-                {genre}
-              </button>
-            ))}
+          <div className="chip-row" role="group" aria-label="Genres">
+            {GENRES.map((genre) => {
+              const isActive = selected.includes(genre);
+              return (
+                <button
+                  key={genre}
+                  type="button"
+                  className={`chip${isActive ? " is-active" : ""}`}
+                  aria-pressed={isActive}
+                  onClick={() => setSelected((prev) => toggleGenre(prev, genre))}
+                >
+                  {genre}
+                </button>
+              );
+            })}
           </div>
           <p className="page-head__subtitle">
-            Shows anime tagged with the selected genre. Your local catalog loads first, then
-            metadata providers stream in.
+            Shows anime tagged with <strong>all</strong> selected genres. Your local catalog loads
+            first, then metadata providers stream in.
           </p>
         </div>
         <footer className="modal__footer">
           <button type="button" className="btn btn--ghost" onClick={onClose}>
             Cancel
+          </button>
+          <button type="button" className="btn" onClick={apply} disabled={selected.length === 0}>
+            Apply
           </button>
         </footer>
       </div>

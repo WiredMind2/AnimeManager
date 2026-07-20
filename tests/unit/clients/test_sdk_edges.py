@@ -17,9 +17,14 @@ class FakeFacade:
     def __init__(self):
         self.calls = []
 
-    def search_anime(self, query, limit=50):
-        self.calls.append(("search_anime", query, limit))
-        return [AnimeEntity(id=1, title="Cowboy")]
+    def search_anime(self, query, limit=50, offset=0):
+        self.calls.append(("search_anime", query, limit, offset))
+
+        class Response:
+            items = [AnimeEntity(id=1, title="Cowboy")]
+            has_next = False
+
+        return Response()
 
     def get_anime_list(self, **kwargs):
         self.calls.append(("get_anime_list", kwargs))
@@ -92,15 +97,16 @@ def sdk():
 class TestSDKEdges:
     def test_search_anime_returns_dicts(self, sdk):
         out = sdk.search_anime("cowboy", limit=20)
-        assert isinstance(out, list)
-        assert isinstance(out[0], dict)
-        assert out[0]["id"] == 1
-        assert out[0]["title"] == "Cowboy"
+        assert isinstance(out, dict)
+        assert "items" in out and "has_next" in out
+        assert isinstance(out["items"][0], dict)
+        assert out["items"][0]["id"] == 1
+        assert out["items"][0]["title"] == "Cowboy"
 
     def test_search_anime_forwards_limit(self, sdk):
         sdk.search_anime("cowboy", limit=5)
         last = sdk._facade.calls[-1]
-        assert last == ("search_anime", "cowboy", 5)
+        assert last == ("search_anime", "cowboy", 5, 0)
 
     def test_get_anime_list_returns_dict_with_items_and_has_next(self, sdk):
         out = sdk.get_anime_list()

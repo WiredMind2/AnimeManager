@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import type { AnimeItem } from "@/lib/api";
@@ -18,6 +19,8 @@ type StreamState = "connecting" | "streaming" | "done" | "error" | "closed";
 type LibraryPageContentProps = {
   pageTitle: string;
   q: string;
+  backUrl?: string | null;
+  backLabel?: string | null;
   activeFilter: string;
   streamingSearch: boolean;
   items: AnimeItem[];
@@ -44,6 +47,8 @@ function streamBadgeClass(state: StreamState): string {
 export default function LibraryPageContent({
   pageTitle,
   q,
+  backUrl = null,
+  backLabel = null,
   activeFilter,
   streamingSearch,
   items,
@@ -73,10 +78,11 @@ export default function LibraryPageContent({
           hideRated: next.hideRated ?? hideRated,
           settingsHideRated,
           settingsPageSize,
+          back: backUrl,
         }),
       );
     },
-    [router, activeFilter, q, pageSize, hideRated, settingsHideRated, settingsPageSize],
+    [router, activeFilter, q, pageSize, hideRated, settingsHideRated, settingsPageSize, backUrl],
   );
 
   const onStreamUpdate = useCallback(
@@ -96,8 +102,8 @@ export default function LibraryPageContent({
           <p className="page-head__subtitle">
             {q ? (
               <>
-                Showing results for <em>&ldquo;{q}&rdquo;</em>. Local catalog first, then remote
-                providers stream in as they reply.
+                Searching <strong>all anime</strong> for <em>&ldquo;{q}&rdquo;</em> — local
+                catalog first, then remote providers stream in as they reply.
               </>
             ) : activeFilter && activeFilter !== "DEFAULT" ? (
               <>
@@ -167,9 +173,18 @@ export default function LibraryPageContent({
         </div>
       ) : null}
 
+      {q && backUrl ? (
+        <div className="chip-row" role="navigation" aria-label="Search context">
+          <Link className="chip" href={backUrl}>
+            ← Back to {backLabel ?? "browse"}
+          </Link>
+        </div>
+      ) : null}
+
       <FilterChips
         activeFilter={activeFilter}
         q={q || null}
+        backUrl={backUrl}
         pageSize={pageSize}
         hideRated={hideRated}
         settingsHideRated={settingsHideRated}
@@ -177,7 +192,14 @@ export default function LibraryPageContent({
       />
 
       {streamingSearch ? (
-        <LibraryView query={q} onStreamUpdate={onStreamUpdate} limit={pageSize} />
+        <LibraryView
+          query={q}
+          onStreamUpdate={onStreamUpdate}
+          limit={pageSize}
+          offset={listStart}
+          prevUrl={prevUrl}
+          nextUrl={nextUrl}
+        />
       ) : items.length > 0 ? (
         <>
           <section className="grid">
@@ -192,18 +214,18 @@ export default function LibraryPageContent({
             </span>
             <div className="pager__actions">
               {prevUrl ? (
-                <a className="btn" href={prevUrl}>
+                <Link className="btn" href={prevUrl}>
                   ← Previous
-                </a>
+                </Link>
               ) : (
                 <span className="btn" aria-disabled="true">
                   ← Previous
                 </span>
               )}
               {nextUrl ? (
-                <a className="btn" href={nextUrl}>
+                <Link className="btn" href={nextUrl}>
                   Next →
-                </a>
+                </Link>
               ) : (
                 <span className="btn" aria-disabled="true">
                   Next →

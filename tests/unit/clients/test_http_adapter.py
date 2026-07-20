@@ -13,17 +13,22 @@ class FakeSDK:
         _ = kwargs
         return {"items": [{"id": 1, "title": "Test"}], "has_next": False}
 
-    def search_anime(self, query: str, limit: int = 50):
-        _ = limit
-        return [{"id": 1, "title": query}]
+    def search_anime(self, query: str, limit: int = 50, offset: int = 0):
+        _ = (limit, offset)
+        return {"items": [{"id": 1, "title": query}], "has_next": False}
 
-    def browse_season(self, year: int, season: str, limit: int = 50):
-        _ = limit
-        return [{"id": 1, "title": f"{season} {year}"}]
+    def browse_season(self, year: int, season: str, limit: int = 50, offset: int = 0):
+        _ = (limit, offset)
+        return {"items": [{"id": 1, "title": f"{season} {year}"}], "has_next": False}
 
-    def browse_genre(self, genre: str, limit: int = 50):
-        _ = limit
-        return [{"id": 1, "title": genre}]
+    def browse_genre(self, genre: str, limit: int = 50, offset: int = 0):
+        _ = (limit, offset)
+        label = genre if isinstance(genre, str) else ",".join(genre)
+        return {"items": [{"id": 1, "title": label}], "has_next": False}
+
+    def browse_top(self, category: str, limit: int = 50, offset: int = 0):
+        _ = (limit, offset)
+        return {"items": [{"id": 1, "title": f"top-{category}"}], "has_next": False}
 
     def start_download(self, anime_id: int, url=None, hash_value=None, user_id=None):
         _ = (anime_id, url, hash_value, user_id)
@@ -39,8 +44,8 @@ class FakeSDK:
     def get_active_downloads(self):
         return [{"anime_id": 1, "elapsed_time": 1.0}]
 
-    def search_torrents(self, terms, profile="interactive", limit=200):
-        _ = (profile, limit)
+    def search_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=None):
+        _ = (profile, limit, allow_nsfw)
         return [{"name": "mock", "link": "magnet:?xt=urn:btih:abc", "terms": terms}]
 
     def set_tag(self, anime_id: int, tag: str, user_id: int):
@@ -82,10 +87,16 @@ def test_http_adapter_routes_use_shared_sdk(monkeypatch):
     assert client.get("/").status_code == 200
     assert client.get("/anime/7").json()["id"] == 7
     assert client.get("/animelist").json()["items"][0]["id"] == 1
-    assert client.get("/search", params={"query": "bleach"}).json()[0]["title"] == "bleach"
-    assert client.get("/season", params={"year": 2026, "season": "spring"}).json()[0]["title"] == "spring 2026"
-    assert client.get("/genre", params={"name": "Comedy"}).json()[0]["title"] == "Comedy"
+    assert client.get("/search", params={"query": "bleach"}).json()["items"][0]["title"] == "bleach"
+    assert client.get("/season", params={"year": 2026, "season": "spring"}).json()["items"][0]["title"] == "spring 2026"
+    assert client.get("/genre", params={"name": "Comedy"}).json()["items"][0]["title"] == "Comedy"
+    assert (
+        client.get("/genre", params={"name": "Action,Comedy"}).json()["items"][0]["title"]
+        == "Action,Comedy"
+    )
     assert "Comedy" in client.get("/genres").json()["items"]
+    assert client.get("/top", params={"category": "airing"}).json()["items"][0]["title"] == "top-airing"
+    assert client.get("/top/categories").json()["items"][0]["key"] == "all"
     assert client.post("/download/1", params={"url": "magnet:?xt=urn:btih:abc"}).json()["started"] is True
     assert client.post("/download/cancel/1").json()["cancelled"] is True
     assert client.get("/download/active").json()["items"][0]["anime_id"] == 1

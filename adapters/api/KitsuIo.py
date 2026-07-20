@@ -15,6 +15,8 @@ except ImportError:
     sys.path.append(os.path.abspath("./"))
     from APIUtils import Anime, APIUtils, Character
 
+from domain.cover_images import CoverVariant, largest_cover_url, merge_kitsu_dimensions, variants_as_dicts
+
 
 def _current_anime_season() -> tuple[int, str]:
     """Return ``(year, season)`` for the current calendar anime season."""
@@ -100,11 +102,7 @@ class KitsuIoWrapper(APIUtils):
             return []
         pictures = []
         try:
-            poster = rep[0].posterImage
-            for size in ("small", "medium", "large", "original"):
-                img_url = poster.get(size) if hasattr(poster, "get") else None
-                if img_url:
-                    pictures.append({"url": img_url, "size": size})
+            pictures = variants_as_dicts(self._kitsu_cover_variants(rep[0].posterImage))
         except Exception:
             pass
         return pictures
@@ -116,9 +114,17 @@ class KitsuIoWrapper(APIUtils):
         "mappings",
     )
 
+    # Kitsu defaults to 10 rows per page; request 20 (its maximum) so
+    # browse iterations need far fewer HTTP round trips.
+    _PAGE_LIMIT = Modifier("page[limit]=20")
+
     @error_wrapper
     def season(self, year, season, limit=50):
-        modifier = Filter(seasonYear=year, season=season) + self._ANIME_INCLUSION
+        modifier = (
+            Filter(seasonYear=year, season=season)
+            + self._ANIME_INCLUSION
+            + self._PAGE_LIMIT
+        )
         count = 0
         for a in self.s.iterate("anime", modifier):
             data = self._convertAnime(a)
@@ -130,8 +136,55 @@ class KitsuIoWrapper(APIUtils):
                 return
 
     @error_wrapper
-    def genre(self, name, limit=50):
-        modifier = Filter(genres=name) + self._ANIME_INCLUSION
+    def genre(self, genres, limit=50):
+        """Yield anime matching every genre in ``genres`` (AND).
+
+        Kitsu filters on a single genre, so candidates are fetched with the
+        first genre then post-filtered against the full required set.
+        """
+        if isinstance(genres, str):
+            required = [g.strip() for g in genres.split(",") if g.strip()]
+        else:
+            required = [str(g).strip() for g in (genres or []) if str(g).strip()]
+        if not required:
+            return
+        seed = required[0]
+        required_lower = {g.lower() for g in required}
+        modifier = Filter(genres=seed) + self._ANIME_INCLUSION + self._PAGE_LIMIT
+        count = 0
+        for a in self.s.iterate("anime", modifier):
+            try:
+                names = [g["name"] for g in a.genres]
+            except Exception:
+                names = []
+            have = {str(n).strip().lower() for n in names if n}
+            if not required_lower.issubset(have):
+                continue
+            data = self._convertAnime(a)
+            if data is None:
+                continue
+            yield data
+            count += 1
+            if count >= limit:
+                return
+
+    _TOP_STATUS = {
+        "airing": "current",
+        "upcoming": "upcoming",
+    }
+
+    @error_wrapper
+    def top(self, category, limit=50):
+        """Yield top anime ranked by user count for a browse category."""
+        category_key = str(category or "").strip().lower()
+        if category_key not in ("all", "airing", "upcoming"):
+            return
+        modifier = (
+            self._ANIME_INCLUSION + Modifier("sort=-userCount") + self._PAGE_LIMIT
+        )
+        status = self._TOP_STATUS.get(category_key)
+        if status is not None:
+            modifier = Filter(status=status) + modifier
         count = 0
         for a in self.s.iterate("anime", modifier):
             data = self._convertAnime(a)
@@ -296,7 +349,7 @@ class KitsuIoWrapper(APIUtils):
             return None
 
         external_ids = {"kitsu_id": int(a.id)}
-        if getattr(self, "schedule_light", False):
+        if getattr(self, "list_light", False) or getattr(self, "schedule_light", False):
             data = Anime()
             data._schedule_external_ids = external_ids
             try:
@@ -307,10 +360,9 @@ class KitsuIoWrapper(APIUtils):
             except Exception:
                 data["title"] = None
             try:
-                if hasattr(a.posterImage, "large"):
-                    data["picture"] = a.posterImage.large
-                else:
-                    data["picture"] = a.posterImage.original
+                variants = self._kitsu_cover_variants(a.posterImage)
+                data["picture"] = largest_cover_url(variants)
+                data._pending_pictures = variants_as_dicts(variants)
             except Exception:
                 pass
             data["title_synonyms"] = list(a.titles.values()) + [data["title"]]
@@ -366,21 +418,11 @@ class KitsuIoWrapper(APIUtils):
         except Exception:
             data["title"] = None
         try:
-            if hasattr(a.posterImage, "large"):
-                data["picture"] = a.posterImage.large
-            else:
-                data["picture"] = a.posterImage.original
-        except Exception as e:
-            pass
-
-        pictures = []
-        try:
-            for size in ("small", "medium", "large"):
-                img_url = a.posterImage.get(size)
-                if img_url:
-                    pictures.append({"url": img_url, "size": size})
+            variants = self._kitsu_cover_variants(a.posterImage)
+            data["picture"] = largest_cover_url(variants)
+            pictures = variants_as_dicts(variants)
         except Exception:
-            pass
+            pictures = []
 
         self.save_pictures(id, pictures)
 
@@ -463,6 +505,25 @@ class KitsuIoWrapper(APIUtils):
 
         data["id"] = self.resolve_catalog_id(external_ids)
         return data
+
+    @staticmethod
+    def _kitsu_cover_variants(poster) -> list[CoverVariant]:
+        variants: list[CoverVariant] = []
+        for size in ("small", "medium", "large", "original"):
+            img_url = None
+            if hasattr(poster, "get"):
+                img_url = poster.get(size)
+            elif isinstance(poster, dict):
+                img_url = poster.get(size)
+            else:
+                img_url = getattr(poster, size, None)
+            if not img_url:
+                continue
+            width, height = merge_kitsu_dimensions(poster, size)
+            variants.append(
+                CoverVariant(url=str(img_url), size=size, width=width, height=height)
+            )
+        return variants
 
     def _convertCharacter(self, c, anime_id=None):
         try:

@@ -41,7 +41,7 @@ def test_browse_season_merges_local_and_provider():
     results = _service().browse_season(
         SeasonBrowseRequest(year=2026, season="spring", limit=50)
     )
-    assert sorted(item.id for item in results) == [1, 2]
+    assert sorted(item.id for item in results.items) == [1, 2]
 
 
 def test_stream_browse_season_yields_local_then_remote():

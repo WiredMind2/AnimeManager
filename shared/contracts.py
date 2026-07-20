@@ -28,6 +28,7 @@ class ProviderName(str, Enum):
     ANILIST = "anilist"
     KITSU = "kitsu"
     MAL = "myanimelist"
+    ANIDB = "anidb"
     UNKNOWN = "unknown"
 
 
@@ -55,6 +56,8 @@ class AnimeRecord:
     genres: Tuple[str, ...] = ()
     external_ids: Dict[str, Any] = field(default_factory=dict)
     source_provider: ProviderName = ProviderName.UNKNOWN
+    # Cover variants for responsive selection: {url, size, width?, height?}
+    picture_variants: Tuple[Dict[str, Any], ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -77,6 +80,8 @@ class MediaAssetRecord:
     id: int
     url: str
     size: str  # one of: small, medium, large, original
+    width: Optional[int] = None
+    height: Optional[int] = None
 
 
 @dataclass
@@ -84,6 +89,7 @@ class IngestionResult:
     """Outcome of a search/ingest call. Mutable summary, never trusted as data."""
 
     status: IngestionStatus
+    payloads: List["ProviderAnimePayload"] = field(default_factory=list)
     records: List[AnimeRecord] = field(default_factory=list)
     failed_providers: int = 0
     total_providers: int = 0
@@ -102,12 +108,7 @@ VALID_RELATION_TYPES = frozenset({"anime", "manga", "novel", "character"})
 INDEX_PROVIDER_KEYS = frozenset({"mal_id", "kitsu_id", "anilist_id", "anidb_id"})
 
 
-class RepairStrategy(str, Enum):
-    """How startup/catalog repair groups duplicate rows."""
-
-    PROVIDER_ID = "provider_id"
-    TITLE = "title"
-    ALL = "all"
+from domain.catalog import RepairStrategy  # noqa: E402, F401
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,16 @@ class ProviderAnimePayload:
     broadcast: Optional[str] = None
     genres: Tuple[str, ...] = ()
     source_provider: ProviderName = ProviderName.UNKNOWN
+    picture_variants: Tuple[Dict[str, Any], ...] = ()
+
+
+def payload_fingerprint(payload: ProviderAnimePayload) -> tuple:
+    """Stable fingerprint for pipeline dedupe before catalogue assign."""
+    ext = tuple(sorted((payload.external_ids or {}).items()))
+    if ext:
+        return ("ext",) + ext
+    title = (payload.title or "").strip().lower()
+    return ("title", payload.source_provider.value, title)
 
 
 @dataclass(frozen=True)

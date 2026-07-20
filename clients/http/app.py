@@ -220,25 +220,43 @@ def get_anime_list(
 
 
 @app.get("/search")
-def search(query: str, limit: int = 50):
-    return get_sdk().search_anime(query=query, limit=limit)
+def search(query: str, limit: int = 50, offset: int = 0):
+    return get_sdk().search_anime(query=query, limit=limit, offset=offset)
 
 
 @app.get("/season")
-def browse_season(year: int, season: str, limit: int = 50):
-    return get_sdk().browse_season(year=year, season=season, limit=limit)
+def browse_season(year: int, season: str, limit: int = 50, offset: int = 0):
+    return get_sdk().browse_season(
+        year=year, season=season, limit=limit, offset=offset
+    )
 
 
 @app.get("/genre")
-def browse_genre(name: str, limit: int = 50):
-    return get_sdk().browse_genre(genre=name, limit=limit)
+def browse_genre(name: str, limit: int = 50, offset: int = 0):
+    return get_sdk().browse_genre(genre=name, limit=limit, offset=offset)
 
 
 @app.get("/genres")
 def list_genres():
-    from domain.policies.genre import GENRES
+    from domain.policies.genre import GENRE_ORDER
 
-    return {"items": sorted(GENRES)}
+    return {"items": list(GENRE_ORDER)}
+
+
+@app.get("/top")
+def browse_top(category: str = "all", limit: int = 50, offset: int = 0):
+    return get_sdk().browse_top(category=category, limit=limit, offset=offset)
+
+
+@app.get("/top/categories")
+def list_top_categories():
+    from domain.policies.top import TOP_CATEGORY_SPECS
+
+    return {
+        "items": [
+            {"key": spec.key, "label": spec.label} for spec in TOP_CATEGORY_SPECS
+        ]
+    }
 
 
 @app.post("/download/{anime_id}")
@@ -271,7 +289,7 @@ def search_torrents(
 ):
     """Search torrents.
 
-    `limit` is a **per-term** row cap (overrides the active profile).
+    ``limit`` is a **per-term** row cap (overrides the active profile).
     Omit it to use the profile default. Total rows scale with the number
     of search terms — there is no global hard ceiling.
     """

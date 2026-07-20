@@ -17,7 +17,7 @@ from application.services.startup_jobs import (
     StartupJobReport,
     StartupJobsService,
 )
-from domain.dto import AnimeListRequest, DownloadRequest, GenreBrowseRequest, SearchRequest, SeasonBrowseRequest
+from domain.dto import AnimeListRequest, DownloadRequest, GenreBrowseRequest, SearchRequest, SeasonBrowseRequest, TopBrowseRequest
 
 
 class EmbeddedClientFacade:
@@ -82,56 +82,90 @@ class EmbeddedClientFacade:
             return
         self._startup_jobs.stop_schedule_loop()
 
-    def search_anime(self, query: str, limit: int = 50):
+    def search_anime(self, query: str, limit: int = 50, offset: int = 0):
         return self._service.search_anime(
-            SearchRequest(query=query, limit=limit)
+            SearchRequest(query=query, limit=limit, offset=offset)
         )
 
-    def stream_search_anime(self, query: str, limit: int = 50):
+    def stream_search_anime(
+        self, query: str, limit: int = 50, offset: int = 0
+    ):
         """Yield :class:`AnimeEntity` results progressively (local then API)."""
         streamer = getattr(self._service, "stream_search_anime", None)
+        request = SearchRequest(query=query, limit=limit, offset=offset)
         if callable(streamer):
-            yield from streamer(SearchRequest(query=query, limit=limit))
+            yield from streamer(request)
             return
-        for item in self._service.search_anime(
-            SearchRequest(query=query, limit=limit)
-        ):
+        for item in self._service.search_anime(request).items:
             yield item
 
-    def browse_season(self, year: int, season: str, limit: int = 50):
+    def browse_season(
+        self, year: int, season: str, limit: int = 50, offset: int = 0
+    ):
         return self._service.browse_season(
-            SeasonBrowseRequest(year=year, season=season, limit=limit)
+            SeasonBrowseRequest(
+                year=year, season=season, limit=limit, offset=offset
+            )
         )
 
-    def stream_browse_season(self, year: int, season: str, limit: int = 50):
+    def stream_browse_season(
+        self, year: int, season: str, limit: int = 50, offset: int = 0
+    ):
         """Yield :class:`AnimeEntity` results for a broadcast season."""
         streamer = getattr(self._service, "stream_browse_season", None)
+        request = SeasonBrowseRequest(
+            year=year, season=season, limit=limit, offset=offset
+        )
         if callable(streamer):
-            yield from streamer(
-                SeasonBrowseRequest(year=year, season=season, limit=limit)
-            )
+            yield from streamer(request)
             return
-        for item in self._service.browse_season(
-            SeasonBrowseRequest(year=year, season=season, limit=limit)
-        ):
+        for item in self._service.browse_season(request).items:
             yield item
 
-    def browse_genre(self, genre: str, limit: int = 50):
+    def browse_genre(
+        self, genre: str | list[str], limit: int = 50, offset: int = 0
+    ):
+        from domain.policies.genre import normalize_genres
+
+        genres = normalize_genres(genre)
         return self._service.browse_genre(
-            GenreBrowseRequest(genre=genre, limit=limit)
+            GenreBrowseRequest(genres=genres, limit=limit, offset=offset)
         )
 
-    def stream_browse_genre(self, genre: str, limit: int = 50):
+    def stream_browse_genre(
+        self, genre: str | list[str], limit: int = 50, offset: int = 0
+    ):
         """Yield :class:`AnimeEntity` results for a genre browse."""
+        from domain.policies.genre import normalize_genres
+
+        genres = normalize_genres(genre)
         streamer = getattr(self._service, "stream_browse_genre", None)
+        request = GenreBrowseRequest(
+            genres=genres, limit=limit, offset=offset
+        )
         if callable(streamer):
-            yield from streamer(
-                GenreBrowseRequest(genre=genre, limit=limit)
-            )
+            yield from streamer(request)
             return
-        for item in self._service.browse_genre(
-            GenreBrowseRequest(genre=genre, limit=limit)
-        ):
+        for item in self._service.browse_genre(request).items:
+            yield item
+
+    def browse_top(self, category: str, limit: int = 50, offset: int = 0):
+        return self._service.browse_top(
+            TopBrowseRequest(category=category, limit=limit, offset=offset)
+        )
+
+    def stream_browse_top(
+        self, category: str, limit: int = 50, offset: int = 0
+    ):
+        """Yield :class:`AnimeEntity` results for a top browse."""
+        streamer = getattr(self._service, "stream_browse_top", None)
+        request = TopBrowseRequest(
+            category=category, limit=limit, offset=offset
+        )
+        if callable(streamer):
+            yield from streamer(request)
+            return
+        for item in self._service.browse_top(request).items:
             yield item
 
     def get_anime_list(
@@ -260,6 +294,9 @@ class EmbeddedClientFacade:
 
     def get_anime_pictures(self, anime_id: int) -> list[dict]:
         return self._service.get_anime_pictures(anime_id)
+
+    def get_anime_pictures_batch(self, anime_ids: list[int]) -> dict[int, list[dict]]:
+        return self._service.get_anime_pictures_batch(anime_ids)
 
     def refresh_anime_characters(self, anime_id: int) -> list[dict]:
         return self._service.refresh_anime_characters(anime_id)

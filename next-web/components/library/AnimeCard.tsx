@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { MouseEvent } from "react";
+import { useRef, type MouseEvent } from "react";
 import type { AnimeItem } from "@/lib/api";
+import { useCoverSrc } from "@/lib/covers/use-cover-src";
 
 const STATUS_DOT: Record<string, string> = {
   AIRING: "dot--airing",
@@ -35,6 +36,12 @@ type AnimeCardProps = {
 
 export default function AnimeCard({ item }: AnimeCardProps) {
   const router = useRouter();
+  const posterRef = useRef<HTMLDivElement>(null);
+  const coverSrc = useCoverSrc(
+    posterRef,
+    item.picture_variants,
+    item.picture,
+  );
   const statusLabel = (item.status || "UNKNOWN").toUpperCase();
   const statusClass = STATUS_DOT[statusLabel] ?? "dot--unknown";
   const tag = (item.tag || "NONE").toUpperCase();
@@ -58,10 +65,10 @@ export default function AnimeCard({ item }: AnimeCardProps) {
       onContextMenu={openTorrentSearch}
       title="Right-click to search torrents"
     >
-      <div className="card__poster">
-        {item.picture ? (
+      <div className="card__poster" ref={posterRef}>
+        {coverSrc ? (
           <img
-            src={item.picture}
+            src={coverSrc}
             alt={item.title ?? ""}
             loading="lazy"
             referrerPolicy="no-referrer"

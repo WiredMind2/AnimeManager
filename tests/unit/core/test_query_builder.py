@@ -10,6 +10,7 @@ from ....adapters.persistence.query_builder import (
     build_anime_list_query,
     build_genre_list_query,
     build_season_list_query,
+    build_top_list_query,
 )
 from domain.policies.season import season_date_range
 
@@ -117,3 +118,26 @@ class TestBuildGenreListQuery:
         assert "rating NOT IN" in q.filter_clause
         assert q.order == "anime.date_from"
         assert q.sort == "DESC"
+
+    def test_and_joins_multiple_genre_exists(self):
+        q = build_genre_list_query(
+            ["Action", "Comedy"], (0, 24), hide_rated=False, user_id=4
+        )
+        assert q.filter_clause.count("EXISTS (SELECT 1 FROM genres g") == 2
+        assert "gi.name = 'Action'" in q.filter_clause
+        assert "gi.name = 'Comedy'" in q.filter_clause
+        assert " AND " in q.filter_clause
+        assert q.params["genres"] == ["Action", "Comedy"]
+
+
+class TestBuildTopListQuery:
+    def test_airing_status_seed(self):
+        q = build_top_list_query("AIRING", (0, 24), hide_rated=True, user_id=4)
+        assert "status = 'AIRING'" in q.filter_clause
+        assert "rating NOT IN" in q.filter_clause
+        assert q.sort == "DESC"
+
+    def test_upcoming_sorts_ascending(self):
+        q = build_top_list_query("UPCOMING", (0, 10), hide_rated=False, user_id=1)
+        assert "status = 'UPCOMING'" in q.filter_clause
+        assert q.sort == "ASC"

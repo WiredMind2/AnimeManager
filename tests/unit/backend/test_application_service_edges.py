@@ -93,6 +93,10 @@ class FakeDownload:
     def search_torrents(self, terms, profile="interactive", limit=200):
         return [{"terms": list(terms), "profile": profile, "limit": limit}]
 
+    def mark_torrents_deleted_for_seen_anime(self, anime_id):
+        self.start_calls.append(("mark_seen_torrents", anime_id))
+        return 1
+
 
 class FakeActions:
     def __init__(self):
@@ -156,26 +160,49 @@ class TestSearchAnimeEdges:
         repo, _, _, _ = service._fakes
         repo.items = [AnimeEntity(id=1, title="Found")]
         result = service.search_anime(SearchRequest(query="!!!cowboy!!!"))
-        assert len(result) == 1
+        assert len(result.items) == 1
 
     def test_provider_used_when_repo_empty(self, service):
         repo, prov, _, _ = service._fakes
         repo.items = []
         prov.responses = [AnimeEntity(id=99, title="External")]
         result = service.search_anime(SearchRequest(query="naruto"))
-        assert result[0].id == 99
+        assert result.items[0].id == 99
 
     def test_repo_results_short_circuit_provider(self, service):
         repo, prov, _, _ = service._fakes
         repo.items = [AnimeEntity(id=1, title="Local")]
         prov.responses = [AnimeEntity(id=2, title="Remote")]
         result = service.search_anime(SearchRequest(query="something"))
-        assert [r.id for r in result] == [1, 2]
+        assert [r.id for r in result.items] == [1, 2]
 
     def test_limit_forwarded_to_repo(self, service):
         repo, _, _, _ = service._fakes
         service.search_anime(SearchRequest(query="anime", limit=7))
-        assert repo.calls[0] == ("search", "anime", 7)
+        # Over-fetch by one for has_next detection.
+        assert repo.calls[0] == ("search", "anime", 8)
+
+    def test_provisional_ids_filtered_from_search_results(self, service):
+        repo, prov, _, _ = service._fakes
+        repo.items = [
+            AnimeEntity(id=-1426116332, title="Orphan Higehiro"),
+            AnimeEntity(id=2808, title="Real Higehiro"),
+        ]
+        prov.responses = [AnimeEntity(id=-99, title="Remote provisional")]
+        result = service.search_anime(SearchRequest(query="higehiro"))
+        assert [r.id for r in result.items] == [2808]
+
+    def test_stream_search_skips_provisional_ids(self, service):
+        repo, prov, _, _ = service._fakes
+        repo.items = [
+            AnimeEntity(id=-1, title="Bad"),
+            AnimeEntity(id=42, title="Good"),
+        ]
+        prov.responses = []
+        emitted = list(
+            service.stream_search_anime(SearchRequest(query="higehiro", limit=50))
+        )
+        assert [e.id for e in emitted] == [42]
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +221,49 @@ class TestGetAnimeDetailsEdges:
         repo.items = [AnimeEntity(id=1, title="")]
         result = service.get_anime_details(1)
         assert result.entity.title == ""
+        # Without hydration/catalog, pending is not advertised to clients.
+        assert result.metadata_pending is False
+
+    def test_incomplete_without_catalog_not_pending(self, service):
+        class FakeHydration:
+            def catalog_id_exists(self, catalog_id: int) -> bool:
+                return False
+
+            def is_detail_refreshing(self, catalog_id: int) -> bool:
+                return False
+
+            def kickoff_detail_refresh(self, *_args, **_kwargs):
+                raise AssertionError("should not be called")
+
+        repo, _, _, _ = service._fakes
+        repo.items = [AnimeEntity(id=1292, title="")]
+        service._hydration = FakeHydration()
+        result = service.get_anime_details(1292)
+        assert result.metadata_pending is False
+        assert result.metadata_refreshing is False
+
+    def test_incomplete_with_catalog_is_pending(self, service):
+        class FakeHydration:
+            def __init__(self):
+                self.kickoff_calls: list[int] = []
+
+            def catalog_id_exists(self, catalog_id: int) -> bool:
+                return True
+
+            def is_detail_refreshing(self, catalog_id: int) -> bool:
+                return False
+
+            def kickoff_detail_refresh(self, catalog_id, *, after_hydrate=None):
+                self.kickoff_calls.append(int(catalog_id))
+
+        repo, _, _, _ = service._fakes
+        repo.items = [AnimeEntity(id=1, title="")]
+        hydration = FakeHydration()
+        service._hydration = hydration
+        result = service.get_anime_details(1)
         assert result.metadata_pending is True
+        assert result.metadata_refreshing is True
+        assert hydration.kickoff_calls == [1]
 
     @pytest.mark.parametrize("anime_id", [0, -1, 999999, 10**12])
     def test_not_found_raises(self, service, anime_id):
@@ -223,6 +292,20 @@ class TestRefreshAnimeDetailsEdges:
         result = service.refresh_anime_details(1)
         assert result == {"accepted": True, "anime_id": 1}
         assert hydration.kickoff_calls == [1]
+
+    def test_refresh_db_only_returns_not_accepted(self, service):
+        class FakeHydration:
+            def catalog_id_exists(self, catalog_id: int) -> bool:
+                return False
+
+            def kickoff_detail_refresh(self, *_args, **_kwargs):
+                raise AssertionError("should not be called")
+
+        repo, _, _, _ = service._fakes
+        repo.items = [AnimeEntity(id=1292, title="Some Title")]
+        service._hydration = FakeHydration()
+        result = service.refresh_anime_details(1292)
+        assert result == {"accepted": False, "anime_id": 1292}
 
     def test_refresh_not_found_raises(self, service):
         class FakeHydration:
@@ -388,6 +471,18 @@ class TestPortPassThrough:
         service.set_tag(1, "LIKED", 7)
         assert ("set_tag", 1, "LIKED", 7) in actions.calls
 
+    def test_set_tag_seen_removes_torrents(self, service):
+        _, _, downloads, actions = service._fakes
+        service.set_tag(9, "SEEN", 7)
+        assert ("set_tag", 9, "SEEN", 7) in actions.calls
+        assert ("mark_seen_torrents", 9) in downloads.start_calls
+
+    def test_set_tag_watching_does_not_remove_torrents(self, service):
+        _, _, downloads, actions = service._fakes
+        service.set_tag(9, "WATCHING", 7)
+        assert ("set_tag", 9, "WATCHING", 7) in actions.calls
+        assert ("mark_seen_torrents", 9) not in downloads.start_calls
+
     def test_set_like_default_true(self, service):
         _, _, _, actions = service._fakes
         service.set_like(1, 7)
@@ -397,6 +492,11 @@ class TestPortPassThrough:
         _, _, _, actions = service._fakes
         service.mark_seen(1, "ep1.mkv", 7)
         assert ("mark_seen", 1, "ep1.mkv", 7) in actions.calls
+
+    def test_mark_seen_removes_torrents(self, service):
+        _, _, downloads, _ = service._fakes
+        service.mark_seen(3, "ep1.mkv", 7)
+        assert ("mark_seen_torrents", 3) in downloads.start_calls
 
     def test_get_relations_passes_relation_type(self, service):
         # default relation_type is "anime"; ensure pass-through accepts custom

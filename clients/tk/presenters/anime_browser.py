@@ -51,7 +51,7 @@ class AnimeBrowserPresenter:
         *,
         query: str,
         limit: int,
-        on_result: Callable[[list[dict[str, Any]]], None],
+        on_result: Callable[[dict[str, Any]], None],
         on_error: Callable[[Exception], None],
     ) -> None:
         self._status_cb("Searching anime...")
@@ -59,7 +59,13 @@ class AnimeBrowserPresenter:
             self._sdk.search_anime,
             query=query,
             limit=limit,
-            on_success=lambda items: self._finish("Search completed", on_result, items),
+            on_success=lambda payload: self._finish(
+                "Search completed",
+                on_result,
+                payload
+                if isinstance(payload, dict)
+                else {"items": list(payload or []), "has_next": False},
+            ),
             on_error=lambda exc: self._fail("Search failed", on_error, exc),
         )
 

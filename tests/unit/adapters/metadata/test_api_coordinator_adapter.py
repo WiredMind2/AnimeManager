@@ -97,3 +97,25 @@ def test_stream_browse_genre_falls_back_to_browse():
     coord.browse_genre.return_value = [{"id": 9, "title": "Action"}]
     items = list(adapter.stream_browse_genre("Action"))
     assert items[0].title == "Action"
+
+
+def test_browse_top_maps_results():
+    adapter, coord = _make_adapter()
+    coord.browse_top.return_value = [{"id": 10, "title": "Popular"}]
+    results = adapter.browse_top("all")
+    assert results[0].title == "Popular"
+
+
+def test_stream_browse_top_uses_native_streamer():
+    adapter, coord = _make_adapter()
+    coord.stream_browse_top.return_value = [{"id": 11, "title": "Airing"}]
+    items = list(adapter.stream_browse_top("airing"))
+    assert items[0].title == "Airing"
+
+
+def test_stream_browse_top_falls_back_to_browse():
+    adapter, coord = _make_adapter()
+    del coord.stream_browse_top
+    coord.browse_top.return_value = [{"id": 12, "title": "Upcoming"}]
+    items = list(adapter.stream_browse_top("upcoming"))
+    assert items[0].title == "Upcoming"

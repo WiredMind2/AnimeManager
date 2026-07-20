@@ -100,7 +100,7 @@ class APICache:
 def cached_request(func):
     def wrapper(*args, **kwargs):
         self = args[0]
-        if getattr(self, "schedule_light", False):
+        if getattr(self, "list_light", False) or getattr(self, "schedule_light", False):
             return None
         if getattr(self, "defer_writes", False):
             self.queue.put((func, args, kwargs))
@@ -177,10 +177,22 @@ class APIUtils:
         self.database = self.getDatabase()
         self.queue = queue.Queue()
         self.defer_writes = False
-        self.schedule_light = False
+        # List endpoints emit external ids only; catalogue identity is
+        # batch-assigned by the coordinator. ``schedule_light`` remains a
+        # deprecated alias for one release cycle.
+        self.list_light = False
 
         # Initialize API response cache for performance optimization
         self.api_cache = APICache(max_size=1000, default_ttl=3600)  # 1 hour TTL
+
+    @property
+    def schedule_light(self) -> bool:
+        """Deprecated alias for :attr:`list_light`."""
+        return bool(getattr(self, "list_light", False))
+
+    @schedule_light.setter
+    def schedule_light(self, value: bool) -> None:
+        self.list_light = bool(value)
 
     @property
     def __name__(self):
@@ -395,18 +407,127 @@ class APIUtils:
         link_ids = {api_key: api_id for api_key, api_id in mapped}
         return self._catalog_identity().link(int(id), link_ids)
 
+    def _ensure_picture_dimension_columns(self) -> None:
+        """Add nullable width/height columns on ``pictures`` when missing."""
+        db = self.database
+        names: set[str] = set()
+        try:
+            info = db.sql("PRAGMA table_info(pictures)")
+            if info:
+                names = {str(row[1]) for row in info if row and len(row) > 1}
+        except Exception:
+            pass
+        if not names:
+            try:
+                info = db.sql("SHOW COLUMNS FROM pictures")
+                if info:
+                    names = {str(row[0]) for row in info if row}
+            except Exception:
+                pass
+        changed = False
+        for column, ddl in (
+            ("width", "ALTER TABLE pictures ADD COLUMN width INTEGER"),
+            ("height", "ALTER TABLE pictures ADD COLUMN height INTEGER"),
+        ):
+            if names and column in names:
+                continue
+            try:
+                db.sql(ddl, (), save=False)
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            try:
+                db.save()
+            except Exception:
+                pass
+
     @cached_request
     def save_pictures(self, id, pictures):
-        # pictures must be a list of dicts, each containing two fields: 'url', 'size'
-        # return # TODO - Put all that stuff in a queue and process everything at once
+        # pictures: list of dicts with url, size, and optional width/height
         valid_sizes = ("small", "medium", "large", "original")
         data = []
-        for pic in pictures:
-            if pic["size"] not in valid_sizes or pic["url"] is None:
+        for pic in pictures or []:
+            if not isinstance(pic, dict):
                 continue
-            data.append(pic)
+            size = pic.get("size")
+            url = pic.get("url")
+            if size not in valid_sizes or url is None:
+                continue
+            width = pic.get("width")
+            height = pic.get("height")
+            try:
+                width = int(width) if width is not None else None
+            except (TypeError, ValueError):
+                width = None
+            try:
+                height = int(height) if height is not None else None
+            except (TypeError, ValueError):
+                height = None
+            data.append(
+                {
+                    "url": str(url),
+                    "size": str(size),
+                    "width": width,
+                    "height": height,
+                }
+            )
+        if not data:
+            return
 
-        args, out = self.database.procedure("save_picture", id, json.dumps(pictures))
+        self._ensure_picture_dimension_columns()
+        anime_id = int(id)
+        with self.database.get_lock():
+            for pic in data:
+                try:
+                    exists_rows = self.database.sql(
+                        "SELECT EXISTS(SELECT 1 FROM pictures WHERE id=? AND size=?)",
+                        (anime_id, pic["size"]),
+                    )
+                    exists = bool(exists_rows and exists_rows[0] and exists_rows[0][0])
+                except Exception:
+                    exists = False
+                try:
+                    if exists:
+                        self.database.sql(
+                            "UPDATE pictures SET url=?, width=?, height=? "
+                            "WHERE id=? AND size=?",
+                            (
+                                pic["url"],
+                                pic["width"],
+                                pic["height"],
+                                anime_id,
+                                pic["size"],
+                            ),
+                            save=False,
+                        )
+                    else:
+                        self.database.sql(
+                            "INSERT INTO pictures(id, url, size, width, height) "
+                            "VALUES(?, ?, ?, ?, ?)",
+                            (
+                                anime_id,
+                                pic["url"],
+                                pic["size"],
+                                pic["width"],
+                                pic["height"],
+                            ),
+                            save=False,
+                        )
+                except Exception:
+                    # Best-effort: older schemas / test doubles may lack columns.
+                    try:
+                        self.database.sql(
+                            "INSERT INTO pictures(id, url, size) VALUES(?, ?, ?)",
+                            (anime_id, pic["url"], pic["size"]),
+                            save=False,
+                        )
+                    except Exception:
+                        pass
+            try:
+                self.database.save()
+            except Exception:
+                pass
 
     @cached_request
     def save_broadcast(self, id, w, h, m):

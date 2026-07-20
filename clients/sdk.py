@@ -25,10 +25,57 @@ class ClientSDK:
     def __init__(self) -> None:
         self._facade = _facade()
 
-    def search_anime(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
-        return [asdict(item) for item in self._facade.search_anime(query, limit)]
+    def _attach_picture_variants(
+        self, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Attach ``picture_variants`` from the pictures table onto anime dicts."""
+        if not items:
+            return items
+        ids = [int(item["id"]) for item in items if item.get("id") is not None]
+        if not ids:
+            return items
+        batcher = getattr(self._facade, "get_anime_pictures_batch", None)
+        cache: dict[int, list[dict[str, Any]]] = {}
+        if callable(batcher):
+            try:
+                cache = dict(batcher(ids) or {})
+            except Exception:
+                cache = {}
+        for item in items:
+            anime_id = item.get("id")
+            if anime_id is None:
+                item["picture_variants"] = []
+                continue
+            variants = cache.get(int(anime_id))
+            if variants is None:
+                try:
+                    variants = list(
+                        self._facade.get_anime_pictures(int(anime_id)) or []
+                    )
+                except Exception:
+                    variants = []
+            item["picture_variants"] = variants
+        return items
 
-    def stream_search_anime(self, query: str, limit: int = 50):
+    def _serialize_anime(self, item: Any) -> dict[str, Any]:
+        payload = asdict(item) if not isinstance(item, dict) else dict(item)
+        self._attach_picture_variants([payload])
+        return payload
+
+    def search_anime(
+        self, query: str, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        response = self._facade.search_anime(query, limit, offset=offset)
+        return {
+            "items": self._attach_picture_variants(
+                [asdict(item) for item in response.items]
+            ),
+            "has_next": response.has_next,
+        }
+
+    def stream_search_anime(
+        self, query: str, limit: int = 50, offset: int = 0
+    ):
         """Yield serializable anime dicts progressively (local then API).
 
         Mirrors :meth:`stream_torrents`: clients (e.g. the HTTP
@@ -39,41 +86,88 @@ class ClientSDK:
         """
         streamer = getattr(self._facade, "stream_search_anime", None)
         if callable(streamer):
-            for item in streamer(query, limit):
-                yield asdict(item)
+            for item in streamer(query, limit, offset=offset):
+                yield self._serialize_anime(item)
             return
-        for item in self._facade.search_anime(query, limit):
-            yield asdict(item)
+        for item in self._facade.search_anime(query, limit, offset=offset).items:
+            yield self._serialize_anime(item)
 
     def browse_season(
-        self, year: int, season: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
-        return [asdict(item) for item in self._facade.browse_season(year, season, limit)]
+        self, year: int, season: str, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        response = self._facade.browse_season(
+            year, season, limit, offset=offset
+        )
+        return {
+            "items": self._attach_picture_variants(
+                [asdict(item) for item in response.items]
+            ),
+            "has_next": response.has_next,
+        }
 
-    def stream_browse_season(self, year: int, season: str, limit: int = 50):
+    def stream_browse_season(
+        self, year: int, season: str, limit: int = 50, offset: int = 0
+    ):
         """Yield serializable anime dicts for a broadcast season."""
         streamer = getattr(self._facade, "stream_browse_season", None)
         if callable(streamer):
-            for item in streamer(year, season, limit):
-                yield asdict(item)
+            for item in streamer(year, season, limit, offset=offset):
+                yield self._serialize_anime(item)
             return
-        for item in self._facade.browse_season(year, season, limit):
-            yield asdict(item)
+        for item in self._facade.browse_season(
+            year, season, limit, offset=offset
+        ).items:
+            yield self._serialize_anime(item)
 
     def browse_genre(
-        self, genre: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
-        return [asdict(item) for item in self._facade.browse_genre(genre, limit)]
+        self, genre: str | list[str], limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        response = self._facade.browse_genre(genre, limit, offset=offset)
+        return {
+            "items": self._attach_picture_variants(
+                [asdict(item) for item in response.items]
+            ),
+            "has_next": response.has_next,
+        }
 
-    def stream_browse_genre(self, genre: str, limit: int = 50):
+    def stream_browse_genre(
+        self, genre: str | list[str], limit: int = 50, offset: int = 0
+    ):
         """Yield serializable anime dicts for a genre browse."""
         streamer = getattr(self._facade, "stream_browse_genre", None)
         if callable(streamer):
-            for item in streamer(genre, limit):
-                yield asdict(item)
+            for item in streamer(genre, limit, offset=offset):
+                yield self._serialize_anime(item)
             return
-        for item in self._facade.browse_genre(genre, limit):
-            yield asdict(item)
+        for item in self._facade.browse_genre(
+            genre, limit, offset=offset
+        ).items:
+            yield self._serialize_anime(item)
+
+    def browse_top(
+        self, category: str, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        response = self._facade.browse_top(category, limit, offset=offset)
+        return {
+            "items": self._attach_picture_variants(
+                [asdict(item) for item in response.items]
+            ),
+            "has_next": response.has_next,
+        }
+
+    def stream_browse_top(
+        self, category: str, limit: int = 50, offset: int = 0
+    ):
+        """Yield serializable anime dicts for a top browse."""
+        streamer = getattr(self._facade, "stream_browse_top", None)
+        if callable(streamer):
+            for item in streamer(category, limit, offset=offset):
+                yield self._serialize_anime(item)
+            return
+        for item in self._facade.browse_top(
+            category, limit, offset=offset
+        ).items:
+            yield self._serialize_anime(item)
 
     def get_anime_list(
         self,
@@ -90,7 +184,12 @@ class ClientSDK:
             list_stop=list_stop,
             hide_rated=hide_rated,
         )
-        return {"items": [asdict(item) for item in response.items], "has_next": response.has_next}
+        return {
+            "items": self._attach_picture_variants(
+                [asdict(item) for item in response.items]
+            ),
+            "has_next": response.has_next,
+        }
 
     def stop_hydration(self) -> None:
         """Stop the background metadata hydration worker."""
@@ -106,6 +205,7 @@ class ClientSDK:
         payload = asdict(result.entity)
         payload["metadata_pending"] = result.metadata_pending
         payload["metadata_refreshing"] = result.metadata_refreshing
+        self._attach_picture_variants([payload])
         return payload
 
     def refresh_anime_details(self, anime_id: int) -> dict[str, Any]:
@@ -173,6 +273,7 @@ class ClientSDK:
     ):
         """Iterate torrent results as soon as the underlying engines return them.
 
+        ``limit`` overrides the per-term row cap; omit for the profile default.
         Falls back transparently to materialized :meth:`search_torrents`
         when the embedded facade is older than the streaming contract.
         """
@@ -224,7 +325,31 @@ class ClientSDK:
         return self._facade.update_settings(updates)
 
     def get_relations(self, anime_id: int, relation_type: str = "anime") -> list[dict[str, Any]]:
-        return self._facade.get_relations(anime_id, relation_type)
+        rows = [dict(row) for row in (self._facade.get_relations(anime_id, relation_type) or []) if isinstance(row, dict)]
+        rel_ids: list[int] = []
+        for row in rows:
+            rel_id = row.get("rel_id") or row.get("anime_id")
+            if rel_id is None:
+                continue
+            try:
+                rel_ids.append(int(rel_id))
+            except (TypeError, ValueError):
+                continue
+        cache: dict[int, list[dict[str, Any]]] = {}
+        batcher = getattr(self._facade, "get_anime_pictures_batch", None)
+        if callable(batcher) and rel_ids:
+            try:
+                cache = dict(batcher(rel_ids) or {})
+            except Exception:
+                cache = {}
+        for row in rows:
+            rel_id = row.get("rel_id") or row.get("anime_id")
+            try:
+                key = int(rel_id) if rel_id is not None else None
+            except (TypeError, ValueError):
+                key = None
+            row["picture_variants"] = cache.get(key, []) if key is not None else []
+        return rows
 
     def get_anime_torrents(self, anime_id: int) -> list[dict[str, Any]]:
         return self._facade.get_anime_torrents(anime_id)

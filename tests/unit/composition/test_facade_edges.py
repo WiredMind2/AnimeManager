@@ -28,7 +28,9 @@ def facade(service):
 def test_search_anime_forwards_query_and_limit(facade, service):
     service.search_anime.return_value = ["a"]
     out = facade.search_anime("naruto", limit=12)
-    service.search_anime.assert_called_once_with(SearchRequest(query="naruto", limit=12))
+    service.search_anime.assert_called_once_with(
+        SearchRequest(query="naruto", limit=12, offset=0)
+    )
     assert out == ["a"]
 
 
@@ -102,7 +104,7 @@ def test_get_active_downloads_returns_list(facade, service):
 def test_search_torrents_forwards_args(facade, service):
     facade.search_torrents(["a", "b"], profile="strict", limit=50)
     service.search_torrents.assert_called_once_with(
-        ["a", "b"], profile="strict", limit=50
+        ["a", "b"], profile="strict", limit=50, allow_nsfw=False
     )
 
 

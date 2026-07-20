@@ -16,19 +16,21 @@ export class ApiError extends Error {
 
 async function request<T>(
   path: string,
-  init?: RequestInit & { json?: unknown },
+  init?: RequestInit & { json?: unknown; reportError?: boolean },
 ): Promise<T> {
   const url = apiUrl(path);
-  const headers = new Headers(init?.headers);
+  const { json, reportError: reportErrorOpt, ...fetchInit } = init ?? {};
+  const headers = new Headers(fetchInit.headers);
+  const shouldReportError = reportErrorOpt !== false;
 
-  let body = init?.body;
-  if (init?.json !== undefined) {
+  let body = fetchInit.body;
+  if (json !== undefined) {
     headers.set("Content-Type", "application/json");
-    body = JSON.stringify(init.json);
+    body = JSON.stringify(json);
   }
 
   const res = await fetch(url, {
-    ...init,
+    ...fetchInit,
     headers,
     body,
     cache: "no-store",
@@ -43,13 +45,15 @@ async function request<T>(
     }
     const requestId = res.headers.get(REQUEST_ID_HEADER) ?? undefined;
     const apiError = new ApiError(`Request failed: ${path}`, res.status, detail);
-    reportError(apiError, {
-      path,
-      method: init?.method ?? "GET",
-      status: res.status,
-      request_id: requestId,
-      source: "api.request",
-    });
+    if (shouldReportError) {
+      reportError(apiError, {
+        path,
+        method: fetchInit.method ?? "GET",
+        status: res.status,
+        request_id: requestId,
+        source: "api.request",
+      });
+    }
     throw apiError;
   }
 
@@ -104,10 +108,18 @@ export async function getAnimeForSSR(id: number): Promise<AnimeItem> {
   return requestWithSsrRetry<AnimeItem>(`/anime/${id}`);
 }
 
+export type AnimePicture = {
+  url?: string;
+  size?: string;
+  width?: number | null;
+  height?: number | null;
+};
+
 export type AnimeItem = {
   id: number;
   title?: string;
   picture?: string;
+  picture_variants?: AnimePicture[];
   status?: string;
   episodes?: number;
   duration?: number;
@@ -146,11 +158,6 @@ export type AnimeCharacterDetail = AnimeCharacter & {
     title?: string;
     role?: string;
   }>;
-};
-
-export type AnimePicture = {
-  url?: string;
-  size?: string;
 };
 
 export type UserState = {
@@ -233,6 +240,7 @@ export type AnimeRelation = {
   type?: string;
   title?: string;
   picture?: string;
+  picture_variants?: AnimePicture[];
   status?: string;
   date_from?: string | number;
   episodes?: number;
@@ -366,11 +374,12 @@ export type LogRecord = {
 };
 
 export const api = {
-  getAnime: (id: number, init?: Pick<RequestInit, "signal">) =>
+  getAnime: (id: number, init?: Pick<RequestInit, "signal"> & { reportError?: boolean }) =>
     request<AnimeItem>(`/anime/${id}`, init),
-  refreshAnimeDetails: (id: number) =>
+  refreshAnimeDetails: (id: number, init?: { reportError?: boolean }) =>
     request<{ accepted: boolean; anime_id: number }>(`/anime/${id}/refresh`, {
       method: "POST",
+      reportError: init?.reportError,
     }),
   getAnimeList: (params: {
     filter?: string;
@@ -387,17 +396,34 @@ export const api = {
     if (params.hide_rated !== undefined) qs.set("hide_rated", params.hide_rated ? "true" : "false");
     return request<{ items: AnimeItem[]; has_next: boolean }>(`/animelist?${qs}`);
   },
-  searchAnime: (query: string, limit = 50) =>
-    request<AnimeItem[]>(`/search?query=${encodeURIComponent(query)}&limit=${limit}`),
-  browseSeason: (year: number, season: string, limit = 50) =>
-    request<AnimeItem[]>(
-      `/season?year=${encodeURIComponent(String(year))}&season=${encodeURIComponent(season)}&limit=${limit}`,
+  searchAnime: (query: string, limit = 50, offset = 0) =>
+    request<{ items: AnimeItem[]; has_next: boolean }>(
+      `/search?query=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`,
     ),
-  browseGenre: (name: string, limit = 50) =>
-    request<AnimeItem[]>(
-      `/genre?name=${encodeURIComponent(name)}&limit=${limit}`,
+  browseSeason: (
+    year: number,
+    season: string,
+    limit = 50,
+    offset = 0,
+    init?: Pick<RequestInit, "signal">,
+  ) =>
+    request<{ items: AnimeItem[]; has_next: boolean }>(
+      `/season?year=${encodeURIComponent(String(year))}&season=${encodeURIComponent(season)}&limit=${limit}&offset=${offset}`,
+      init,
     ),
+  browseGenre: (name: string | string[], limit = 50, offset = 0) => {
+    const joined = Array.isArray(name) ? name.join(",") : name;
+    return request<{ items: AnimeItem[]; has_next: boolean }>(
+      `/genre?name=${encodeURIComponent(joined)}&limit=${limit}&offset=${offset}`,
+    );
+  },
   getGenres: () => request<{ items: string[] }>("/genres"),
+  browseTop: (category: string, limit = 50, offset = 0) =>
+    request<{ items: AnimeItem[]; has_next: boolean }>(
+      `/top?category=${encodeURIComponent(category)}&limit=${limit}&offset=${offset}`,
+    ),
+  getTopCategories: () =>
+    request<{ items: Array<{ key: string; label: string }> }>("/top/categories"),
   getUserState: (animeId: number, userId: number) =>
     request<UserState>(`/state/${animeId}?user_id=${userId}`),
   setTag: (animeId: number, tag: string, userId: number) =>

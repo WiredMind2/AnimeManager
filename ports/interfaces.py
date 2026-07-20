@@ -80,7 +80,14 @@ class AnimeRepositoryPort(Protocol):
 
     def list_by_genre(
         self,
-        genre: str,
+        genre: str | list[str],
+        limit: int = 50,
+    ) -> list[AnimeEntity]:
+        ...
+
+    def list_by_top_category(
+        self,
+        category: str,
         limit: int = 50,
     ) -> list[AnimeEntity]:
         ...
@@ -130,6 +137,9 @@ class AnimeRepositoryPort(Protocol):
     def get_anime_pictures(self, anime_id: int) -> list[dict]:
         ...
 
+    def get_anime_pictures_batch(self, anime_ids: list[int]) -> dict[int, list[dict]]:
+        ...
+
     def refresh_anime_characters(self, anime_id: int) -> list[dict]:
         ...
 
@@ -163,11 +173,19 @@ class MetadataProviderPort(Protocol):
         ...
 
     def browse_genre(
-        self, genre: str, limit: int = 50
+        self, genre: str | list[str], limit: int = 50
     ) -> list[AnimeEntity]:
         ...
 
-    def stream_browse_genre(self, genre: str, limit: int = 50):
+    def stream_browse_genre(self, genre: str | list[str], limit: int = 50):
+        ...
+
+    def browse_top(
+        self, category: str, limit: int = 50
+    ) -> list[AnimeEntity]:
+        ...
+
+    def stream_browse_top(self, category: str, limit: int = 50):
         ...
 
 
@@ -207,7 +225,7 @@ class DownloadPort(Protocol):
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ) -> list[dict]:
         ...
@@ -216,16 +234,25 @@ class DownloadPort(Protocol):
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ):
-        """Optional streaming variant of :meth:`search_torrents`."""
+        """Optional streaming variant of :meth:`search_torrents`.
+
+        ``limit`` overrides the per-term row cap for this request. When
+        omitted, the active search profile default is used. There is no
+        separate global result ceiling.
+        """
         ...
 
     def mark_torrents_deleted_for_removed_file(
         self, anime_id: int, deleted_path: str
     ) -> int:
         """Mark torrents owning ``deleted_path`` as deleted and stop client restore."""
+        ...
+
+    def mark_torrents_deleted_for_seen_anime(self, anime_id: int) -> int:
+        """Stop downloads and mark torrents deleted when anime is tagged SEEN."""
         ...
 
 
@@ -240,6 +267,10 @@ class UserActionsPort(Protocol):
         ...
 
     def get_user_state(self, anime_id: int, user_id: int) -> dict:
+        ...
+
+    def list_anime_ids_with_tag(self, tag: str) -> list[int]:
+        """Return anime IDs whose ``user_tags.tag`` equals ``tag`` (any user)."""
         ...
 
     def get_episode_progress_map(self, anime_id: int, user_id: int) -> dict[str, dict[str, Any]]:

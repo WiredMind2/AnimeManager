@@ -1,11 +1,14 @@
+import Link from "next/link";
 import { FILTER_OPTIONS, type FilterValue } from "@/lib/config";
 import { libraryPageUrl, type PageSizeOption } from "@/lib/library";
 import GenreBrowseChip from "./GenreBrowseChip";
 import SeasonBrowseChip from "./SeasonBrowseChip";
+import TopBrowseChip from "./TopBrowseChip";
 
 type FilterChipsProps = {
   activeFilter: string;
   q?: string | null;
+  backUrl?: string | null;
   pageSize: PageSizeOption;
   hideRated: boolean;
   settingsHideRated: boolean;
@@ -15,6 +18,7 @@ type FilterChipsProps = {
 function chipHref(
   filterValue: FilterValue,
   q: string | null | undefined,
+  backUrl: string | null | undefined,
   pageSize: PageSizeOption,
   hideRated: boolean,
   settingsHideRated: boolean,
@@ -23,6 +27,7 @@ function chipHref(
   return libraryPageUrl({
     filter: filterValue,
     q: q ?? undefined,
+    back: backUrl,
     size: pageSize,
     hideRated,
     settingsHideRated,
@@ -33,6 +38,7 @@ function chipHref(
 export default function FilterChips({
   activeFilter,
   q,
+  backUrl = null,
   pageSize,
   hideRated,
   settingsHideRated,
@@ -45,12 +51,13 @@ export default function FilterChips({
       {FILTER_OPTIONS.map((option) => {
         const isActive = (option.value || "DEFAULT").toUpperCase() === normalizedActive;
         return (
-          <a
+          <Link
             key={option.value}
             className={`chip${isActive ? " is-active" : ""}`}
             href={chipHref(
               option.value,
               q,
+              backUrl,
               pageSize,
               hideRated,
               settingsHideRated,
@@ -63,11 +70,12 @@ export default function FilterChips({
               <span className="chip__dot" style={{ background: option.dot }} />
             ) : null}
             {option.label}
-          </a>
+          </Link>
         );
       })}
       <SeasonBrowseChip />
       <GenreBrowseChip />
+      <TopBrowseChip />
     </div>
   );
 }

@@ -60,8 +60,17 @@ export function parseSeasonBrowseParams(
   return { season: normalizedSeason, year: parsedYear };
 }
 
-export function seasonBrowseUrl(year: number, season: string): string {
+export function seasonBrowseUrl(
+  year: number,
+  season: string,
+  params: { page?: number; size?: number } = {},
+): string {
   const normalized = normalizeSeason(season);
   if (!normalized) return "/library/season";
-  return `/library/season?year=${year}&season=${normalized}`;
+  const parts = [`year=${year}`, `season=${normalized}`];
+  const page = params.page ?? 1;
+  if (page > 1) parts.push(`page=${page}`);
+  const size = params.size;
+  if (size != null && size !== 24) parts.push(`size=${size}`);
+  return `/library/season?${parts.join("&")}`;
 }

@@ -10,7 +10,7 @@ to a safe default (`DEFAULT`) before SQL is touched.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "build_anime_list_query",
     "build_genre_list_query",
     "build_season_list_query",
+    "build_top_list_query",
     "ALLOWED_CRITERIA",
 ]
 
@@ -161,23 +162,35 @@ def build_anime_list_query(
 
 
 def build_genre_list_query(
-    genre: str,
+    genres: Sequence[str] | str,
     listrange: Tuple[int, int],
     *,
     hide_rated: bool,
     user_id: int,
 ) -> AnimeListQuery:
-    """Build a query for anime tagged with a validated genre name."""
+    """Build a query for anime tagged with every genre in ``genres`` (AND)."""
+    if isinstance(genres, str):
+        genre_list = [genres]
+    else:
+        genre_list = list(genres)
+    if not genre_list:
+        raise ValueError("At least one genre is required.")
     start, stop = listrange
     start = max(0, int(start))
     stop = max(start + 1, int(stop))
     safe_range = (start, stop)
     uid = int(user_id)
+    exists_parts = [
+        (
+            "EXISTS (SELECT 1 FROM genres g "
+            "LEFT JOIN genresindex gi ON gi.id = g.value "
+            f"WHERE g.id = anime.id AND (gi.name = '{genre}' OR g.value = '{genre}'))"
+        )
+        for genre in genre_list
+    ]
     clause = (
-        "EXISTS (SELECT 1 FROM genres g "
-        "LEFT JOIN genresindex gi ON gi.id = g.value "
-        f"WHERE g.id = anime.id AND (gi.name = '{genre}' OR g.value = '{genre}')) "
-        "AND anime.status != 'UPCOMING' AND anime.status != 'UNKNOWN'"
+        " AND ".join(exists_parts)
+        + " AND anime.status != 'UPCOMING' AND anime.status != 'UNKNOWN'"
     )
     if hide_rated:
         clause += f" AND {_RATING_GUARD}"
@@ -187,7 +200,7 @@ def build_genre_list_query(
         order="anime.date_from",
         sort="DESC",
         range=safe_range,
-        params={"user_id": uid, "genre": genre},
+        params={"user_id": uid, "genres": list(genre_list)},
     )
 
 
@@ -216,4 +229,37 @@ def build_season_list_query(
         sort="DESC",
         range=safe_range,
         params={"user_id": uid, "start_ts": int(start_ts), "end_ts": int(end_ts)},
+    )
+
+
+def build_top_list_query(
+    status: str,
+    listrange: Tuple[int, int],
+    *,
+    hide_rated: bool,
+    user_id: int,
+) -> AnimeListQuery:
+    """Build a local seed query for a top-browse status category.
+
+    ``status`` must already be a validated local status token such as
+    ``AIRING`` or ``UPCOMING``. Categories without a local seed (e.g.
+    ``all``) should skip this helper entirely.
+    """
+    start, stop = listrange
+    start = max(0, int(start))
+    stop = max(start + 1, int(stop))
+    safe_range = (start, stop)
+    uid = int(user_id)
+    status_key = str(status).strip().upper()
+    sort = "ASC" if status_key == "UPCOMING" else "DESC"
+    clause = f"status = '{status_key}'"
+    if hide_rated:
+        clause += f" AND {_RATING_GUARD}"
+    return AnimeListQuery(
+        table=_default_table(uid),
+        filter_clause=clause,
+        order="date_from",
+        sort=sort,
+        range=safe_range,
+        params={"user_id": uid, "status": status_key},
     )

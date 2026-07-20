@@ -7,6 +7,13 @@ from shared.utils.broadcast_schedule import (
     broadcast_slot_to_string,
     utc_timestamp_to_jst_slot,
 )
+from domain.cover_images import (
+    ANILIST_COVER_DIMENSIONS,
+    ANILIST_SIZE_LABELS,
+    cover_variants_from_mapping,
+    largest_cover_url,
+    variants_as_dicts,
+)
 
 try:
     from .APIUtils import Anime, APIUtils, Character, EnhancedSession
@@ -365,20 +372,31 @@ class AnilistCoWrapper(APIUtils):
                 if count >= limit:
                     return
 
-    def genre(self, name, limit=50):
+    def genre(self, genres, limit=50):
+        """Yield anime matching every genre in ``genres`` (AND).
+
+        AniList ``genre_in`` is OR-shaped, so candidates are fetched with
+        all selected genres then post-filtered to require the full set.
+        """
+        if isinstance(genres, str):
+            required = [g.strip() for g in genres.split(",") if g.strip()]
+        else:
+            required = [str(g).strip() for g in (genres or []) if str(g).strip()]
+        if not required:
+            return
         query = QueryObject(
             "query",
             args=(
                 ("$page", "Int"),
                 ("$perPage", "Int"),
-                ("$genre", "String"),
+                ("$genres", "[String]"),
             ),
             fields=[
                 self.pagination_query.add_field(
                     QueryObject(
                         "media",
                         args=(
-                            ("genre_in", "[$genre]"),
+                            ("genre_in", "$genres"),
                             ("type", "ANIME"),
                             ("sort", "POPULARITY_DESC"),
                         ),
@@ -390,9 +408,66 @@ class AnilistCoWrapper(APIUtils):
         variables = {
             "page": 1,
             "perPage": min(50, max(1, int(limit))),
-            "genre": str(name),
+            "genres": required,
             "max_pages": max(1, (int(limit) + 49) // 50),
         }
+        required_lower = {g.lower() for g in required}
+        count = 0
+        for media in self.iterate(query, variables):
+            media_genres = media.get("genres") if isinstance(media, dict) else None
+            if not isinstance(media_genres, list):
+                continue
+            have = {str(g).strip().lower() for g in media_genres if g}
+            if not required_lower.issubset(have):
+                continue
+            data = self._convertAnime(media)
+            if data and len(data) != 0:
+                yield data
+                count += 1
+                if count >= limit:
+                    return
+
+    _TOP_STATUS = {
+        "airing": "RELEASING",
+        "upcoming": "NOT_YET_RELEASED",
+    }
+
+    def top(self, category, limit=50):
+        """Yield top anime ranked by popularity for a browse category."""
+        category_key = str(category or "").strip().lower()
+        if category_key not in ("all", "airing", "upcoming"):
+            return
+        status = self._TOP_STATUS.get(category_key)
+        media_args = [
+            ("type", "ANIME"),
+            ("sort", "POPULARITY_DESC"),
+        ]
+        query_args = [
+            ("$page", "Int"),
+            ("$perPage", "Int"),
+        ]
+        variables = {
+            "page": 1,
+            "perPage": min(50, max(1, int(limit))),
+            "max_pages": max(1, (int(limit) + 49) // 50),
+        }
+        if status is not None:
+            query_args.append(("$status", "MediaStatus"))
+            media_args.insert(0, ("status", "$status"))
+            variables["status"] = status
+        query = QueryObject(
+            "query",
+            args=tuple(query_args),
+            fields=[
+                self.pagination_query.add_field(
+                    QueryObject(
+                        "media",
+                        args=tuple(media_args),
+                        fields=self.media_fields,
+                    )
+                )
+            ],
+        )
         count = 0
         for media in self.iterate(query, variables):
             data = self._convertAnime(media)
@@ -450,7 +525,7 @@ class AnilistCoWrapper(APIUtils):
         mal_id = a.get("mal_id") or a.get("idMal")
         if mal_id:
             external_ids["mal_id"] = int(mal_id)
-        if getattr(self, "schedule_light", False):
+        if getattr(self, "list_light", False) or getattr(self, "schedule_light", False):
             out = Anime()
             out._schedule_external_ids = external_ids
 
@@ -503,7 +578,11 @@ class AnilistCoWrapper(APIUtils):
             out.duration = a.get("duration")
             out.trailer = (a.get("trailer") or {}).get("site")
             out.rating = "R" if a.get("isAdult") else ""
-            out.picture = a.get("coverImage", {}).get("medium")
+            cover_variants = self._anilist_cover_variants(a.get("coverImage") or {})
+            out.picture = largest_cover_url(cover_variants) or (
+                (a.get("coverImage") or {}).get("medium")
+            )
+            out._pending_pictures = variants_as_dicts(cover_variants)
             broadcast = (a.get("nextAiringEpisode") or {}).get("airingAt")
             if broadcast:
                 slot = utc_timestamp_to_jst_slot(int(broadcast))
@@ -576,18 +655,11 @@ class AnilistCoWrapper(APIUtils):
         out.trailer = (a.get("trailer") or {}).get("site")
         out.rating = "R" if a.get("isAdult") else ""
 
-        out.picture = a.get("coverImage", {}).get("medium")
-
-        pictures = []
-
-        sizes = {"large": "medium", "medium": "small", "extraLarge": "large"}
-        pictures = []
-        for key, size in sizes.items():
-            url = a.get("coverImage", {}).get(key)
-            if url:
-                img = {"url": url, "size": size}
-                pictures.append(img)
-
+        cover_variants = self._anilist_cover_variants(a.get("coverImage") or {})
+        out.picture = largest_cover_url(cover_variants) or (
+            (a.get("coverImage") or {}).get("medium")
+        )
+        pictures = variants_as_dicts(cover_variants)
         self.save_pictures(id, pictures)
 
         broadcast = (a.get("nextAiringEpisode") or {}).get("airingAt")
@@ -626,6 +698,15 @@ class AnilistCoWrapper(APIUtils):
                 # self._convertCharacter(c) #TODO
 
         return out
+
+    @staticmethod
+    def _anilist_cover_variants(cover_image: dict):
+        urls = {key: cover_image.get(key) for key in ANILIST_SIZE_LABELS}
+        return cover_variants_from_mapping(
+            urls,
+            dimensions_by_key=ANILIST_COVER_DIMENSIONS,
+            size_labels=ANILIST_SIZE_LABELS,
+        )
 
     def _convertCharacter(self, c, anime_id=None):
         # TODO - merge function

@@ -1,7 +1,8 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SEARCH_BACK_PREFIXES, sanitizeBackUrl } from "@/lib/library";
 
 type TopBarProps = {
   title?: string;
@@ -9,14 +10,24 @@ type TopBarProps = {
   showSearch?: boolean;
 };
 
+const MIN_QUERY_LENGTH = 3;
+
+/** Params that stay meaningful when jumping from any view into global search. */
+const SEARCH_PARAM_WHITELIST = ["filter", "size", "hide_rated"] as const;
+
 export default function TopBar({ title = "Library", actions, showSearch = true }: TopBarProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const [hintVisible, setHintVisible] = useState(false);
   const [menuExpanded, setMenuExpanded] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    // Don't clobber what the user is typing when a pending navigation lands.
+    if (typeof document !== "undefined" && document.activeElement === inputRef.current) return;
     setQuery(searchParams.get("q") ?? "");
   }, [searchParams]);
 
@@ -28,20 +39,51 @@ export default function TopBar({ title = "Library", actions, showSearch = true }
     });
   }, []);
 
-  const submitSearch = useCallback(
-    (value: string) => {
-      const params = new URLSearchParams(searchParams.toString());
-      const trimmed = value.trim();
-      if (trimmed) {
-        params.set("q", trimmed);
-        params.delete("page");
+  const searchResultsUrl = useCallback(
+    (trimmed: string) => {
+      // Fresh param set: never carry browse-view params (year, season, page, …)
+      // into global search — they would misleadingly suggest a scoped search.
+      const params = new URLSearchParams();
+      if (trimmed) params.set("q", trimmed);
+      for (const key of SEARCH_PARAM_WHITELIST) {
+        const value = searchParams.get(key);
+        if (value) params.set(key, value);
+      }
+      const isBrowseView = SEARCH_BACK_PREFIXES.some((prefix) => pathname === prefix);
+      if (isBrowseView) {
+        const currentQs = searchParams.toString();
+        params.set("back", currentQs ? `${pathname}?${currentQs}` : pathname);
       } else {
-        params.delete("q");
+        const existingBack = sanitizeBackUrl(searchParams.get("back"));
+        if (existingBack) params.set("back", existingBack);
       }
       const qs = params.toString();
-      router.push(qs ? `/library?${qs}` : "/library");
+      return qs ? `/library?${qs}` : "/library";
     },
-    [router, searchParams],
+    [pathname, searchParams],
+  );
+
+  const submitSearch = useCallback(
+    (value: string) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        setHintVisible(false);
+        // Only navigate when clearing an active search; return to the browse
+        // view the search started from when we know it.
+        if (searchParams.get("q")) {
+          const back = sanitizeBackUrl(searchParams.get("back"));
+          router.push(back ?? searchResultsUrl(""));
+        }
+        return;
+      }
+      if (trimmed.length < MIN_QUERY_LENGTH) {
+        setHintVisible(true);
+        return;
+      }
+      setHintVisible(false);
+      router.push(searchResultsUrl(trimmed));
+    },
+    [router, searchParams, searchResultsUrl],
   );
 
   const onSearchChange = (value: string) => {
@@ -79,6 +121,7 @@ export default function TopBar({ title = "Library", actions, showSearch = true }
           data-debounce="350"
           onSubmit={(e) => {
             e.preventDefault();
+            if (debounceRef.current) clearTimeout(debounceRef.current);
             submitSearch(query);
           }}
         >
@@ -87,15 +130,21 @@ export default function TopBar({ title = "Library", actions, showSearch = true }
             <path d="m21 21-4.3-4.3" />
           </svg>
           <input
+            ref={inputRef}
             type="search"
             name="q"
             value={query}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search by title or genre…"
+            placeholder="Search all anime…"
             autoComplete="off"
-            aria-label="Search anime"
+            aria-label="Search all anime"
           />
           {filter ? <input type="hidden" name="filter" value={filter} /> : null}
+          {hintVisible ? (
+            <span className="topbar__search-hint" role="status">
+              Type at least 3 characters
+            </span>
+          ) : null}
         </form>
       ) : null}
       <span className="topbar__spacer" />
