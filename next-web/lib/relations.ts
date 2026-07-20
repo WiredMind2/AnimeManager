@@ -6,6 +6,7 @@ export type RelationTimelineEntry = {
   rel_id: number;
   title: string;
   picture?: string;
+  picture_variants?: AnimeItem["picture_variants"];
   relation?: string;
   status?: string;
   date_from?: string | number;
@@ -40,6 +41,7 @@ export function normalizeRelation(rel: AnimeRelation): {
   title: string;
   relation?: string;
   picture?: string;
+  picture_variants?: AnimeRelation["picture_variants"];
   status?: string;
   date_from?: string | number;
   episodes?: number;
@@ -52,6 +54,7 @@ export function normalizeRelation(rel: AnimeRelation): {
     title,
     relation,
     picture: rel.picture,
+    picture_variants: rel.picture_variants,
     status: rel.status,
     date_from: rel.date_from,
     episodes: rel.episodes,
@@ -72,6 +75,7 @@ export function buildRelationTimeline(
       rel_id: currentId,
       title: currentAnime.title?.trim() || `Anime #${currentId}`,
       picture: currentAnime.picture,
+      picture_variants: currentAnime.picture_variants,
       relation: "current",
       status: currentAnime.status,
       date_from: currentAnime.date_from,
@@ -88,6 +92,7 @@ export function buildRelationTimeline(
       rel_id: normalized.rel_id,
       title: normalized.title,
       picture: normalized.picture,
+      picture_variants: normalized.picture_variants,
       relation: normalized.relation,
       status: normalized.status,
       date_from: normalized.date_from,

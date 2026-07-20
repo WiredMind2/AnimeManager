@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type AnimeItem, type AnimeRelation } from "@/lib/api";
 import {
   buildRelationTimeline,
@@ -10,6 +10,7 @@ import {
   relationBadgeClass,
   type RelationTimelineEntry,
 } from "@/lib/relations";
+import { useCoverSrc } from "@/lib/covers/use-cover-src";
 
 const POLL_INTERVAL_MS = 2500;
 const MAX_POLL_ATTEMPTS = 15;
@@ -20,6 +21,32 @@ type AnimeRelationsSectionProps = {
   initialRelations: AnimeRelation[];
   onRelationsUpdated?: (relations: AnimeRelation[]) => void;
 };
+
+function RelationPoster({ entry }: { entry: RelationTimelineEntry }) {
+  const posterRef = useRef<HTMLDivElement>(null);
+  const coverSrc = useCoverSrc(
+    posterRef,
+    entry.picture_variants,
+    entry.picture,
+  );
+
+  return (
+    <div className="detail__relation-poster" ref={posterRef}>
+      {coverSrc ? (
+        <img
+          src={coverSrc}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
+      ) : (
+        <div className="detail__relation-poster-empty" aria-hidden="true">
+          {entry.title.slice(0, 2)}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TimelineCard({ entry }: { entry: RelationTimelineEntry }) {
   const year = formatRelationYear(entry.date_from);
@@ -35,20 +62,7 @@ function TimelineCard({ entry }: { entry: RelationTimelineEntry }) {
   const content = (
     <>
       <div className="detail__relation-marker" aria-hidden="true" />
-      <div className="detail__relation-poster">
-        {entry.picture ? (
-          <img
-            src={entry.picture}
-            alt=""
-            loading="lazy"
-            referrerPolicy="no-referrer"
-          />
-        ) : (
-          <div className="detail__relation-poster-empty" aria-hidden="true">
-            {entry.title.slice(0, 2)}
-          </div>
-        )}
-      </div>
+      <RelationPoster entry={entry} />
       <div className="detail__relation-body">
         <span className={`detail__relation-badge ${badgeClass}`}>
           {formatRelationLabel(entry.relation)}

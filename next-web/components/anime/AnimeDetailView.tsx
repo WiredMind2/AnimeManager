@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { useEffect, useMemo, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type {
   AnimeCharacter,
   AnimeItem,
@@ -20,6 +20,7 @@ import AnimePictureGallery from "./AnimePictureGallery";
 import DownloadedEpisodesTable from "./DownloadedEpisodesTable";
 import EpisodePlayerTable from "./EpisodePlayerTable";
 import TorrentSearchSection from "./TorrentSearchSection";
+import { useCoverSrc } from "@/lib/covers/use-cover-src";
 
 type AnimeDetailViewProps = {
   anime: AnimeItem;
@@ -28,6 +29,7 @@ type AnimeDetailViewProps = {
   torrentSearchOptions: TorrentSearchOptions;
   relations: AnimeRelation[];
   episodeFiles: EpisodeFile[];
+  episodeFilesLoading?: boolean;
   animeTorrents: AnimeLibraryTorrent[];
   characters: AnimeCharacter[];
   pictures: AnimePicture[];
@@ -51,6 +53,7 @@ export default function AnimeDetailView({
   torrentSearchOptions,
   relations,
   episodeFiles,
+  episodeFilesLoading = false,
   animeTorrents,
   characters = [],
   pictures = [],
@@ -61,6 +64,12 @@ export default function AnimeDetailView({
   tabsRef,
 }: AnimeDetailViewProps) {
   const [timeZone, setTimeZone] = useState<string | null>(null);
+  const posterRef = useRef<HTMLDivElement>(null);
+  const coverSrc = useCoverSrc(
+    posterRef,
+    anime.picture_variants,
+    anime.picture,
+  );
 
   useEffect(() => {
     setTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -92,10 +101,10 @@ export default function AnimeDetailView({
   return (
     <>
       <section className="detail">
-        <div className="detail__poster">
-          {anime.picture ? (
+        <div className="detail__poster" ref={posterRef}>
+          {coverSrc ? (
             <img
-              src={anime.picture}
+              src={coverSrc}
               alt={anime.title}
               referrerPolicy="no-referrer"
             />
@@ -229,7 +238,11 @@ export default function AnimeDetailView({
           hidden={activeTab !== "player"}
           id="panel-player"
         >
-          <EpisodePlayerTable animeId={anime.id!} initialFiles={episodeFiles} />
+          <EpisodePlayerTable
+            animeId={anime.id!}
+            initialFiles={episodeFiles}
+            loading={episodeFilesLoading}
+          />
         </div>
 
         <div
