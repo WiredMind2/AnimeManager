@@ -114,6 +114,36 @@ class UserActionsRepository:
                 liked = row_liked
         return {"tag": tag or "NONE", "liked": bool(liked)}
 
+    def list_anime_ids_with_tag(self, tag: str) -> list[int]:
+        """Return distinct anime IDs whose tag equals ``tag`` (any user)."""
+        clean = str(tag or "").strip().upper()
+        if not clean:
+            return []
+        db = self._database
+        try:
+            rows = db.sql(
+                "SELECT DISTINCT anime_id FROM user_tags WHERE UPPER(tag)=?",
+                (clean,),
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to list anime with tag {clean}: {exc}"
+            ) from exc
+        out: list[int] = []
+        seen: set[int] = set()
+        for row in rows or []:
+            if not row:
+                continue
+            try:
+                anime_id = int(row[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if anime_id in seen:
+                continue
+            seen.add(anime_id)
+            out.append(anime_id)
+        return out
+
     def _ensure_episode_progress_table(self) -> None:
         db = self._database
         ddl = (

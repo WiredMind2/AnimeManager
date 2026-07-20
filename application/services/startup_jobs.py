@@ -28,7 +28,7 @@ from typing import Any, Callable, Iterable, List, Optional
 from adapters.persistence.models import Anime
 from application.services.api_coordinator import APICoordinator
 from application.services.anime_write_service import WriteSource
-from application.services.database_manager import DatabaseManager
+from application.services.database_manager import DatabaseManager, safe_db_counter
 from shared.contracts import IngestionResult, IngestionStatus
 from shared.telemetry import get_telemetry
 
@@ -362,13 +362,13 @@ class StartupJobsService:
     ) -> None:
         start = time.perf_counter()
         db = self._database_manager.get_database()
-        commits_before = int(getattr(db, "_commit_count", 0) or 0) if db else 0
-        queries_before = int(getattr(db, "_query_count", 0) or 0) if db else 0
+        commits_before = safe_db_counter(db, "_commit_count")
+        queries_before = safe_db_counter(db, "_query_count")
         try:
             detail = job.fn()
             elapsed = int((time.perf_counter() - start) * 1000)
-            commits_after = int(getattr(db, "_commit_count", 0) or 0) if db else 0
-            queries_after = int(getattr(db, "_query_count", 0) or 0) if db else 0
+            commits_after = safe_db_counter(db, "_commit_count")
+            queries_after = safe_db_counter(db, "_query_count")
             self._telemetry.increment(
                 f"startup.job.{job.name}_commits", max(0, commits_after - commits_before)
             )
@@ -411,6 +411,9 @@ class StartupJobsService:
 
     def _jobs(self) -> Iterable[StartupJob]:
         yield StartupJob("repair_date_from", self._job_repair_date_from)
+        yield StartupJob(
+            "purge_provisional_anime", self._job_purge_provisional_anime
+        )
         if self._should_fetch_schedule():
             yield StartupJob("fetch_latest_anime", self._job_fetch_latest)
         else:
@@ -421,6 +424,10 @@ class StartupJobsService:
         yield StartupJob("update_status", self._job_update_status)
         yield StartupJob(
             "purge_deleted_torrents", self._job_purge_deleted_torrents
+        )
+        yield StartupJob(
+            "reconcile_seen_anime_torrents",
+            self._job_reconcile_seen_anime_torrents,
         )
         yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
@@ -444,6 +451,21 @@ class StartupJobsService:
         if count == 0:
             return "no deleted torrent resume files purged"
         return f"purged {count} deleted torrent artifact(s)"
+
+    def _job_reconcile_seen_anime_torrents(self) -> str:
+        adapter = self._download_adapter
+        if adapter is None:
+            return "skipped (no download adapter)"
+        reconcile = getattr(adapter, "reconcile_seen_anime_torrents", None)
+        if not callable(reconcile):
+            return "skipped (no reconcile_seen_anime_torrents)"
+        try:
+            count = int(reconcile())
+        except Exception as exc:
+            return f"reconcile seen failed: {exc}"
+        if count == 0:
+            return "no SEEN anime torrents cleaned"
+        return f"marked {count} torrent(s) deleted for SEEN anime"
 
     def _job_reconcile_deleted_torrents(self) -> str:
         adapter = self._download_adapter
@@ -603,6 +625,13 @@ class StartupJobsService:
             f"merged {total} duplicate row(s) "
             f"(provider={merged}, title={title_merged})"
         )
+
+    def _job_purge_provisional_anime(self) -> str:
+        """Remove orphan anime rows whose id is a leaked provisional fingerprint."""
+        deleted = self._database_manager.purge_provisional_anime_rows()
+        if deleted == 0:
+            return "no provisional anime rows to purge"
+        return f"purged {deleted} provisional anime row(s)"
 
     # Any ``date_from`` / ``date_to`` value smaller than this threshold
     # is treated as a legacy ``datetime.toordinal()`` value (days since

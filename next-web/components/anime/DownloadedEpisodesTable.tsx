@@ -3,6 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/components/Toast";
 import { api, type AnimeLibraryTorrent } from "@/lib/api";
+import {
+  dispatchDownloadActivityChanged,
+  DOWNLOAD_STARTED_EVENT,
+  hasActiveTorrents,
+  isActiveTorrentState,
+  torrentProgressPercent,
+} from "@/lib/downloads/torrent-state";
+
+const POLL_INTERVAL_MS = 3000;
+const BOOTSTRAP_POLL_INTERVAL_MS = 1000;
+const BOOTSTRAP_POLL_MAX_MS = 15000;
 
 type DownloadedEpisodesTableProps = {
   animeId: number;
@@ -19,46 +30,107 @@ export default function DownloadedEpisodesTable({
   useEffect(() => {
     setTorrents(initialTorrents);
   }, [initialTorrents]);
-  // Polling refresh runs every few seconds while a download is active; only
-  // surface one toast per outage instead of re-notifying on every tick.
+
   const refreshFailedRef = useRef(false);
+  const bootstrapTimerRef = useRef<number | null>(null);
+  const bootstrapStartedAtRef = useRef<number | null>(null);
+  const hadActiveRef = useRef(hasActiveTorrents(initialTorrents));
+
+  const emitActivityIfChanged = useCallback(
+    (items: AnimeLibraryTorrent[]) => {
+      const active = hasActiveTorrents(items);
+      if (active === hadActiveRef.current) return;
+      hadActiveRef.current = active;
+      dispatchDownloadActivityChanged({ animeId, active });
+    },
+    [animeId],
+  );
 
   const refresh = useCallback(async () => {
     try {
       const { items } = await api.getAnimeLibraryTorrents(animeId);
       setTorrents(items);
+      emitActivityIfChanged(items);
       refreshFailedRef.current = false;
+      return items;
     } catch {
       if (!refreshFailedRef.current) {
         refreshFailedRef.current = true;
         showToast("Failed to refresh downloads.", "error");
       }
+      return null;
     }
-  }, [animeId, showToast]);
+  }, [animeId, emitActivityIfChanged, showToast]);
+
+  const stopBootstrapPoll = useCallback(() => {
+    if (bootstrapTimerRef.current) {
+      window.clearInterval(bootstrapTimerRef.current);
+      bootstrapTimerRef.current = null;
+    }
+    bootstrapStartedAtRef.current = null;
+  }, []);
+
+  const startBootstrapPoll = useCallback(() => {
+    if (bootstrapTimerRef.current) return;
+    bootstrapStartedAtRef.current = Date.now();
+    void refresh();
+    bootstrapTimerRef.current = window.setInterval(() => {
+      const startedAt = bootstrapStartedAtRef.current;
+      if (startedAt && Date.now() - startedAt >= BOOTSTRAP_POLL_MAX_MS) {
+        stopBootstrapPoll();
+        void refresh();
+        return;
+      }
+      void refresh().then((items) => {
+        if (items && hasActiveTorrents(items)) {
+          stopBootstrapPoll();
+        }
+      });
+    }, BOOTSTRAP_POLL_INTERVAL_MS);
+  }, [refresh, stopBootstrapPoll]);
 
   async function cancelDownload() {
+    // Optimistic: demote active rows right away so the Cancel button and
+    // progress shimmer disappear without waiting for the round trip.
+    const snapshot = torrents;
+    setTorrents((prev) =>
+      prev.map((t) =>
+        isActiveTorrentState(t.state) ? { ...t, state: "STOPPED" } : t,
+      ),
+    );
     try {
       await api.cancelDownload(animeId);
       await refresh();
     } catch {
+      setTorrents(snapshot);
       showToast("Failed to cancel download. Please try again.", "error");
     }
   }
 
   useEffect(() => {
-    const onDownload = () => refresh();
-    window.addEventListener("am:download-started", onDownload);
-    return () => window.removeEventListener("am:download-started", onDownload);
-  }, [refresh]);
+    const onDownload = () => {
+      dispatchDownloadActivityChanged({ animeId, active: true });
+      hadActiveRef.current = true;
+      startBootstrapPoll();
+    };
+    window.addEventListener(DOWNLOAD_STARTED_EVENT, onDownload);
+    return () => window.removeEventListener(DOWNLOAD_STARTED_EVENT, onDownload);
+  }, [animeId, startBootstrapPoll]);
 
   useEffect(() => {
-    const hasActive = torrents.some(
-      (t) => (t.state || "").toUpperCase() === "DOWNLOADING",
-    );
+    const hasActive = hasActiveTorrents(torrents);
     if (!hasActive) return;
-    const id = window.setInterval(refresh, 3000);
+    const id = window.setInterval(() => {
+      void refresh();
+    }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [torrents, refresh]);
+
+  useEffect(() => () => stopBootstrapPoll(), [stopBootstrapPoll]);
+
+  useEffect(() => {
+    emitActivityIfChanged(torrents);
+  }, [torrents, emitActivityIfChanged]);
 
   return (
     <section id="anime-downloaded-episodes" className="detail__section">
@@ -92,9 +164,9 @@ export default function DownloadedEpisodesTable({
             </thead>
             <tbody>
               {torrents.map((row) => {
-                const pct =
-                  row.progress != null ? Math.round(row.progress * 1000) / 10 : null;
                 const state = (row.state || "SAVED").toUpperCase();
+                const pct = torrentProgressPercent(row.progress, state);
+                const active = isActiveTorrentState(state);
                 return (
                   <tr key={row.hash || row.name || String(pct)}>
                     <td className="truncate" title={row.name}>
@@ -121,7 +193,7 @@ export default function DownloadedEpisodesTable({
                     <td>
                       {state === "COMPLETE" ? (
                         <span className="badge badge--good">{state}</span>
-                      ) : state === "DOWNLOADING" ? (
+                      ) : active || state === "DOWNLOADING" ? (
                         <span className="badge badge--accent">{state}</span>
                       ) : state === "DELETED" ? (
                         <span className="badge" style={{ opacity: 0.75 }}>
@@ -132,7 +204,7 @@ export default function DownloadedEpisodesTable({
                       )}
                     </td>
                     <td className="num">
-                      {state === "DOWNLOADING" ? (
+                      {active ? (
                         <button className="btn btn--ghost" type="button" onClick={() => void cancelDownload()}>
                           Cancel
                         </button>

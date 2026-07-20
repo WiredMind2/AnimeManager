@@ -24,15 +24,18 @@ except ImportError:
 lt: Any
 
 try:
-    from clients.tk.dialogs import LoginDialog
     from .base import BaseTorrentManager, TorrentException, TorrentListFilter
-except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.torrent.base import (  # type: ignore
-        BaseTorrentManager,
-        TorrentException,
-        TorrentListFilter,
-    )
-    from AnimeManager.clients.tk.dialogs import LoginDialog  # type: ignore
+except ImportError:  # pragma: no cover - legacy relative import
+    from base import BaseTorrentManager, TorrentException, TorrentListFilter  # type: ignore
+
+try:
+    from clients.tk.dialogs import LoginDialog
+except ImportError:  # pragma: no cover - headless / Docker HTTP mode
+    class LoginDialog:  # type: ignore[no-redef]
+        """Stub when Tk is unavailable."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError("LoginDialog requires the Tk desktop client")
 
 _RESUME_DIR_NAME = ".libtorrent_resume"
 _RESUME_SUFFIX = ".resume"
@@ -42,6 +45,10 @@ _MIN_RESUME_FILE_BYTES = 200
 _PERIODIC_SAVE_INTERVAL_S = 300.0
 _SHUTDOWN_SAVE_TIMEOUT_S = 5.0
 _SESSION_READY_TIMEOUT_S = 30.0
+# Wait for DownloadAdapter to wire DB callbacks before restore (avoids race).
+_RESTORE_WIRE_TIMEOUT_S = 5.0
+# Cap concurrent piece checks to reduce HDD thrash at boot.
+_DEFAULT_ACTIVE_CHECKING = 1
 
 
 class LibTorrent(BaseTorrentManager):
@@ -66,6 +73,7 @@ class LibTorrent(BaseTorrentManager):
         self._restore_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None
         self._torrent_status_callback: Optional[Callable[[str], Optional[str]]] = None
         self._restored = False
+        self._restore_lock = threading.Lock()
         try:
             self.download_path = os.path.join(
                 tempfile.gettempdir(), "libtorrent_downloads"
@@ -79,6 +87,9 @@ class LibTorrent(BaseTorrentManager):
     ) -> None:
         """Optional DB rows for magnet+save_path fallback after fast-resume load."""
         self._restore_callback = callback
+        # If connect already restored without the callback, pick up missing magnets.
+        if self._restored and self.session is not None:
+            self._restore_from_database_fallback()
 
     def set_torrent_status_callback(
         self, callback: Optional[Callable[[str], Optional[str]]]
@@ -285,12 +296,21 @@ class LibTorrent(BaseTorrentManager):
 
         try:
             self.session = lt.session()
+            active_checking = _DEFAULT_ACTIVE_CHECKING
+            if isinstance(self.settings, dict):
+                raw = self.settings.get("active_checking", _DEFAULT_ACTIVE_CHECKING)
+                try:
+                    active_checking = max(1, int(raw))
+                except (TypeError, ValueError):
+                    active_checking = _DEFAULT_ACTIVE_CHECKING
+            # DHT/UPnP stay off until torrents are restored (less boot contention).
             settings = {
                 "listen_interfaces": f"0.0.0.0:{self.listen_port}",
-                "enable_dht": True,
-                "enable_lsd": True,
-                "enable_upnp": True,
-                "enable_natpmp": True,
+                "enable_dht": False,
+                "enable_lsd": False,
+                "enable_upnp": False,
+                "enable_natpmp": False,
+                "active_checking": active_checking,
             }
             self.session.apply_settings(settings)
             try:
@@ -301,22 +321,101 @@ class LibTorrent(BaseTorrentManager):
                 )
             except Exception:
                 pass
-            self.session.add_dht_router("router.bittorrent.com", 6881)
-            self.session.add_dht_router("router.utorrent.com", 6881)
-            self.session.add_dht_router("dht.transmissionbt.com", 6881)
 
             self._running = True
-            self._restore_from_resume_files()
-            self._restore_from_database_fallback()
-            self._restored = True
-
             self._thread = threading.Thread(target=self._session_thread, daemon=True)
             self._thread.start()
+
+            self._wait_for_restore_callbacks()
+            self._run_session_restore()
             self._session_ready.set()
         except Exception as e:
             self._session_ready.set()
             print(f"Couldn't connect to LibTorrent: {str(e)}")  # TODO - use logger
             raise TorrentException(f"Failed to initialize LibTorrent session: {str(e)}")
+
+    def _wait_for_restore_callbacks(self) -> None:
+        """Block briefly so DownloadAdapter can wire DB restore/status callbacks."""
+        deadline = time.monotonic() + _RESTORE_WIRE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if (
+                self._restore_callback is not None
+                and self._torrent_status_callback is not None
+            ):
+                return
+            time.sleep(0.05)
+
+    def _run_session_restore(self) -> None:
+        """Load resume files + DB fallback once, then enable discovery."""
+        with self._restore_lock:
+            if self._restored:
+                return
+            self._restore_from_resume_files()
+            self._restore_from_database_fallback()
+            self._enable_network_services()
+            self._restored = True
+
+    def _enable_network_services(self) -> None:
+        """Turn on DHT/LSD/UPnP after torrents are in the session."""
+        if self.session is None:
+            return
+        try:
+            self.session.apply_settings(
+                {
+                    "enable_dht": True,
+                    "enable_lsd": True,
+                    "enable_upnp": True,
+                    "enable_natpmp": True,
+                }
+            )
+        except Exception:
+            pass
+        try:
+            self.session.add_dht_router("router.bittorrent.com", 6881)
+            self.session.add_dht_router("router.utorrent.com", 6881)
+            self.session.add_dht_router("dht.transmissionbt.com", 6881)
+        except Exception:
+            pass
+
+    def _seed_mode_flag(self) -> Optional[Any]:
+        if lt is None:
+            return None
+        flags = getattr(lt, "torrent_flags", None)
+        if flags is None:
+            return None
+        return getattr(flags, "seed_mode", None)
+
+    def _apply_seed_mode(self, params: Any) -> Any:
+        """OR seed_mode into add_torrent params (dict or add_torrent_params)."""
+        seed = self._seed_mode_flag()
+        if seed is None or params is None:
+            return params
+        if isinstance(params, dict):
+            existing = params.get("flags")
+            if existing is None and lt is not None:
+                default = getattr(
+                    getattr(lt, "torrent_flags", None), "default_flags", None
+                )
+                if default is not None:
+                    params["flags"] = default | seed
+                else:
+                    params["flags"] = seed
+            else:
+                try:
+                    params["flags"] = existing | seed
+                except Exception:
+                    params["flags"] = seed
+            return params
+        try:
+            params.flags |= seed
+        except Exception:
+            pass
+        return params
+
+    def _apply_seed_mode_if_complete(self, params: Any, info_hash: str) -> Any:
+        if self._torrent_status(info_hash) != "complete":
+            return params
+        return self._apply_seed_mode(params)
 
     def _restore_from_resume_files(self) -> None:
         if self.session is None or lt is None:
@@ -345,6 +444,7 @@ class LibTorrent(BaseTorrentManager):
                         pass
                     continue
                 params = lt.read_resume_data(data)
+                params = self._apply_seed_mode_if_complete(params, info_hash)
                 handle = self.session.add_torrent(params)
                 info_hash = self._normalise_hash(handle.info_hash())
                 if info_hash in self.handles:
@@ -380,7 +480,8 @@ class LibTorrent(BaseTorrentManager):
             if not magnet:
                 continue
             try:
-                params = {"url": magnet, "save_path": str(save_path)}
+                params: Any = {"url": magnet, "save_path": str(save_path)}
+                params = self._apply_seed_mode_if_complete(params, info_hash)
                 handle = self.session.add_torrent(params)
                 self.handles[info_hash] = handle
             except Exception as exc:
