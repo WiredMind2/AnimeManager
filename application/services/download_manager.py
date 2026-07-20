@@ -25,6 +25,11 @@ from typing import Any, Callable, Dict, List, Optional
 from shared.base_component import BaseComponent
 from shared.security import validate_url
 from shared.telemetry import get_telemetry
+from shared.utils.folder_names import (
+    choose_canonical_anime_folder_name,
+    format_anime_folder_name,
+    match_anime_folder_names,
+)
 from adapters.persistence.models import Magnet, Torrent
 
 
@@ -848,6 +853,155 @@ class DownloadManager(BaseComponent):
             )
         return marked
 
+    def mark_torrents_deleted_for_seen_anime(
+        self,
+        anime_id: int,
+        folder_resolver: Optional[Callable[[int], Optional[str]]] = None,
+        *,
+        animes_root: Optional[str] = None,
+    ) -> int:
+        """Stop downloads, remove torrents, and delete the library folder for SEEN.
+
+        Marks indexed torrents as ``deleted``, removes them from the torrent
+        client with ``delete_files=True``, cancels any in-progress download,
+        and deletes the on-disk anime folder when it exists under
+        ``animes_root``.
+        """
+        try:
+            self.cancel_download(int(anime_id))
+        except Exception:
+            pass
+
+        db_manager = self._database_manager
+        marked = 0
+        hashes_to_remove: list[str] = []
+        if db_manager is not None:
+            lister = getattr(db_manager, "list_torrents_for_anime", None)
+            updater = getattr(db_manager, "update_torrent_status", None)
+            if callable(lister) and callable(updater):
+                for row in list(lister(anime_id) or []):
+                    if not isinstance(row, dict):
+                        continue
+                    hash_val = str(row.get("hash") or "").strip()
+                    if not hash_val:
+                        continue
+                    if str(row.get("status") or "").lower() == "deleted":
+                        continue
+                    updater(hash_val, "deleted")
+                    hashes_to_remove.append(hash_val)
+                    marked += 1
+
+        if hashes_to_remove:
+            self.remove_torrents_from_client(hashes_to_remove, delete_files=True)
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Marked {marked} torrent(s) deleted for SEEN anime {anime_id}",
+            )
+
+        self._delete_seen_anime_folder(
+            anime_id,
+            folder_resolver=folder_resolver,
+            animes_root=animes_root,
+        )
+        return marked
+
+    def _delete_seen_anime_folder(
+        self,
+        anime_id: int,
+        *,
+        folder_resolver: Optional[Callable[[int], Optional[str]]],
+        animes_root: Optional[str],
+    ) -> bool:
+        """Delete the anime library folder when it exists under ``animes_root``."""
+        fm = self._file_manager
+        if fm is None or not callable(folder_resolver):
+            return False
+
+        try:
+            folder = folder_resolver(int(anime_id))
+        except Exception:
+            folder = None
+        folder = str(folder or "").strip()
+        if not folder:
+            return False
+
+        root = str(animes_root or "").strip()
+        if not root:
+            root = str(getattr(fm, "settings", {}) or {}).get("dataPath") or ""
+            root = str(root).strip()
+            if root:
+                root = os.path.join(root, "Animes")
+
+        if not root:
+            return False
+
+        folder_norm = os.path.normcase(os.path.normpath(folder))
+        root_norm = os.path.normcase(os.path.normpath(root))
+        if folder_norm != root_norm and not folder_norm.startswith(
+            root_norm + os.sep
+        ):
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Refusing to delete folder outside Animes root for anime {anime_id}: {folder}",
+            )
+            return False
+
+        # Always operate on the normalized absolute path so Windows clients
+        # do not trip over mixed separators from the resolver.
+        folder = os.path.normpath(folder)
+
+        exists = getattr(fm, "exists", None)
+        try:
+            if callable(exists) and not exists(folder):
+                return False
+        except Exception:
+            return False
+
+        deleter = getattr(fm, "delete", None)
+        if not callable(deleter):
+            return False
+        try:
+            deleter(folder)
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Deleted library folder for SEEN anime {anime_id}: {folder}",
+            )
+            return True
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Failed to delete library folder for SEEN anime {anime_id}: {exc}",
+            )
+            # Fallback: remove leftover video files then retry the folder.
+            try:
+                if os.path.isdir(folder):
+                    for name in os.listdir(folder):
+                        child = os.path.join(folder, name)
+                        try:
+                            if os.path.isdir(child):
+                                import shutil
+
+                                shutil.rmtree(child, ignore_errors=True)
+                            else:
+                                os.remove(child)
+                        except OSError:
+                            continue
+                    import shutil
+
+                    shutil.rmtree(folder, ignore_errors=True)
+                    if not os.path.exists(folder):
+                        self.log(
+                            "DOWNLOAD_MANAGER",
+                            f"Deleted library folder via fallback for SEEN anime {anime_id}: {folder}",
+                        )
+                        return True
+            except Exception as fallback_exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Fallback folder delete failed for SEEN anime {anime_id}: {fallback_exc}",
+                )
+            return False
+
     def _list_files_for_torrent(self, hash_value: str) -> list[str]:
         tm = self._torrent_manager
         if tm is None or not hash_value:
@@ -1082,12 +1236,14 @@ class DownloadManager(BaseComponent):
 
         Order of preference:
 
-        1. ``<file_manager.dataPath>/Animes/<Sanitized Title> - <id>`` when
+        1. An existing on-disk folder whose name ends with ``<anime_id>``
+           (reused even when the catalog title changed).
+        2. ``<file_manager.dataPath>/Animes/<Sanitized Title> - <id>`` when
            the file manager exposes a configured ``dataPath`` and the
            database manager can resolve the anime title.
-        2. ``<file_manager.dataPath>/Animes/anime_<id>`` when only the
+        3. ``<file_manager.dataPath>/Animes/anime_<id>`` when only the
            ``dataPath`` is known.
-        3. ``./anime_<id>`` as the last-ditch fallback (matches the
+        4. ``./anime_<id>`` as the last-ditch fallback (matches the
            historical placeholder used by unit tests and the legacy code
            paths that pre-date file-manager wiring).
 
@@ -1109,8 +1265,12 @@ class DownloadManager(BaseComponent):
             return f"./anime_{anime_id}"
 
         animes_root = os.path.join(data_path, "Animes")
+        existing = self._find_existing_anime_folder(animes_root, anime_id)
+        if existing:
+            return existing
+
         title = self._lookup_anime_title(anime_id)
-        folder_name = self._format_folder_name(title, anime_id)
+        folder_name = format_anime_folder_name(title, anime_id)
         folder = os.path.join(animes_root, folder_name)
 
         try:
@@ -1123,27 +1283,73 @@ class DownloadManager(BaseComponent):
             return f"./anime_{anime_id}"
         return folder
 
-    @staticmethod
-    def _format_folder_name(title: Optional[str], anime_id: int) -> str:
-        """Sanitize ``title`` into a filesystem-safe folder name.
+    def _find_existing_anime_folder(
+        self, animes_root: str, anime_id: int
+    ) -> Optional[str]:
+        """Reuse an on-disk folder for ``anime_id`` when one already exists."""
+        entries = self._list_anime_folder_entries(animes_root)
+        matches = match_anime_folder_names(entries, anime_id)
+        if not matches:
+            return None
 
-        Mirrors the historical ``Getters.getFolderFormat`` behavior: keep
-        alphanumerics + spaces, treat hyphens as spaces, then append the
-        anime id so two entries with similar titles never collide.
-        """
-        if not title:
-            return f"anime_{anime_id}"
-        cleaned_chars: list[str] = []
-        for ch in title:
-            if ch.isalnum() or ch == " ":
-                cleaned_chars.append(ch)
-            elif ch == "-":
-                cleaned_chars.append(" ")
-        cleaned = "".join(cleaned_chars).strip()
-        if not cleaned:
-            return f"anime_{anime_id}"
-        cleaned = " ".join(cleaned.split())
-        return f"{cleaned} - {anime_id}"
+        valid_names: list[str] = []
+        for name in matches:
+            path = os.path.join(animes_root, name)
+            if self._path_is_directory(path):
+                valid_names.append(name)
+        if not valid_names:
+            return None
+
+        from application.services.torrent_file_presence import folder_has_video_files
+
+        chosen = choose_canonical_anime_folder_name(
+            valid_names,
+            animes_root=animes_root,
+            preferred_paths=self._known_save_paths_for_anime(anime_id),
+            has_video_files=folder_has_video_files,
+        )
+        return os.path.join(animes_root, chosen)
+
+    def _list_anime_folder_entries(self, animes_root: str) -> list[str]:
+        fm = self._file_manager
+        if fm is not None and hasattr(fm, "list"):
+            try:
+                return list(fm.list(animes_root) or [])
+            except Exception:
+                pass
+        if os.path.isdir(animes_root):
+            return os.listdir(animes_root)
+        return []
+
+    def _path_is_directory(self, path: str) -> bool:
+        fm = self._file_manager
+        if fm is not None and hasattr(fm, "isdir"):
+            try:
+                return bool(fm.isdir(path))
+            except Exception:
+                pass
+        return os.path.isdir(path)
+
+    def _known_save_paths_for_anime(self, anime_id: int) -> list[str]:
+        dm = self._database_manager
+        if dm is None:
+            return []
+        getter = getattr(dm, "list_torrents_for_anime", None)
+        if not callable(getter):
+            return []
+        try:
+            rows = list(getter(anime_id) or [])
+        except Exception:
+            return []
+        paths: list[str] = []
+        for row in rows:
+            if isinstance(row, dict):
+                save_path = row.get("save_path")
+            else:
+                save_path = getattr(row, "save_path", None)
+            if save_path and str(save_path).strip():
+                paths.append(str(save_path).strip())
+        return paths
 
     def _lookup_anime_title(self, anime_id: int) -> Optional[str]:
         """Best-effort lookup of an anime's title via the DatabaseManager.

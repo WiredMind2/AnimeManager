@@ -149,7 +149,29 @@ def test_reconcile_deleted_torrents():
     assert adapter.reconcile_deleted_torrents() == 3
 
 
-def test_search_torrents_sorts_and_limits():
+def test_mark_torrents_deleted_for_seen_anime():
+    adapter, dm = _make_adapter()
+    dm.mark_torrents_deleted_for_seen_anime.return_value = 2
+    assert adapter.mark_torrents_deleted_for_seen_anime(9) == 2
+    dm.mark_torrents_deleted_for_seen_anime.assert_called_once()
+    args, kwargs = dm.mark_torrents_deleted_for_seen_anime.call_args
+    assert args[0] == 9
+    assert callable(args[1])
+    assert "animes_root" in kwargs
+
+
+def test_reconcile_seen_anime_torrents():
+    user_actions = MagicMock(
+        list_anime_ids_with_tag=MagicMock(return_value=[1, 2, 3])
+    )
+    adapter, dm = _make_adapter(user_actions=user_actions)
+    dm.mark_torrents_deleted_for_seen_anime.side_effect = [1, 0, 2]
+    assert adapter.reconcile_seen_anime_torrents() == 3
+    user_actions.list_anime_ids_with_tag.assert_called_once_with("SEEN")
+    assert dm.mark_torrents_deleted_for_seen_anime.call_count == 3
+
+
+def test_search_torrents_sorts_by_seeds():
     adapter, _ = _make_adapter()
     rows = [
         {"name": "low", "seeds": 1},
@@ -157,18 +179,26 @@ def test_search_torrents_sorts_and_limits():
     ]
     with patch("adapters.torrent.download_adapter.SearchFacade") as facade_cls:
         facade_cls.return_value.search.return_value = rows
-        results = adapter.search_torrents(["naruto"], limit=1)
-    assert len(results) == 1
-    assert results[0]["name"] == "high"
+        results = adapter.search_torrents(["naruto"])
+    assert [r["name"] for r in results] == ["high", "low"]
 
 
-def test_stream_torrents_stops_at_limit():
+def test_search_torrents_limit_overrides_per_term_cap():
+    adapter, _ = _make_adapter()
+    with patch("adapters.torrent.download_adapter.SearchFacade") as facade_cls:
+        facade_cls.return_value.search.return_value = []
+        adapter.search_torrents(["naruto"], limit=3)
+    profile = facade_cls.call_args.kwargs["profile"]
+    assert profile.limits.max_results_per_term == 3
+
+
+def test_stream_torrents_has_no_global_row_cap():
     adapter, _ = _make_adapter()
     rows = [{"name": f"t{i}", "seeds": i} for i in range(5)]
     with patch("adapters.torrent.download_adapter.SearchFacade") as facade_cls:
         facade_cls.return_value.search.return_value = iter(rows)
-        streamed = list(adapter.stream_torrents(["x"], limit=2))
-    assert len(streamed) == 2
+        streamed = list(adapter.stream_torrents(["x"]))
+    assert len(streamed) == 5
 
 
 def test_close_shuts_down_managers():

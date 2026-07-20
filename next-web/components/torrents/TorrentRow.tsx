@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import type { TorrentTableRow } from "@/lib/api";
 import { DEFAULT_USER_ID } from "@/lib/config";
+import { DOWNLOAD_STARTED_EVENT } from "@/lib/downloads/torrent-state";
 
 type TorrentRowProps = {
   row: TorrentTableRow;
@@ -13,25 +15,24 @@ type TorrentRowProps = {
 
 export default function TorrentRow({ row, animeId, onFilterClick }: TorrentRowProps) {
   const [queued, setQueued] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const { showToast } = useToast();
   const p = row.parsed;
 
-  async function handleDownload() {
+  function handleDownload() {
     if (!animeId || !row.link) return;
-    setBusy(true);
-    try {
-      await api.startDownload(animeId, {
+    // Optimistic: flip to "Queued" immediately; roll back if the POST fails.
+    setQueued(true);
+    window.dispatchEvent(new CustomEvent(DOWNLOAD_STARTED_EVENT));
+    void api
+      .startDownload(animeId, {
         url: row.link,
         hash_value: row.hash,
         user_id: DEFAULT_USER_ID,
+      })
+      .catch(() => {
+        setQueued(false);
+        showToast("Failed to queue download. Please try again.", "error");
       });
-      setQueued(true);
-      window.dispatchEvent(new CustomEvent("am:download-started"));
-    } catch {
-      /* ignore */
-    } finally {
-      setBusy(false);
-    }
   }
 
   function pill(
@@ -146,7 +147,6 @@ export default function TorrentRow({ row, animeId, onFilterClick }: TorrentRowPr
               <button
                 className="btn btn--primary btn--small"
                 type="button"
-                disabled={busy}
                 onClick={handleDownload}
               >
                 Download

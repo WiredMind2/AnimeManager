@@ -54,6 +54,7 @@ SECTION_ORDER: tuple[str, ...] = (
     "media",
     "api_credentials",
     "playback",
+    "library_sync",
     # Tier 2 -- useful but rarely changed.
     "database",
     "api",
@@ -77,6 +78,7 @@ SECTION_TIERS: dict[str, int] = {
     "media": 1,
     "api_credentials": 1,
     "playback": 1,
+    "library_sync": 1,
     "database": 2,
     "api": 2,
     "ui": 2,
@@ -124,6 +126,10 @@ SECTION_META: dict[str, dict[str, str]] = {
     "playback": {
         "label": "Playback",
         "description": "In-browser HLS transcoding. Changes require an app restart.",
+    },
+    "library_sync": {
+        "label": "Library sync",
+        "description": "Automatic tag promotion and SEEN-library cleanup on startup.",
     },
     "database": {
         "label": "Database (active)",
@@ -210,6 +216,8 @@ _LEAF_LABELS: dict[str, str] = {
     "tagcolors": "Tag colors",
     "torrentsStateColors": "Torrent state colors",
     "video_encoder": "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
+    "promote_watching_on_startup": "Promote NONE/WATCHLIST to WATCHING when local files exist",
+    "purge_seen_on_startup": "Delete SEEN anime folders and torrents on startup",
 }
 
 # Substrings that mark a string field as a secret -> rendered as
@@ -618,7 +626,19 @@ def build_sections(settings: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     sections: list[dict[str, Any]] = []
     for key in ordered:
-        node = _build_group(key, settings[key], depth=0, ctx=ctx)
+        built = _build_group(key, settings[key], depth=0, ctx=ctx)
+        if built.get("kind") == "group":
+            node = built
+        else:
+            node = {
+                "kind": "group",
+                "name": key,
+                "label": _humanize(key),
+                "children": [built],
+                "depth": 0,
+                "leaf_count": 1,
+                "is_bool_only": built.get("kind") == "bool",
+            }
         meta = SECTION_META.get(key, {})
         tier = SECTION_TIERS.get(key, 2)
         node["section_label"] = meta.get("label", _humanize(key))

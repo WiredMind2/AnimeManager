@@ -7,7 +7,11 @@ import re
 from typing import Any
 
 from adapters.persistence.models import Anime
-from shared.utils.folder_names import format_anime_folder_name, format_anime_folder_title
+from shared.utils.folder_names import (
+    choose_canonical_anime_folder_name,
+    format_anime_folder_name,
+    match_anime_folder_names,
+)
 
 
 class LocalEpisodeScanner:
@@ -41,19 +45,19 @@ class LocalEpisodeScanner:
         except Exception:
             folder_names = []
 
-        for name in folder_names or []:
-            path = f"{self._anime_path}/{name}"
-            if not self._fm.isdir(path):
-                continue
-            try:
-                folder_id = int(name.rsplit(" ", 1)[1])
-            except Exception:
-                continue
-            if folder_id == anime_id:
-                return path
+        existing = [
+            name
+            for name in match_anime_folder_names(folder_names or [], anime_id)
+            if self._fm.isdir(f"{self._anime_path}/{name}")
+        ]
+        if existing:
+            folder_name = choose_canonical_anime_folder_name(
+                existing,
+                animes_root=self._anime_path,
+            )
+            return f"{self._anime_path}/{folder_name}"
 
-        folder_format = format_anime_folder_title(anime.title)
-        folder_name = f"{folder_format} - {anime_id}"
+        folder_name = format_anime_folder_name(anime.title, anime_id)
         return f"{self._anime_path}/{folder_name}"
 
     def scan_episodes(self, folder: str) -> list[dict[str, Any]]:

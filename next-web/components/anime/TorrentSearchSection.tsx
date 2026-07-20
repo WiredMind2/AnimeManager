@@ -24,6 +24,11 @@ function buildStreamUrl(animeId: number, terms: string[], allowNsfw: boolean): s
   return qs ? `${base}?${qs}` : base;
 }
 
+/** Stable key for term lists so parent prop identity churn does not restart search. */
+function termsKey(terms: string[]): string {
+  return [...terms].sort().join("\0");
+}
+
 export default function TorrentSearchSection({
   animeId,
   initialOptions,
@@ -89,16 +94,28 @@ export default function TorrentSearchSection({
   }, [animeId, showNsfw]);
 
   useEffect(() => {
-    setOptions(initialOptions);
-  }, [initialOptions]);
+    // Adopt parent options when inactive, or when active_terms content changes.
+    // Ignore reference-only updates so silent metadata refresh cannot wipe an in-flight search.
+    setOptions((prev) => {
+      const sameTerms =
+        termsKey(prev.active_terms) === termsKey(initialOptions.active_terms);
+      if (activated && sameTerms) return prev;
+      if (!activated) return initialOptions;
+      return sameTerms ? prev : initialOptions;
+    });
+  }, [initialOptions, activated]);
+
+  const activeTermsKey = termsKey(options.active_terms);
+  const activeTermsRef = useRef(options.active_terms);
+  activeTermsRef.current = options.active_terms;
 
   useEffect(() => {
     if (!activated) return;
-    startSearch(options.active_terms, showNsfw);
+    startSearch(activeTermsRef.current, showNsfw);
     return () => {
       sourceRef.current?.close();
     };
-  }, [activated, options.active_terms, showNsfw, startSearch]);
+  }, [activated, activeTermsKey, showNsfw, startSearch]);
 
   const terms = options.active_terms;
   const termPreview = terms.slice(0, 3);

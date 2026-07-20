@@ -16,7 +16,8 @@ function RenderGroup({
   node: Extract<FieldNode, { kind: "group" }>;
   onBrowsePath?: SettingsFieldProps["onBrowsePath"];
 }) {
-  if (node.children.length === 0) {
+  const children = node.children ?? [];
+  if (children.length === 0) {
     return (
       <fieldset className="settings-group settings-group--empty">
         {node.label ? <legend className="settings-group__legend">{node.label}</legend> : null}
@@ -37,7 +38,7 @@ function RenderGroup({
         <legend className="settings-group__legend">{node.label}</legend>
       ) : null}
       <div className="settings-group__children">
-        {node.children.map((child) => (
+        {children.map((child) => (
           <SettingsField key={child.name} node={child} onBrowsePath={onBrowsePath} />
         ))}
       </div>

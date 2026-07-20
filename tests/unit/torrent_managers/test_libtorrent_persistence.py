@@ -49,9 +49,18 @@ def _build_mock_lt():
     mock.torrent_removed_alert = TorrentRemovedAlert
     mock.torrent_error_alert = TorrentErrorAlert
     mock.options_t = types.SimpleNamespace(delete_files=1)
+    # Bit flags used by seed_mode restore path.
+    mock.torrent_flags = types.SimpleNamespace(
+        seed_mode=1,
+        default_flags=2,
+    )
     mock.read_resume_data = lambda data: {"resume": data}
     mock.write_resume_data_buf = lambda params: b"serialized-resume"
     mock.bencode = lambda obj: b"bencoded"
+    mock.session = MagicMock
+    mock.alert = types.SimpleNamespace(
+        category_t=types.SimpleNamespace(all_categories=0xFFFFFFFF)
+    )
     return mock
 
 
@@ -136,6 +145,205 @@ def test_restore_from_resume_files(libtorrent_manager):
     libtorrent_manager.session.add_torrent.assert_called_once()
     key = libtorrent_manager._normalise_hash(handle.info_hash())
     assert key in libtorrent_manager.handles
+
+
+def test_restore_from_resume_applies_seed_mode_when_complete(
+    libtorrent_manager, mock_lt
+):
+    data_path = libtorrent_manager._resolve_data_path()
+    resume_dir = os.path.join(data_path, ".libtorrent_resume")
+    os.makedirs(resume_dir, exist_ok=True)
+    info_hash = "a" * 40
+    resume_path = os.path.join(resume_dir, f"{info_hash}.resume")
+    with open(resume_path, "wb") as fh:
+        fh.write(b"x" * 250)
+
+    handle = MagicMock()
+    handle.info_hash.return_value = bytes.fromhex(info_hash)
+    libtorrent_manager.session.add_torrent.return_value = handle
+    libtorrent_manager._torrent_status_callback = (
+        lambda h: "complete" if h == info_hash else None
+    )
+
+    libtorrent_manager._restore_from_resume_files()
+
+    params = libtorrent_manager.session.add_torrent.call_args[0][0]
+    assert isinstance(params, dict)
+    assert params["flags"] & mock_lt.torrent_flags.seed_mode
+
+
+def test_restore_from_resume_skips_seed_mode_when_not_complete(libtorrent_manager):
+    data_path = libtorrent_manager._resolve_data_path()
+    resume_dir = os.path.join(data_path, ".libtorrent_resume")
+    os.makedirs(resume_dir, exist_ok=True)
+    info_hash = "a" * 40
+    resume_path = os.path.join(resume_dir, f"{info_hash}.resume")
+    with open(resume_path, "wb") as fh:
+        fh.write(b"x" * 250)
+
+    handle = MagicMock()
+    handle.info_hash.return_value = bytes.fromhex(info_hash)
+    libtorrent_manager.session.add_torrent.return_value = handle
+    libtorrent_manager._torrent_status_callback = lambda _h: None
+
+    libtorrent_manager._restore_from_resume_files()
+
+    params = libtorrent_manager.session.add_torrent.call_args[0][0]
+    assert "flags" not in params
+
+
+def test_db_fallback_applies_seed_mode_when_complete(
+    libtorrent_manager, mock_lt, tmp_path
+):
+    save_path = tmp_path / "anime"
+    save_path.mkdir()
+    info_hash = "b" * 40
+    handle = MagicMock()
+    handle.info_hash.return_value = bytes.fromhex(info_hash)
+    libtorrent_manager.session.add_torrent.return_value = handle
+    libtorrent_manager._restored = False
+    libtorrent_manager.handles = {}
+    libtorrent_manager._torrent_status_callback = (
+        lambda h: "complete" if h == info_hash else None
+    )
+    libtorrent_manager._restore_callback = lambda: [
+        {
+            "hash": info_hash,
+            "name": "Show",
+            "trackers": [],
+            "save_path": str(save_path),
+        }
+    ]
+
+    libtorrent_manager._restore_from_database_fallback()
+
+    params = libtorrent_manager.session.add_torrent.call_args[0][0]
+    assert params["flags"] & mock_lt.torrent_flags.seed_mode
+    assert info_hash in libtorrent_manager.handles
+
+
+def test_connect_applies_active_checking_and_defers_dht(
+    lt_module, mock_lt, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(lt_module, "lt", mock_lt)
+    monkeypatch.setattr(lt_module, "LIBTORRENT_AVAILABLE", True)
+    monkeypatch.setattr(lt_module, "_RESTORE_WIRE_TIMEOUT_S", 0.01)
+
+    data_path = str(tmp_path / "data")
+    os.makedirs(data_path, exist_ok=True)
+    settings = {
+        "dataPath": data_path,
+        "download_path": os.path.join(data_path, "Downloads"),
+        "listen_port": 6882,
+        "active_checking": 1,
+    }
+
+    session = MagicMock()
+    session.pop_alerts.return_value = []
+    applied: list[dict] = []
+
+    def capture_settings(payload):
+        applied.append(dict(payload))
+
+    session.apply_settings.side_effect = capture_settings
+    mock_lt.session = MagicMock(return_value=session)
+
+    with patch.object(lt_module.LibTorrent, "initialize", lambda self: None):
+        manager = lt_module.LibTorrent(settings)
+    manager.settings = settings
+    manager.download_path = settings["download_path"]
+    manager.listen_port = 6882
+    manager._session_thread = lambda: None
+
+    # Wire callbacks before connect so wait returns immediately.
+    manager.set_restore_callback(lambda: [])
+    manager.set_torrent_status_callback(lambda _h: None)
+
+    manager.connect(thread=False)
+
+    assert any(s.get("active_checking") == 1 for s in applied)
+    first_with_dht = next(s for s in applied if "enable_dht" in s)
+    assert first_with_dht["enable_dht"] is False
+    assert any(s.get("enable_dht") is True for s in applied)
+    assert manager._restored is True
+    assert manager._session_ready.is_set()
+
+
+def test_connect_waits_for_callbacks_before_restore(
+    lt_module, mock_lt, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(lt_module, "lt", mock_lt)
+    monkeypatch.setattr(lt_module, "LIBTORRENT_AVAILABLE", True)
+    monkeypatch.setattr(lt_module, "_RESTORE_WIRE_TIMEOUT_S", 1.0)
+
+    data_path = str(tmp_path / "data")
+    os.makedirs(data_path, exist_ok=True)
+    settings = {
+        "dataPath": data_path,
+        "download_path": os.path.join(data_path, "Downloads"),
+        "listen_port": 6882,
+    }
+
+    session = MagicMock()
+    session.pop_alerts.return_value = []
+    mock_lt.session = MagicMock(return_value=session)
+
+    with patch.object(lt_module.LibTorrent, "initialize", lambda self: None):
+        manager = lt_module.LibTorrent(settings)
+    manager.settings = settings
+    manager.download_path = settings["download_path"]
+    manager.listen_port = 6882
+    manager._session_thread = lambda: None
+
+    order: list[str] = []
+    original_wait = manager._wait_for_restore_callbacks
+    original_restore = manager._run_session_restore
+
+    def wait_and_wire():
+        order.append("wait")
+        manager.set_restore_callback(lambda: [])
+        manager.set_torrent_status_callback(lambda _h: None)
+        return original_wait()
+
+    def restore():
+        order.append("restore")
+        # Callbacks must already be present when restore runs.
+        assert manager._restore_callback is not None
+        assert manager._torrent_status_callback is not None
+        return original_restore()
+
+    monkeypatch.setattr(manager, "_wait_for_restore_callbacks", wait_and_wire)
+    monkeypatch.setattr(manager, "_run_session_restore", restore)
+
+    manager.connect(thread=False)
+
+    assert order == ["wait", "restore"]
+
+
+def test_late_restore_callback_reruns_db_fallback(libtorrent_manager, tmp_path):
+    save_path = tmp_path / "anime"
+    save_path.mkdir()
+    info_hash = "c" * 40
+    handle = MagicMock()
+    handle.info_hash.return_value = bytes.fromhex(info_hash)
+    libtorrent_manager.session.add_torrent.return_value = handle
+    libtorrent_manager._restored = True
+    libtorrent_manager.handles = {}
+    libtorrent_manager._torrent_status_callback = lambda _h: None
+
+    libtorrent_manager.set_restore_callback(
+        lambda: [
+            {
+                "hash": info_hash,
+                "name": "Show",
+                "trackers": [],
+                "save_path": str(save_path),
+            }
+        ]
+    )
+
+    assert info_hash in libtorrent_manager.handles
+    libtorrent_manager.session.add_torrent.assert_called_once()
 
 
 def test_delete_removes_resume_file(libtorrent_manager):

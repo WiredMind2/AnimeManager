@@ -5,10 +5,13 @@ import os
 try:
     from .base import BaseFileManager, LoginDialog
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.adapters.file.base import (  # type: ignore
-        BaseFileManager,
-        LoginDialog,
-    )
+    try:
+        from adapters.file.base import BaseFileManager, LoginDialog
+    except ImportError:
+        from AnimeManager.adapters.file.base import (  # type: ignore
+            BaseFileManager,
+            LoginDialog,
+        )
 
 
 class FTPFileManager(BaseFileManager):

@@ -154,6 +154,18 @@ def test_mark_seen_writes_seen_tag(adapter_unique):
     assert adapter.get_user_state(7, 1) == {"tag": "SEEN", "liked": True}
 
 
+def test_list_anime_ids_with_tag(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_tag(1, "SEEN", user_id=1)
+    adapter.set_tag(2, "WATCHING", user_id=1)
+    adapter.set_tag(3, "seen", user_id=2)
+    adapter.set_tag(1, "SEEN", user_id=2)
+
+    assert set(adapter.list_anime_ids_with_tag("SEEN")) == {1, 3}
+    assert adapter.list_anime_ids_with_tag("WATCHING") == [2]
+    assert adapter.list_anime_ids_with_tag("") == []
+
+
 def test_mark_seen_persists_last_seen_on_anime_row(adapter_unique):
     adapter, db = adapter_unique
     db.conn.execute("CREATE TABLE IF NOT EXISTS anime (id INTEGER PRIMARY KEY, last_seen TEXT)")

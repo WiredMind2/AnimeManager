@@ -25,7 +25,6 @@ export default function AnimeActions({
   const [userState, setUserState] = useState(initialUserState);
   const [trailerOpen, setTrailerOpen] = useState(false);
   const [seenFile, setSeenFile] = useState(initialLastSeen || "");
-  const [markingSeen, setMarkingSeen] = useState(false);
   const embed = youtubeEmbedUrl(trailer);
   const closeTrailer = useCallback(() => setTrailerOpen(false), []);
   const { panelRef } = useDialogBehavior<HTMLDivElement>({
@@ -58,14 +57,13 @@ export default function AnimeActions({
 
   async function markSeen() {
     const fileName = seenFile.trim() || "manual";
-    setMarkingSeen(true);
+    const prevTag = userState.tag;
+    setUserState((s) => ({ ...s, tag: "SEEN" }));
     try {
       await api.markSeen(animeId, fileName, DEFAULT_USER_ID);
-      setUserState((s) => ({ ...s, tag: "SEEN" }));
     } catch {
+      setUserState((s) => ({ ...s, tag: prevTag }));
       showToast("Failed to mark episode as seen. Please try again.", "error");
-    } finally {
-      setMarkingSeen(false);
     }
   }
 
@@ -127,8 +125,8 @@ export default function AnimeActions({
             onChange={(e) => setSeenFile(e.target.value)}
             style={{ height: 36, minWidth: 180 }}
           />
-          <button className="btn btn--ghost" type="submit" disabled={markingSeen}>
-            {markingSeen ? "Saving…" : "Mark seen"}
+          <button className="btn btn--ghost" type="submit">
+            Mark seen
           </button>
         </form>
 

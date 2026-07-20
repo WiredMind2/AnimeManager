@@ -74,19 +74,24 @@ request. Two are provided out of the box:
 | | `interactive` | `strict` |
 | --- | --- | --- |
 | Intended caller | Tk GUI | FastAPI / public REST |
-| `max_terms` | 8 | 4 |
+| `max_terms` | 12 | 4 |
 | `max_concurrent_jobs` | 6 | 3 |
 | `per_job_timeout_s` | 45 | 20 |
 | `request_deadline_s` | 120 | 45 |
-| `max_results` | 750 | 200 |
+| `max_results_per_term` | 50 | 40 |
 | Insecure-TLS engines | blocked | blocked |
 | No-timeout engines | allowed | blocked |
 | NSFW engines | allowed | blocked |
 | Result ordering | streaming (arrival order) | batched & ranked |
 
+Each planned search term may contribute up to ``max_results_per_term``
+rows. There is no separate global row ceiling — totals scale with the
+number of terms.
+
 Override any limit at runtime through environment variables prefixed
 `ANIME_SEARCH_<PROFILE>_<FIELD>`, e.g.
-`ANIME_SEARCH_STRICT_MAX_RESULTS=50`.
+`ANIME_SEARCH_STRICT_MAX_RESULTS_PER_TERM=50` (legacy
+`ANIME_SEARCH_*_MAX_RESULTS` is still accepted as an alias).
 
 To author a new profile, build a `SearchProfile` from `config.py` and
 pass it to `SearchFacade`:

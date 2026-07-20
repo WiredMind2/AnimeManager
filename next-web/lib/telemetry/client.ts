@@ -84,7 +84,17 @@ export function trackEvent(
     client_ts_ms: Date.now(),
     path: typeof window !== "undefined" ? window.location.pathname : undefined,
   };
-  const line = `[AnimeManager telemetry][${level.toUpperCase()}] ${event}`;
+  const summaryKeys = ["path", "method", "status", "api_status", "error_message", "source"] as const;
+  const summary: Record<string, unknown> = {};
+  for (const key of summaryKeys) {
+    const value = payload[key];
+    if (value !== undefined && value !== null && value !== "") {
+      summary[key] = value;
+    }
+  }
+  const summaryText =
+    Object.keys(summary).length > 0 ? ` ${JSON.stringify(summary)}` : "";
+  const line = `[AnimeManager telemetry][${level.toUpperCase()}] ${event}${summaryText}`;
   try {
     if (level === "error") {
       console.error(line, payload);

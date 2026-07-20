@@ -203,8 +203,8 @@ export default function SettingsForm({
               </div>
             </summary>
             <div className="settings-section__body">
-              {section.children.length ? (
-                section.children.map((child) => (
+              {(section.children ?? []).length ? (
+                (section.children ?? []).map((child) => (
                   <SettingsField
                     key={child.name}
                     node={child}
