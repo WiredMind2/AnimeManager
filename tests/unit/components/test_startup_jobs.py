@@ -74,6 +74,25 @@ class _RecordingDBManager:
     def repair_duplicate_anime_entries(self, **kwargs):
         return 0
 
+    def purge_provisional_anime_rows(self):
+        return 0
+
+
+class _MalIdentity:
+    def resolve_external_ids_batch(self, entries):
+        out = []
+        for entry in entries:
+            catalog_id = entry.get("mal_id")
+            if catalog_id is None and entry:
+                catalog_id = next(iter(entry.values()))
+            out.append(
+                SimpleNamespace(
+                    catalog_id=int(catalog_id),
+                    external_ids=dict(entry),
+                )
+            )
+        return out
+
 
 def _anime_like(rid, title="t", date_from=None):
     if date_from is None:
@@ -91,6 +110,7 @@ def _anime_like(rid, title="t", date_from=None):
         picture=None,
         trailer=None,
         broadcast=None,
+        _schedule_external_ids={"mal_id": int(rid)},
     )
 
 
@@ -98,6 +118,7 @@ def _build_service(api, db, *, settings=None) -> StartupJobsService:
     coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
     coord.set_api(api)
     coord.set_database_manager(db)
+    coord._catalog_identity = _MalIdentity()
     coord.log = lambda *a, **k: None  # silence logs in tests
     anime_settings = {
         "scheduleTimeout": 86400,
@@ -146,14 +167,16 @@ def test_startup_pipeline_runs_lean_jobs_only():
     names = [o.name for o in report.outcomes]
     assert names == [
         "repair_date_from",
+        "purge_provisional_anime",
         "fetch_latest_anime",
         "update_status",
         "purge_deleted_torrents",
+        "reconcile_seen_anime_torrents",
         "restore_libtorrent_sessions",
         "repair_torrent_index",
         "reconcile_deleted_torrents",
     ]
-    assert report.total == 7
+    assert report.total == 9
     assert db.enrich_calls == []
 
 
@@ -184,13 +207,13 @@ def test_fetch_latest_persists_deduped_batch():
         service._api_coordinator.close()
 
     assert isinstance(report, StartupJobReport)
-    # Lean pipeline: ``repair_date_from``, ``fetch_latest_anime``,
-    # ``update_status``, ``purge_deleted_torrents``,
-    # ``restore_libtorrent_sessions``, ``repair_torrent_index``,
-    # ``reconcile_deleted_torrents``.
+    # Lean pipeline: ``repair_date_from``, ``purge_provisional_anime``,
+    # ``fetch_latest_anime``, ``update_status``, ``purge_deleted_torrents``,
+    # ``reconcile_seen_anime_torrents``, ``restore_libtorrent_sessions``,
+    # ``repair_torrent_index``, ``reconcile_deleted_torrents``.
     # cleanly here because ``_RecordingDBManager.get_database()`` returns
     # ``None``.
-    assert report.total == 7
+    assert report.total == 9
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
@@ -375,6 +398,9 @@ def test_purge_deleted_torrents_job_runs_before_restore():
     try:
         names = [job.name for job in service._jobs()]
         assert names.index("purge_deleted_torrents") < names.index(
+            "reconcile_seen_anime_torrents"
+        )
+        assert names.index("reconcile_seen_anime_torrents") < names.index(
             "restore_libtorrent_sessions"
         )
         assert names.index("restore_libtorrent_sessions") < names.index(
@@ -387,6 +413,30 @@ def test_purge_deleted_torrents_job_runs_before_restore():
     finally:
         coord.close()
     assert detail == "purged 3 deleted torrent artifact(s)"
+
+
+def test_reconcile_seen_anime_torrents_job_runs_with_adapter():
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    adapter = SimpleNamespace(reconcile_seen_anime_torrents=lambda: 4)
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db)
+    coord.log = lambda *a, **k: None
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db,
+        config=SimpleNamespace(settings={}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+        download_adapter=adapter,
+        schedule_limit=10,
+    )
+    try:
+        detail = service._job_reconcile_seen_anime_torrents()
+    finally:
+        coord.close()
+    assert detail == "marked 4 torrent(s) deleted for SEEN anime"
 
 
 def test_repair_torrent_index_job_runs_with_adapter():
@@ -625,3 +675,29 @@ def test_backfill_title_synonyms_hydrates_missing_rows():
 
     assert detail == "hydrated 2/2 row(s) missing synonyms"
     assert len(write_service.calls) == 2
+
+
+def test_run_one_tolerates_proxy_db_without_counters():
+    """thread_safe_db.__getattr__ returns callables; counters must not TypeError."""
+
+    class _ProxyDB:
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    class _DBManager:
+        def get_database(self):
+            return _ProxyDB()
+
+    service = StartupJobsService(
+        api_coordinator=SimpleNamespace(),
+        database_manager=_DBManager(),
+        config=SimpleNamespace(settings={"anime": {}}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+    )
+    report = StartupJobReport()
+    service._run_one(StartupJob(name="noop", fn=lambda: "ok"), report)
+    assert len(report.outcomes) == 1
+    assert report.outcomes[0].ok is True
+    assert report.outcomes[0].detail == "ok"
+

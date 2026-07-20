@@ -7,20 +7,28 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from ....shared.contracts import AnimeRecord, IngestionStatus, ProviderName
+from ....shared.contracts import (
+    IngestionStatus,
+    ProviderAnimePayload,
+    ProviderName,
+)
 from ....application.services.ingestion_pipeline import IngestionPipeline, ProviderSpec
 
 
-def _record(rid, title="t", source=ProviderName.UNKNOWN):
-    return AnimeRecord(id=rid, title=title, source_provider=source)
+def _payload(raw, title="t", source=ProviderName.UNKNOWN):
+    if isinstance(raw, ProviderAnimePayload):
+        return raw
+    return ProviderAnimePayload(
+        title=title,
+        external_ids={"mal_id": int(raw)},
+        source_provider=source,
+    )
 
 
 def _adapter(raw):
     if raw is None:
         return None
-    if isinstance(raw, AnimeRecord):
-        return raw
-    return _record(raw)
+    return _payload(raw)
 
 
 @pytest.fixture
@@ -35,7 +43,7 @@ def pipeline():
 def test_no_providers_returns_complete(pipeline):
     out = pipeline.run([], "anything")
     assert out.status == IngestionStatus.COMPLETE
-    assert out.records == []
+    assert out.payloads == []
     assert out.total_providers == 0
 
 
@@ -51,8 +59,8 @@ def test_collects_and_dedupes(pipeline):
         ProviderSpec(name="s2", search=s2, adapter=_adapter),
     ]
     out = pipeline.run(specs, "term", limit=10)
-    ids = sorted(r.id for r in out.records)
-    assert ids == [1, 2, 3, 4]
+    mal_ids = sorted(p.external_ids["mal_id"] for p in out.payloads)
+    assert mal_ids == [1, 2, 3, 4]
     assert out.status == IngestionStatus.COMPLETE
     assert out.failed_providers == 0
 
@@ -72,7 +80,7 @@ def test_failed_provider_marks_partial(pipeline):
     assert out.status == IngestionStatus.PARTIAL
     assert out.failed_providers == 1
     assert any(e.startswith("bad:") for e in out.errors)
-    assert [r.id for r in out.records] == [1, 2]
+    assert [p.external_ids["mal_id"] for p in out.payloads] == [1, 2]
 
 
 def test_all_providers_fail_marks_failed(pipeline):
@@ -90,9 +98,9 @@ def test_all_providers_fail_marks_failed(pipeline):
 def test_sink_receives_dedup_records(pipeline):
     received = []
 
-    def sink(records):
-        received.extend(records)
-        return len(records)
+    def sink(payloads):
+        received.extend(payloads)
+        return len(payloads)
 
     def s1(terms, limit):
         return [1, 2, 2]
@@ -102,7 +110,7 @@ def test_sink_receives_dedup_records(pipeline):
         "term",
         sink=sink,
     )
-    assert sorted(r.id for r in received) == [1, 2]
+    assert sorted(p.external_ids["mal_id"] for p in received) == [1, 2]
     assert out.status == IngestionStatus.COMPLETE
 
 
@@ -110,7 +118,7 @@ def test_sink_failure_marks_partial(pipeline):
     def s(terms, limit):
         return [1]
 
-    def sink(records):
+    def sink(payloads):
         raise RuntimeError("flush failed")
 
     out = pipeline.run(
@@ -145,6 +153,92 @@ def test_respects_provider_timeout():
         executor.shutdown(wait=False)
 
 
+def test_run_one_stops_iterating_slow_generator_after_deadline():
+    """A paginating provider must release the worker once the deadline passes.
+
+    Abandoned futures used to keep iterating (and fetching pages) for
+    minutes, hogging the shared executor and starving later requests.
+    """
+    pipe = IngestionPipeline(max_workers=1, provider_timeout_s=0.2)
+    try:
+        pulled = []
+
+        def slow_gen(terms, limit):
+            for i in range(100):
+                pulled.append(i)
+                yield i
+                time.sleep(0.05)
+
+        spec = ProviderSpec(name="slow", search=slow_gen, adapter=_adapter)
+        start = time.perf_counter()
+        out = pipe._run_one(spec, "term", 100)
+        elapsed = time.perf_counter() - start
+        assert len(pulled) < 100
+        assert len(out) < 100
+        assert elapsed < 2.0
+    finally:
+        pipe.close()
+
+
+def test_run_one_bails_immediately_when_deadline_already_passed():
+    pipe = IngestionPipeline(max_workers=1, provider_timeout_s=5.0)
+    try:
+        called = []
+
+        def search(terms, limit):
+            called.append(True)
+            return [1, 2, 3]
+
+        spec = ProviderSpec(name="s", search=search, adapter=_adapter)
+        out = pipe._run_one(spec, "term", 3, deadline=time.perf_counter() - 1.0)
+        assert out == []
+        assert not called
+    finally:
+        pipe.close()
+
+
+def test_abandoned_slow_provider_frees_worker_for_next_run():
+    """After a timed-out run, the single worker must become available again."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        pipe = IngestionPipeline(
+            max_workers=1,
+            provider_timeout_s=0.3,
+            executor=executor,
+        )
+        try:
+            def slow_gen(terms, limit):
+                for i in range(200):
+                    yield i
+                    time.sleep(0.05)
+
+            def fast(terms, limit):
+                return [1]
+
+            start = time.perf_counter()
+            out1 = pipe.run(
+                [ProviderSpec(name="slow", search=slow_gen, adapter=_adapter)],
+                "term",
+                limit=200,
+            )
+            # The provider self-terminates at the deadline: the run ends
+            # promptly with whatever was collected instead of hogging the
+            # worker for the full 200-item iteration (~10s).
+            assert time.perf_counter() - start < 2.0
+            assert len(out1.payloads) < 200
+
+            out2 = pipe.run(
+                [ProviderSpec(name="fast", search=fast, adapter=_adapter)],
+                "term",
+                limit=1,
+            )
+            assert [p.external_ids["mal_id"] for p in out2.payloads] == [1]
+        finally:
+            pipe.close()
+    finally:
+        executor.shutdown(wait=True)
+
+
 def test_limit_distributed_across_providers(pipeline):
     seen = {}
 
@@ -155,8 +249,16 @@ def test_limit_distributed_across_providers(pipeline):
 
         return s
 
+    def adapter(raw):
+        name, idx = raw
+        return ProviderAnimePayload(
+            title=f"{name}-{idx}",
+            external_ids={"mal_id": hash((name, idx)) % 1_000_000},
+            source_provider=ProviderName.UNKNOWN,
+        )
+
     specs = [
-        ProviderSpec(name=name, search=make_search(name), adapter=lambda raw: _record(hash(raw)))
+        ProviderSpec(name=name, search=make_search(name), adapter=adapter)
         for name in ("a", "b", "c", "d")
     ]
     pipeline.run(specs, "term", limit=12)

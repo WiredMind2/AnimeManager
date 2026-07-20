@@ -68,6 +68,31 @@ def test_persist_records_reports_errors():
     assert "RuntimeError" in result.errors[0]
 
 
+def test_persist_records_skips_provisional_ids():
+    db = _DBManager()
+    service = AnimeWriteService(db_manager=db)
+    result = service.persist_records(
+        [_record(-1426116332, title="Orphan"), _record(2808, title="Real")],
+        source=WriteSource.SEARCH,
+    )
+    assert result.persisted == 1
+    assert result.errors == []
+    assert len(db.upserts) == 1
+    assert len(db.upserts[0]) == 1
+    assert db.upserts[0][0].id == 2808
+
+
+def test_persist_legacy_anime_rejects_provisional_id():
+    db = _DBManager()
+    service = AnimeWriteService(db_manager=db)
+    ok = service.persist_legacy_anime(
+        {"id": -99, "title": "Bad"},
+        source=WriteSource.STREAM,
+    )
+    assert ok is False
+    assert db.upserts == []
+
+
 def test_persist_legacy_anime_accepts_dict_payload():
     db = _DBManager()
     service = AnimeWriteService(db_manager=db)

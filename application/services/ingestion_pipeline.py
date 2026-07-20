@@ -2,9 +2,9 @@
 Canonical API->DB ingestion pipeline.
 
 Adapters fan out into provider workers (bounded concurrency), produce
-typed `AnimeRecord` instances, are deduplicated by id, and then handed
-to a single persistence sink. The pipeline is the only legal way for
-API-originated data to reach the database.
+typed ``ProviderAnimePayload`` instances, are deduplicated by external-id
+fingerprint, and are handed to the coordinator for catalogue identity
+assignment before persistence.
 """
 
 from __future__ import annotations
@@ -13,15 +13,22 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from shared.contracts import AnimeRecord, IngestionResult, IngestionStatus
+from shared.contracts import (
+    AnimeRecord,
+    IngestionResult,
+    IngestionStatus,
+    ProviderAnimePayload,
+    payload_fingerprint,
+)
 from shared.telemetry import get_telemetry
+from domain.catalog import preferred_catalog_id
 
 
 ProviderCallable = Callable[[str, int], Iterable[Any]]
-RecordAdapter = Callable[[Any], Optional[AnimeRecord]]
-PersistenceSink = Callable[[Sequence[AnimeRecord]], int]
+RecordAdapter = Callable[[Any], Optional[ProviderAnimePayload]]
+PersistenceSink = Callable[[Sequence[ProviderAnimePayload]], int]
 
 
 @dataclass(frozen=True)
@@ -34,11 +41,14 @@ class ProviderSpec:
 
 
 class IngestionPipeline:
-    """Bounded-concurrency search + dedupe + persistence sink.
+    """Bounded-concurrency search + dedupe + optional payload sink.
 
     The pipeline is intentionally infrastructure-free: no DB clients, no
     network clients. It accepts callables, so it is trivially testable
     with in-memory fakes and survives provider churn.
+
+    Catalogue identity is **not** resolved here — the coordinator batch-
+    assigns ids after collection.
     """
 
     def __init__(
@@ -68,26 +78,21 @@ class IngestionPipeline:
         *,
         limit: int = 50,
         sink: Optional[PersistenceSink] = None,
-    ) -> Iterable[tuple[str, List[AnimeRecord]]]:
-        """Yield ``(provider_name, records)`` batches as each provider returns.
-
-        Identical concurrency / dedupe semantics to :meth:`run`, but the
-        caller is fed partial results as soon as the first provider
-        finishes instead of waiting for the slowest one. The
-        persistence sink, when provided, runs at the very end with the
-        full deduplicated set -- callers that want per-batch persistence
-        can wire their own sink into the consumer loop.
-        """
+    ) -> Iterable[tuple[str, List[ProviderAnimePayload]]]:
+        """Yield ``(provider_name, payloads)`` batches as each provider returns."""
         if not providers:
             return
         per_provider_limit = max(1, limit // max(1, len(providers)))
         start_ns = time.perf_counter()
+        deadline = start_ns + self._provider_timeout
         futures = {
-            self._executor.submit(self._run_one, spec, terms, per_provider_limit): spec
+            self._executor.submit(
+                self._run_one, spec, terms, per_provider_limit, deadline
+            ): spec
             for spec in providers
         }
-        collected: List[AnimeRecord] = []
-        seen_ids: set = set()
+        collected: List[ProviderAnimePayload] = []
+        seen: set = set()
         try:
             for future in as_completed(futures, timeout=self._provider_timeout):
                 spec = futures[future]
@@ -95,14 +100,14 @@ class IngestionPipeline:
                     batch = future.result(timeout=0)
                 except (FutureTimeoutError, Exception):  # noqa: BLE001
                     continue
-                fresh: List[AnimeRecord] = []
-                for record in batch:
-                    rid = record.id
-                    if rid in seen_ids:
+                fresh: List[ProviderAnimePayload] = []
+                for payload in batch:
+                    fp = payload_fingerprint(payload)
+                    if fp in seen:
                         continue
-                    seen_ids.add(rid)
-                    fresh.append(record)
-                    collected.append(record)
+                    seen.add(fp)
+                    fresh.append(payload)
+                    collected.append(payload)
                 if fresh:
                     yield spec.name, fresh
         except FutureTimeoutError:
@@ -141,7 +146,8 @@ class IngestionPipeline:
         else:
             per_provider_limit = max(1, limit // max(1, len(providers)))
         start_ns = time.perf_counter()
-        collected: List[AnimeRecord] = []
+        deadline = start_ns + self._provider_timeout
+        collected: List[ProviderAnimePayload] = []
         errors: List[str] = []
         failed = 0
         partial = False
@@ -149,7 +155,7 @@ class IngestionPipeline:
         if parallel:
             futures = {
                 self._executor.submit(
-                    self._run_one, spec, terms, per_provider_limit
+                    self._run_one, spec, terms, per_provider_limit, deadline
                 ): spec
                 for spec in providers
             }
@@ -183,7 +189,7 @@ class IngestionPipeline:
                     partial = True
                     errors.append(f"{spec.name}:{type(exc).__name__}")
 
-        deduped = _deduplicate(collected)
+        deduped = _deduplicate_payloads(collected)
         persisted_count = 0
         if sink is not None and deduped:
             try:
@@ -208,7 +214,7 @@ class IngestionPipeline:
 
         return IngestionResult(
             status=status,
-            records=deduped,
+            payloads=deduped,
             failed_providers=failed,
             total_providers=len(providers),
             elapsed_ms=elapsed_ms,
@@ -216,11 +222,25 @@ class IngestionPipeline:
             persisted_count=persisted_count,
         )
 
-    def _run_one(self, spec: ProviderSpec, terms: str, limit: int) -> List[AnimeRecord]:
-        out: List[AnimeRecord] = []
+    def _run_one(
+        self,
+        spec: ProviderSpec,
+        terms: str,
+        limit: int,
+        deadline: Optional[float] = None,
+    ) -> List[ProviderAnimePayload]:
+        out: List[ProviderAnimePayload] = []
+        if deadline is None:
+            deadline = time.perf_counter() + self._provider_timeout
         with self._telemetry.time(f"ingestion.provider.{spec.name}_ms"):
+            if time.perf_counter() > deadline:
+                self._telemetry.increment("ingestion.provider_deadline_stops")
+                return out
             raw_iter = spec.search(terms, limit)
             for idx, raw in enumerate(raw_iter):
+                if time.perf_counter() > deadline:
+                    self._telemetry.increment("ingestion.provider_deadline_stops")
+                    break
                 if raw is None:
                     continue
                 normalized = spec.adapter(raw)
@@ -238,6 +258,21 @@ class IngestionPipeline:
                 future.cancel()
 
 
+def _deduplicate_payloads(
+    payloads: Sequence[ProviderAnimePayload],
+) -> List[ProviderAnimePayload]:
+    """Dedupe by external-id fingerprint, preserving first-seen order."""
+    seen: set = set()
+    out: List[ProviderAnimePayload] = []
+    for payload in payloads:
+        fp = payload_fingerprint(payload)
+        if fp in seen:
+            continue
+        seen.add(fp)
+        out.append(payload)
+    return out
+
+
 def _deduplicate(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
     """Dedupe by canonical `AnimeRecord.id`, preserving first-seen order."""
     seen: set = set()
@@ -252,7 +287,11 @@ def _deduplicate(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
 
 
 def deduplicate_records(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
-    """Dedupe by catalog id, then collapse rows sharing provider external ids."""
+    """Dedupe by catalog id, then collapse rows sharing provider external ids.
+
+    When collapsing, prefer the smallest **positive** catalogue id so
+    provisional (negative) fingerprints never beat a real ``indexList`` id.
+    """
     by_id = _deduplicate(records)
     if len(by_id) <= 1:
         return by_id
@@ -261,14 +300,17 @@ def deduplicate_records(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
 
     def find(node: int) -> int:
         while parent[node] != node:
-            parent[node] = parent[node]
+            parent[node] = parent[parent[node]]
             node = parent[node]
         return node
 
     def union(a: int, b: int) -> None:
         root_a, root_b = find(a), find(b)
-        if root_a != root_b:
-            parent[max(root_a, root_b)] = min(root_a, root_b)
+        if root_a == root_b:
+            return
+        winner = preferred_catalog_id(root_a, root_b)
+        loser = root_b if winner == root_a else root_a
+        parent[loser] = winner
 
     ext_index: Dict[tuple[str, int], int] = {}
     for record in by_id:
@@ -285,8 +327,11 @@ def deduplicate_records(records: Sequence[AnimeRecord]) -> List[AnimeRecord]:
         root = find(record.id)
         candidate = record if record.id == root else replace(record, id=root)
         existing = winners.get(root)
-        if existing is None or candidate.id < existing.id:
+        if existing is None:
             winners[root] = candidate
+        else:
+            keep_id = preferred_catalog_id(existing.id, candidate.id)
+            winners[root] = candidate if candidate.id == keep_id else existing
         if root not in order:
             order.append(root)
 

@@ -1894,8 +1894,80 @@ FLUSH PRIVILEGES;
             else:
                 self.log("DB_MAIN", "Stored procedures already exist")
 
+            # Always refresh search_anime_fast: older builds only scanned
+            # title_synonyms via FULLTEXT and missed primary titles.
+            self._upgrade_search_anime_fast_procedure()
+
         except Exception as e:
             print(f"Error checking/creating stored procedures: {e}")
+
+    def _upgrade_search_anime_fast_procedure(self) -> None:
+        """Replace ``search_anime_fast`` when it still uses synonym-only FULLTEXT."""
+        try:
+            rows = self.sql("SHOW CREATE PROCEDURE search_anime_fast")
+            body = ""
+            if rows:
+                row = rows[0]
+                if isinstance(row, dict):
+                    body = str(
+                        row.get("Create Procedure")
+                        or row.get("Create procedure")
+                        or ""
+                    )
+                else:
+                    body = str(row[2] if len(row) > 2 else "")
+            if body and "LOWER(A.TITLE) LIKE" in body.upper():
+                return
+            self.log("DB_MAIN", "Upgrading search_anime_fast stored procedure")
+            self._install_search_anime_fast_procedure()
+        except Exception as exc:
+            self.log(
+                "DB_ERROR",
+                f"Could not upgrade search_anime_fast procedure: {exc}",
+            )
+
+    def _install_search_anime_fast_procedure(self) -> None:
+        """Install the title+synonym ``search_anime_fast`` procedure."""
+        try:
+            self.sql("DROP PROCEDURE IF EXISTS search_anime_fast", save=True)
+        except Exception as exc:
+            self.log("DB_ERROR", f"DROP search_anime_fast failed: {exc}")
+        create_sql = """
+CREATE PROCEDURE search_anime_fast(IN search_terms VARCHAR(500), IN max_results INT)
+BEGIN
+    SELECT
+        a.id,
+        a.title,
+        a.picture,
+        a.date_from,
+        a.date_to,
+        a.synopsis,
+        a.episodes,
+        a.duration,
+        a.rating,
+        a.status,
+        a.broadcast,
+        a.last_seen,
+        a.trailer,
+        CASE
+            WHEN LOWER(a.title) = LOWER(search_terms) THEN 3.0
+            WHEN LOWER(a.title) LIKE CONCAT(LOWER(search_terms), '%') THEN 2.5
+            WHEN LOWER(a.title) LIKE CONCAT('%', LOWER(search_terms), '%') THEN 2.0
+            ELSE 1.5
+        END AS relevance
+    FROM anime a
+    WHERE LOWER(a.title) LIKE CONCAT('%', LOWER(search_terms), '%')
+       OR EXISTS (
+            SELECT 1
+            FROM title_synonyms ts
+            WHERE ts.id = a.id
+              AND LOWER(ts.value) LIKE CONCAT('%', LOWER(search_terms), '%')
+       )
+    ORDER BY relevance DESC, a.date_from DESC
+    LIMIT max_results;
+END
+"""
+        self.sql(create_sql, save=True)
 
     def _create_procedures(self):
         """Create stored procedures from procedures.sql file"""
@@ -1928,9 +2000,20 @@ FLUSH PRIVILEGES;
                         f"Successfully created {success_count} stored procedures",
                     )
                 else:
-                    print("No stored procedures were created")
+                    # procedures.sql may only contain search_anime_fast; install it
+                    # directly when the delimiter-split path finds nothing else.
+                    try:
+                        self._install_search_anime_fast_procedure()
+                        success_count = 1
+                        self.log(
+                            "DB_MAIN",
+                            "Installed search_anime_fast stored procedure",
+                        )
+                    except Exception as e:
+                        print(f"No stored procedures were created: {e}")
             else:
                 print("Warning: Procedures file not found")
+                self._install_search_anime_fast_procedure()
 
         except Exception as e:
             print(f"Warning: Error creating procedures: {e}")

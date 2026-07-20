@@ -162,3 +162,49 @@ def test_merge_dedupes_genre_when_canonical_has_same_value():
         "SELECT id, value FROM genres ORDER BY value"
     ).fetchall()
     assert rows == [(1, "Action"), (1, "Comedy")]
+
+
+def test_purge_provisional_anime_rows_deletes_negative_pks():
+    db = _MergeDB()
+    db.conn.execute(
+        "INSERT INTO anime VALUES (-1426116332, 'Orphan Higehiro')"
+    )
+    db.conn.execute(
+        "INSERT INTO title_synonyms VALUES (-1426116332, 'Higehiro')"
+    )
+    db.conn.execute(
+        "INSERT INTO genres VALUES (-1426116332, 'Drama')"
+    )
+    db.conn.commit()
+
+    deleted = CatalogMergeRepository(db).purge_provisional_anime_rows()
+
+    assert deleted == 1
+    ids = [row[0] for row in db.conn.execute("SELECT id FROM anime").fetchall()]
+    assert -1426116332 not in ids
+    assert 1 in ids
+    assert (
+        db.conn.execute(
+            "SELECT COUNT(*) FROM title_synonyms WHERE id < 0"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_title_repair_prefers_positive_canonical_over_provisional():
+    db = _MergeDB()
+    db.conn.execute("UPDATE anime SET title='Higehiro' WHERE id=1")
+    db.conn.execute(
+        "INSERT INTO anime VALUES (-500, 'Higehiro')"
+    )
+    db.conn.commit()
+
+    merged = CatalogMergeRepository(db)._repair_by_title()
+
+    assert merged == 1
+    ids = {row[0] for row in db.conn.execute("SELECT id FROM anime").fetchall()}
+    assert 1 in ids
+    assert -500 not in ids
+    assert db.conn.execute(
+        "SELECT title FROM anime WHERE id=1"
+    ).fetchone()[0] == "Higehiro"

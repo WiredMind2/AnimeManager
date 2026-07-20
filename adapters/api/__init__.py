@@ -370,6 +370,7 @@ class AnimeAPI:
 # can write ``from adapters.api import AnilistCo, JikanMoe, KitsuIo,
 # MyAnimeListNet`` (matching the legacy ``animeAPI`` surface).
 from . import (  # noqa: E402,F401
+    AnidbNet,
     AnilistCo,
     APIUtils,
     JikanMoe,
@@ -379,6 +380,7 @@ from . import (  # noqa: E402,F401
 
 __all__ = [
     "AnimeAPI",
+    "AnidbNet",
     "AnilistCo",
     "APIUtils",
     "JikanMoe",
