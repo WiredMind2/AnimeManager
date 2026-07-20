@@ -7,7 +7,6 @@ import {
   ApiError,
   getAnimeForSSR,
   requestWithSsrRetry,
-  type EpisodeFile,
   type TorrentSearchOptions,
   type UserState,
 } from "@/lib/api";
@@ -34,22 +33,18 @@ export default async function AnimeDetailPage({ params }: PageProps) {
   let anime;
   let userState;
   let initialTorrentSearchOptions: TorrentSearchOptions;
-  let initialEpisodeFiles;
-  let initialAnimeTorrents;
 
+  // Episode files and library torrents are intentionally NOT fetched here:
+  // episode-files runs ffprobe per file on the backend and would block the
+  // whole page render. The client fetches both right after mount.
   try {
-    [anime, userState, initialTorrentSearchOptions, initialEpisodeFiles, initialAnimeTorrents] =
-      await Promise.all([
-        getAnimeForSSR(animeId),
-        requestWithSsrRetry<UserState>(`/state/${animeId}?user_id=${DEFAULT_USER_ID}`).catch(
-          () => ({}),
-        ),
-        api.getTorrentSearchOptions(animeId).catch(() => emptyTorrentSearchOptions),
-        requestWithSsrRetry<{ items: EpisodeFile[] }>(
-          `/anime/${animeId}/episode-files?user_id=${DEFAULT_USER_ID}`,
-        ).catch(() => ({ items: [] })),
-        api.getAnimeLibraryTorrents(animeId).catch(() => ({ items: [] })),
-      ]);
+    [anime, userState, initialTorrentSearchOptions] = await Promise.all([
+      getAnimeForSSR(animeId),
+      requestWithSsrRetry<UserState>(`/state/${animeId}?user_id=${DEFAULT_USER_ID}`).catch(
+        () => ({}),
+      ),
+      api.getTorrentSearchOptions(animeId).catch(() => emptyTorrentSearchOptions),
+    ]);
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) notFound();
     throw err;
@@ -62,8 +57,6 @@ export default async function AnimeDetailPage({ params }: PageProps) {
       initialAnime={anime}
       userState={userState}
       initialTorrentSearchOptions={initialTorrentSearchOptions}
-      initialEpisodeFiles={initialEpisodeFiles.items ?? []}
-      initialAnimeTorrents={initialAnimeTorrents.items ?? []}
     />
   );
 }

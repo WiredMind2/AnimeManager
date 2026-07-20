@@ -9,6 +9,7 @@ import { formatMb, watchPercent, watchProgressLabel, watchProgressTitle } from "
 type EpisodePlayerTableProps = {
   animeId: number;
   initialFiles: EpisodeFile[];
+  loading?: boolean;
 };
 
 const STATUSES = [
@@ -17,12 +18,18 @@ const STATUSES = [
   { value: "SEEN", label: "Seen" },
 ] as const;
 
-export default function EpisodePlayerTable({ animeId, initialFiles }: EpisodePlayerTableProps) {
+export default function EpisodePlayerTable({
+  animeId,
+  initialFiles,
+  loading = false,
+}: EpisodePlayerTableProps) {
   const [files, setFiles] = useState(initialFiles);
 
+  // Own local state after first paint; re-sync when navigating to another
+  // anime or when the parent's deferred episode-files fetch resolves.
   useEffect(() => {
     setFiles(initialFiles);
-  }, [initialFiles]);
+  }, [animeId, initialFiles]);
 
   async function updateProgress(fileId: string, status: string) {
     setFiles((prev) =>
@@ -49,7 +56,9 @@ export default function EpisodePlayerTable({ animeId, initialFiles }: EpisodePla
         <span className="meta">
           {files.length > 0
             ? `${files.length} file${files.length === 1 ? "" : "s"} ready`
-            : "No local episode files found"}
+            : loading
+              ? "Checking local files…"
+              : "No local episode files found"}
         </span>
       </div>
 
@@ -148,6 +157,15 @@ export default function EpisodePlayerTable({ animeId, initialFiles }: EpisodePla
               })}
             </tbody>
           </table>
+        </div>
+      ) : loading ? (
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}
+          aria-hidden="true"
+        >
+          <span className="skeleton-line" style={{ width: "72%" }} />
+          <span className="skeleton-line" style={{ width: "58%" }} />
+          <span className="skeleton-line" style={{ width: "65%" }} />
         </div>
       ) : (
         <p style={{ color: "var(--text-faint)", fontSize: 13 }}>
