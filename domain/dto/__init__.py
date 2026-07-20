@@ -26,6 +26,7 @@ class AnimeListRequest:
 class SearchRequest:
     query: str
     limit: int = 50
+    offset: int = 0
 
 
 @dataclass(slots=True)
@@ -33,12 +34,21 @@ class SeasonBrowseRequest:
     year: int
     season: str
     limit: int = 50
+    offset: int = 0
 
 
 @dataclass(slots=True)
 class GenreBrowseRequest:
-    genre: str
+    genres: list[str]
     limit: int = 50
+    offset: int = 0
+
+
+@dataclass(slots=True)
+class TopBrowseRequest:
+    category: str
+    limit: int = 50
+    offset: int = 0
 
 
 @dataclass(slots=True)
@@ -60,6 +70,7 @@ __all__ = [
     "SearchRequest",
     "SeasonBrowseRequest",
     "GenreBrowseRequest",
+    "TopBrowseRequest",
     "DownloadRequest",
     "AnimeListResponse",
 ]

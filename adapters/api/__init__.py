@@ -257,6 +257,9 @@ class AnimeAPI:
         threads = []
         que = queue.Queue()
         for api in self.apis:
+            # Enrichment-only providers (AniDB) skip search fan-out.
+            if name == "searchAnime" and not getattr(api, "parallel_search", True):
+                continue
             t = threading.Thread(
                 target=handler,
                 args=(api, name, que, *args),
@@ -366,7 +369,13 @@ class AnimeAPI:
 # Re-export the provider submodules at the package level so callers
 # can write ``from adapters.api import AnilistCo, JikanMoe, KitsuIo,
 # MyAnimeListNet`` (matching the legacy ``animeAPI`` surface).
-from . import AnilistCo, APIUtils, JikanMoe, KitsuIo, MyAnimeListNet  # noqa: E402,F401
+from . import (  # noqa: E402,F401
+    AnilistCo,
+    APIUtils,
+    JikanMoe,
+    KitsuIo,
+    MyAnimeListNet,
+)
 
 __all__ = [
     "AnimeAPI",

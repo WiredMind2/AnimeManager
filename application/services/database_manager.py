@@ -16,12 +16,61 @@ from adapters.persistence.query_builder import (
     build_anime_list_query,
     build_genre_list_query,
     build_season_list_query,
+    build_top_list_query,
 )
-from domain.policies.genre import normalize_genre
+from domain.policies.genre import normalize_genres
 from domain.policies.season import normalize_airing_season, season_date_range, validate_season_year
 from shared.telemetry import get_telemetry
 from adapters.persistence.models import Anime, AnimeList
 from ports.interfaces import CatalogMappingPort
+
+
+def _is_duplicate_key_error(exc: BaseException) -> bool:
+    """Return True for MySQL/MariaDB/SQLite duplicate-primary/unique violations."""
+    errno = getattr(exc, "errno", None)
+    if errno == 1062:
+        return True
+    args = getattr(exc, "args", ())
+    if args and args[0] == 1062:
+        return True
+    msg = str(exc).lower()
+    return "1062" in msg or "duplicate" in msg or "unique constraint" in msg
+
+
+def safe_db_counter(db: Any, name: str) -> int:
+    """Read an integer counter from a DB handle without tripping proxy __getattr__.
+
+    SQLite's ``thread_safe_db`` returns a lambda for any missing attribute, so
+    ``getattr(db, "_commit_count", 0)`` yields a callable instead of the default.
+    Prefer real instance attrs (and nested ``db.db``) and treat callables as 0.
+    """
+    if db is None:
+        return 0
+
+    def _from_mapping(obj: Any) -> Any:
+        try:
+            mapping = object.__getattribute__(obj, "__dict__")
+        except AttributeError:
+            return None
+        if isinstance(mapping, dict) and name in mapping:
+            return mapping[name]
+        return None
+
+    value = _from_mapping(db)
+    if value is None:
+        nested = None
+        try:
+            nested = object.__getattribute__(db, "db")
+        except AttributeError:
+            nested = None
+        if nested is not None:
+            value = _from_mapping(nested)
+    if value is None or callable(value):
+        return 0
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class DatabaseManager(BaseComponent):
@@ -97,8 +146,8 @@ class DatabaseManager(BaseComponent):
         }
         db = self._database
         if db is not None:
-            stats["commits"] = int(getattr(db, "_commit_count", 0))
-            stats["queries"] = int(getattr(db, "_query_count", 0))
+            stats["commits"] = safe_db_counter(db, "_commit_count")
+            stats["queries"] = safe_db_counter(db, "_query_count")
         return stats
 
     def _flush_write_batch(self, batch: List[Any]) -> None:
@@ -159,6 +208,10 @@ class DatabaseManager(BaseComponent):
         """
         Search for anime in the database.
 
+        Matches against both ``anime.title`` and ``title_synonyms.value``.
+        Older ``search_anime_fast`` procedures only scanned synonyms, which
+        misses most of the catalog when synonym rows are sparse.
+
         Args:
             terms: Search terms
             limit: Maximum results to return
@@ -177,25 +230,26 @@ class DatabaseManager(BaseComponent):
 
         try:
             with self.get_connection() as db:
-                args, results = db.procedure("search_anime_fast", cleaned_terms, limit)
+                results = self._search_anime_rows(db, cleaned_terms, limit)
 
-                if not results or len(results) == 0:
+                if not results:
                     return None
 
                 keys = [
                     "id", "title", "picture", "date_from", "date_to", "synopsis",
                     "episodes", "duration", "rating", "status", "broadcast",
-                    "last_seen", "trailer", "relevance"
+                    "last_seen", "trailer",
                 ]
 
                 anime_batch = []
                 for row in results:
                     if isinstance(row, dict):
-                        row_values = [row.get(key) for key in keys[:-1]]
+                        row_values = [row.get(key) for key in keys]
                     else:
-                        row_values = row[:-1]  # Exclude relevance score
+                        # Drop optional trailing relevance column from procedures.
+                        row_values = list(row[: len(keys)])
 
-                    anime_data = dict(zip(keys[:-1], row_values))
+                    anime_data = dict(zip(keys, row_values))
                     anime_batch.append(Anime(**anime_data))
 
                 anime_batch = db.get_all_metadata_bulk(anime_batch, use_eager_loading=True)
@@ -204,6 +258,49 @@ class DatabaseManager(BaseComponent):
         except Exception as e:
             self.log("DB_ERROR", f"Search failed: {e}")
             return None
+
+    def _search_anime_rows(self, db, cleaned_terms: str, limit: int) -> list:
+        """Return raw search rows for ``cleaned_terms`` (title + synonyms)."""
+        pattern = f"%{cleaned_terms}%"
+        # Prefer a portable LIKE query over the legacy FULLTEXT procedure so
+        # primary titles are searchable even when synonym rows are missing.
+        sql = (
+            "SELECT a.id, a.title, a.picture, a.date_from, a.date_to, a.synopsis, "
+            "a.episodes, a.duration, a.rating, a.status, a.broadcast, "
+            "a.last_seen, a.trailer "
+            "FROM anime a "
+            "WHERE LOWER(a.title) LIKE LOWER(?) "
+            "OR EXISTS ("
+            "  SELECT 1 FROM title_synonyms ts "
+            "  WHERE ts.id = a.id AND LOWER(ts.value) LIKE LOWER(?)"
+            ") "
+            "ORDER BY "
+            "CASE "
+            "  WHEN LOWER(a.title) = LOWER(?) THEN 0 "
+            "  WHEN LOWER(a.title) LIKE LOWER(?) THEN 1 "
+            "  ELSE 2 "
+            "END, "
+            "a.date_from DESC "
+            "LIMIT ?"
+        )
+        prefix = f"{cleaned_terms}%"
+        try:
+            rows = db.sql(
+                sql,
+                (pattern, pattern, cleaned_terms, prefix, int(limit)),
+            )
+            if rows:
+                return list(rows)
+        except Exception as exc:
+            self.log("DB_ERROR", f"Title/synonym search SQL failed: {exc}")
+
+        # Fall back to the stored procedure when inline SQL is unavailable.
+        try:
+            _args, results = db.procedure("search_anime_fast", cleaned_terms, limit)
+            return list(results or [])
+        except Exception as exc:
+            self.log("DB_ERROR", f"search_anime_fast procedure failed: {exc}")
+            return []
 
     def get_anime_list(self, criteria: str, listrange: Tuple[int, int] = (0, 50),
                       hide_rated: Optional[bool] = None, user_id: Optional[int] = None) -> Tuple[Optional[AnimeList], Optional[callable]]:
@@ -263,7 +360,7 @@ class DatabaseManager(BaseComponent):
             user_id = 4
         season_key = normalize_airing_season(season)
         year_value = validate_season_year(year)
-        safe_limit = max(1, min(int(limit), 200))
+        safe_limit = max(1, min(int(limit), 2500))
         start_ts, end_ts = season_date_range(year_value, season_key)
         args = build_season_list_query(
             start_ts,
@@ -283,21 +380,23 @@ class DatabaseManager(BaseComponent):
 
     def list_anime_by_genre(
         self,
-        genre: str,
+        genre,
         limit: int = 50,
         *,
         user_id: Optional[int] = None,
         hide_rated: Optional[bool] = None,
     ) -> Optional[AnimeList]:
-        """Return anime in the local catalog tagged with a genre."""
+        """Return anime in the local catalog tagged with every given genre."""
         if user_id is None:
             user_id = 4
         if hide_rated is None:
             hide_rated = getattr(self, "hide_rated", True)
-        genre_value = normalize_genre(genre)
-        safe_limit = max(1, min(int(limit), 200))
+        from domain.policies.genre import normalize_genres
+
+        genre_values = normalize_genres(genre)
+        safe_limit = max(1, min(int(limit), 2500))
         args = build_genre_list_query(
-            genre_value,
+            genre_values,
             (0, safe_limit),
             hide_rated=hide_rated,
             user_id=int(user_id),
@@ -310,6 +409,42 @@ class DatabaseManager(BaseComponent):
                 return anime_list
         except Exception as e:
             self.log("DB_ERROR", f"Genre list failed: {e}")
+            return None
+
+    def list_anime_by_top_category(
+        self,
+        category: str,
+        limit: int = 50,
+        *,
+        user_id: Optional[int] = None,
+        hide_rated: Optional[bool] = None,
+    ) -> Optional[AnimeList]:
+        """Return local catalog rows that seed a top-browse category."""
+        if user_id is None:
+            user_id = 4
+        if hide_rated is None:
+            hide_rated = getattr(self, "hide_rated", True)
+        from domain.policies.top import local_status_for, normalize_top_category
+
+        category_key = normalize_top_category(category)
+        status = local_status_for(category_key)
+        if status is None:
+            return None
+        safe_limit = max(1, min(int(limit), 2500))
+        args = build_top_list_query(
+            status,
+            (0, safe_limit),
+            hide_rated=hide_rated,
+            user_id=int(user_id),
+        ).to_args()
+        try:
+            with self.get_connection() as db:
+                anime_list = db.filter(**args)
+                if anime_list.empty():
+                    return None
+                return anime_list
+        except Exception as e:
+            self.log("DB_ERROR", f"Top list failed: {e}")
             return None
 
     def _build_query_args(self, criteria: str, listrange: Tuple[int, int],
@@ -335,23 +470,27 @@ class DatabaseManager(BaseComponent):
             if info:
                 names = {str(row[1]) for row in info if row and len(row) > 1}
         except Exception:
-            pass
-        changed = False
+            names = set()
+        if not names:
+            try:
+                info = db.sql("SHOW COLUMNS FROM torrents")
+                if info:
+                    # MariaDB: (Field, Type, Null, Key, Default, Extra)
+                    names = {str(row[0]) for row in info if row}
+            except Exception:
+                names = set()
+        # Prefer save=True so pooled MariaDB connections commit on the same
+        # connection that ran the DDL (see EmbeddedMariaDB.insert docstring).
         if "save_path" not in names:
             try:
-                db.sql("ALTER TABLE torrents ADD COLUMN save_path TEXT", (), save=False)
-                changed = True
+                db.sql("ALTER TABLE torrents ADD COLUMN save_path TEXT", (), save=True)
+                names.add("save_path")
             except Exception:
                 pass
         if "status" not in names:
             try:
-                db.sql("ALTER TABLE torrents ADD COLUMN status TEXT", (), save=False)
-                changed = True
-            except Exception:
-                pass
-        if changed:
-            try:
-                db.save()
+                db.sql("ALTER TABLE torrents ADD COLUMN status TEXT", (), save=True)
+                names.add("status")
             except Exception:
                 pass
 
@@ -389,7 +528,7 @@ class DatabaseManager(BaseComponent):
                     db.sql(
                         "INSERT INTO torrentsIndex(id, value) VALUES(?, ?)",
                         (anime_id, torrent.hash),
-                        save=False,
+                        save=True,
                     )
 
                 exists = db.sql(
@@ -401,15 +540,14 @@ class DatabaseManager(BaseComponent):
                         "INSERT INTO torrents(hash, name, trackers, save_path) "
                         "VALUES(?, ?, ?, ?)",
                         (torrent.hash, torrent.name, trackers, path_value),
-                        save=False,
+                        save=True,
                     )
                 elif path_value:
                     db.sql(
                         "UPDATE torrents SET save_path=? WHERE hash=?",
                         (path_value, torrent.hash),
-                        save=False,
+                        save=True,
                     )
-                db.save()
         except Exception as e:
             self.log("DB_ERROR", f"Failed to save torrent: {e}")
             raise
@@ -429,16 +567,15 @@ class DatabaseManager(BaseComponent):
                     db.sql(
                         "UPDATE torrents SET save_path=? WHERE hash=?",
                         (save_path, hash_value),
-                        save=False,
+                        save=True,
                     )
                 else:
                     db.sql(
                         "INSERT INTO torrents(hash, name, trackers, save_path) "
                         "VALUES(?, ?, ?, ?)",
                         (hash_value, None, json.dumps([]), save_path),
-                        save=False,
+                        save=True,
                     )
-                db.save()
         except Exception as e:
             self.log("DB_ERROR", f"Failed to update torrent save_path: {e}")
 
@@ -459,9 +596,8 @@ class DatabaseManager(BaseComponent):
                 db.sql(
                     "UPDATE torrents SET status=? WHERE hash=?",
                     (normalized, hash_value),
-                    save=False,
+                    save=True,
                 )
-                db.save()
         except Exception as e:
             self.log("DB_ERROR", f"Failed to update torrent status: {e}")
 
@@ -758,7 +894,11 @@ class DatabaseManager(BaseComponent):
         save_path: Optional[str] = None,
         trackers: Optional[Any] = None,
     ) -> bool:
-        """Ensure ``torrentsIndex`` and ``torrents`` rows exist for a hash."""
+        """Ensure ``torrentsIndex`` and ``torrents`` rows exist for a hash.
+
+        Concurrent callers (e.g. overlapping startup repair) may race on
+        PRIMARY KEY inserts; duplicate-key errors are treated as success.
+        """
         hash_val = str(hash_value or "").strip()
         if not hash_val:
             return False
@@ -771,12 +911,16 @@ class DatabaseManager(BaseComponent):
                 )
                 inserted_index = False
                 if not exists or not exists[0][0]:
-                    db.sql(
-                        "INSERT INTO torrentsIndex(id, value) VALUES(?, ?)",
-                        (anime_id, hash_val),
-                        save=False,
-                    )
-                    inserted_index = True
+                    try:
+                        db.sql(
+                            "INSERT INTO torrentsIndex(id, value) VALUES(?, ?)",
+                            (anime_id, hash_val),
+                            save=True,
+                        )
+                        inserted_index = True
+                    except Exception as exc:
+                        if not _is_duplicate_key_error(exc):
+                            raise
                 exists_torrent = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))",
                     (hash_val,),
@@ -787,25 +931,28 @@ class DatabaseManager(BaseComponent):
                         tracker_payload = json.dumps(list(trackers))
                     elif trackers is None:
                         tracker_payload = json.dumps([])
-                    db.sql(
-                        "INSERT INTO torrents(hash, name, trackers, save_path) VALUES(?, ?, ?, ?)",
-                        (hash_val, name, tracker_payload, save_path),
-                        save=False,
-                    )
+                    try:
+                        db.sql(
+                            "INSERT INTO torrents(hash, name, trackers, save_path) VALUES(?, ?, ?, ?)",
+                            (hash_val, name, tracker_payload, save_path),
+                            save=True,
+                        )
+                    except Exception as exc:
+                        if not _is_duplicate_key_error(exc):
+                            raise
                 elif save_path or name:
                     if save_path:
                         db.sql(
                             "UPDATE torrents SET save_path=? WHERE LOWER(hash)=LOWER(?)",
                             (save_path, hash_val),
-                            save=False,
+                            save=True,
                         )
                     if name:
                         db.sql(
                             "UPDATE torrents SET name=? WHERE LOWER(hash)=LOWER(?)",
                             (name, hash_val),
-                            save=False,
+                            save=True,
                         )
-                db.save()
                 return inserted_index
         except Exception as exc:
             self.log("DB_ERROR", f"Failed to ensure torrent index: {exc}")
@@ -933,6 +1080,14 @@ class DatabaseManager(BaseComponent):
             anime_id = anime.get("id")
         if anime_id is None:
             raise ValueError("Anime record has no 'id' attribute")
+        try:
+            anime_id = int(anime_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Anime record has invalid id={anime_id!r}") from exc
+        if anime_id <= 0:
+            raise ValueError(
+                f"Refusing to persist provisional anime id={anime_id}"
+            )
 
         if hasattr(anime, "save_format"):
             data, metadata = anime.save_format()
@@ -1044,6 +1199,29 @@ class DatabaseManager(BaseComponent):
             self.log("DB_MANAGER", f"Repaired {merged} duplicate anime row(s)")
         return merged
 
+    def purge_provisional_anime_rows(self) -> int:
+        """Delete orphan anime rows with provisional (negative) primary keys."""
+        from application.services.catalog_merge import CatalogMergeService
+
+        try:
+            with self.get_connection() as db:
+                deleted = CatalogMergeService(
+                    db,
+                    log_fn=lambda msg: self.log("DB_WARNING", msg),
+                ).purge_provisional_anime_rows()
+        except Exception as exc:
+            self.log(
+                "DB_ERROR",
+                f"Failed purging provisional anime rows: {exc}",
+            )
+            raise
+        if deleted:
+            self.log(
+                "DB_MANAGER",
+                f"Purged {deleted} provisional anime row(s)",
+            )
+        return deleted
+
     def enqueue_anime(self, record: Anime) -> bool:
         """Add a record to the async batched write queue.
 
@@ -1055,6 +1233,116 @@ class DatabaseManager(BaseComponent):
             self.upsert_anime_batch([record])
             return True
         return self._write_queue.put(record)
+
+    def upsert_pictures(self, anime_id: int, pictures: List[Dict[str, Any]]) -> None:
+        """Upsert cover variants (url/size/width/height) for one anime."""
+        valid_sizes = ("small", "medium", "large", "original")
+        rows: List[Dict[str, Any]] = []
+        for pic in pictures or []:
+            if not isinstance(pic, dict):
+                continue
+            size = pic.get("size")
+            url = pic.get("url")
+            if size not in valid_sizes or not url:
+                continue
+            width = pic.get("width")
+            height = pic.get("height")
+            try:
+                width = int(width) if width is not None else None
+            except (TypeError, ValueError):
+                width = None
+            try:
+                height = int(height) if height is not None else None
+            except (TypeError, ValueError):
+                height = None
+            rows.append(
+                {
+                    "url": str(url),
+                    "size": str(size),
+                    "width": width,
+                    "height": height,
+                }
+            )
+        if not rows:
+            return
+
+        with self.get_connection() as db:
+            self._ensure_picture_columns(db)
+            for pic in rows:
+                exists = db.sql(
+                    "SELECT EXISTS(SELECT 1 FROM pictures WHERE id=? AND size=?)",
+                    (anime_id, pic["size"]),
+                )
+                if exists and exists[0][0]:
+                    db.sql(
+                        "UPDATE pictures SET url=?, width=?, height=? WHERE id=? AND size=?",
+                        (
+                            pic["url"],
+                            pic["width"],
+                            pic["height"],
+                            anime_id,
+                            pic["size"],
+                        ),
+                        save=False,
+                    )
+                else:
+                    try:
+                        db.sql(
+                            "INSERT INTO pictures(id, url, size, width, height) "
+                            "VALUES(?, ?, ?, ?, ?)",
+                            (
+                                anime_id,
+                                pic["url"],
+                                pic["size"],
+                                pic["width"],
+                                pic["height"],
+                            ),
+                            save=False,
+                        )
+                    except Exception:
+                        db.sql(
+                            "INSERT INTO pictures(id, url, size) VALUES(?, ?, ?)",
+                            (anime_id, pic["url"], pic["size"]),
+                            save=False,
+                        )
+            try:
+                db.save()
+            except Exception:
+                pass
+
+    def _ensure_picture_columns(self, db) -> None:
+        """Add nullable width/height on ``pictures`` when missing."""
+        names: set[str] = set()
+        try:
+            info = db.sql("PRAGMA table_info(pictures)")
+            if info:
+                names = {str(row[1]) for row in info if row and len(row) > 1}
+        except Exception:
+            pass
+        if not names:
+            try:
+                info = db.sql("SHOW COLUMNS FROM pictures")
+                if info:
+                    names = {str(row[0]) for row in info if row}
+            except Exception:
+                pass
+        changed = False
+        for column, ddl in (
+            ("width", "ALTER TABLE pictures ADD COLUMN width INTEGER"),
+            ("height", "ALTER TABLE pictures ADD COLUMN height INTEGER"),
+        ):
+            if names and column in names:
+                continue
+            try:
+                db.sql(ddl, (), save=False)
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            try:
+                db.save()
+            except Exception:
+                pass
 
     def upsert_metadata_batch(self, records: List[Tuple[int, Dict[str, Any]]]) -> int:
         """Persist metadata records in batch-friendly form."""

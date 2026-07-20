@@ -51,6 +51,7 @@ class _FakeDB:
         self._lock = _NopLock()
         self.sql_calls: List[Tuple[str, Tuple]] = []
         self.sql_responses: Dict[str, Any] = {}
+        self.sql_raises: Dict[str, BaseException] = {}
         self.procedure_calls: List[Tuple[str, Tuple]] = []
         self.procedure_results: List[Any] = []
         self.filter_results: List[Any] = []
@@ -81,8 +82,19 @@ class _FakeDB:
             raise RuntimeError("close fail")
 
     def sql(self, query: str, params: Tuple = (), save: bool = True):
-        self.sql_calls.append((query, params))
-        return self.sql_responses.get(query, [])
+        self.sql_calls.append((query, tuple(params) if params is not None else ()))
+        if query in self.sql_raises:
+            raise self.sql_raises[query]
+        for key, exc in self.sql_raises.items():
+            if key and key in query:
+                raise exc
+        # Prefer exact match, then substring key for SELECT-shaped search queries.
+        if query in self.sql_responses:
+            return self.sql_responses[query]
+        for key, value in self.sql_responses.items():
+            if key and key in query:
+                return value
+        return []
 
     def procedure(self, name, *args):
         self.procedure_calls.append((name, args))
@@ -137,6 +149,7 @@ class TestSearchAnime:
         mgr = DatabaseManager()
         mgr.log = _silent_logger
         db = _FakeDB()
+        db.sql_responses = {"FROM anime a": []}
         db.procedure_results = [[]]
         mgr.set_database(db)
         assert mgr.search_anime("naruto") is None
@@ -145,6 +158,7 @@ class TestSearchAnime:
         mgr = DatabaseManager()
         mgr.log = _silent_logger
         db = _FakeDB()
+        db.sql = MagicMock(side_effect=RuntimeError("boom"))
         db.procedure = MagicMock(side_effect=RuntimeError("boom"))
         mgr.set_database(db)
         assert mgr.search_anime("naruto") is None
@@ -153,16 +167,46 @@ class TestSearchAnime:
         mgr = DatabaseManager()
         mgr.log = _silent_logger
         db = _FakeDB()
+        db.sql_responses = {"FROM anime a": []}
         db.procedure_results = [[]]
         mgr.set_database(db)
         mgr.search_anime("@@@ naruto !!! shippuden")
-        # procedure was called with cleaned terms
-        called_name, args = db.procedure_calls[-1]
-        assert called_name == "search_anime_fast"
-        assert "naruto" in args[0] and "shippuden" in args[0]
-        # No `@` or `!` in the cleaned string.
-        assert "@" not in args[0]
-        assert "!" not in args[0]
+        assert db.sql_calls, "expected title/synonym SQL search"
+        _query, params = db.sql_calls[-1]
+        cleaned = params[2]
+        assert "naruto" in cleaned and "shippuden" in cleaned
+        assert "@" not in cleaned
+        assert "!" not in cleaned
+
+    def test_matches_primary_title_via_sql(self, DatabaseManager):
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        db.sql_responses = {
+            "FROM anime a": [
+                (
+                    1236,
+                    "Tensei shitara Slime Datta Ken 2nd Season Part 2",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "FINISHED",
+                    None,
+                    None,
+                    None,
+                )
+            ]
+        }
+        mgr.set_database(db)
+        result = mgr.search_anime("slime", limit=10)
+        assert result is not None
+        assert not result.empty()
+        assert db.metadata_bulk_called
+        assert not db.procedure_calls
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +530,90 @@ class TestAnimeCRUD:
         db.save_metadata = MagicMock(side_effect=RuntimeError("bad"))
         mgr.set_database(db)
         assert mgr.upsert_metadata_batch([(1, {"x": 1}), (2, {"y": 2})]) == 0
+
+
+# ---------------------------------------------------------------------------
+# ensure_torrent_index
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureTorrentIndex:
+    def test_inserts_index_and_torrent_when_missing(self, DatabaseManager):
+        mgr = DatabaseManager()
+        logs: list[tuple[str, str]] = []
+        mgr.log = lambda cat, msg: logs.append((cat, msg))
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (0,)
+            ],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(0,)],
+        }
+        mgr.set_database(db)
+        assert mgr.ensure_torrent_index(7, "abcd", name="n", save_path="/p") is True
+        index_inserts = [c for c in db.sql_calls if "INSERT INTO torrentsIndex" in c[0]]
+        torrent_inserts = [c for c in db.sql_calls if "INSERT INTO torrents(" in c[0]]
+        assert index_inserts
+        assert torrent_inserts
+        assert not any(cat == "DB_ERROR" for cat, _ in logs)
+
+    def test_duplicate_torrent_primary_is_idempotent(self, DatabaseManager):
+        mgr = DatabaseManager()
+        logs: list[tuple[str, str]] = []
+        mgr.log = lambda cat, msg: logs.append((cat, msg))
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (0,)
+            ],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(0,)],
+        }
+        db.sql_raises = {
+            "INSERT INTO torrents(": Exception(
+                "1062 (23000): Duplicate entry 'abcd' for key 'PRIMARY'"
+            )
+        }
+        mgr.set_database(db)
+        # Index insert succeeds; torrents insert races → treat as already present.
+        assert mgr.ensure_torrent_index(7, "abcd", name="n") is True
+        assert not any(cat == "DB_ERROR" for cat, _ in logs)
+
+    def test_duplicate_index_primary_is_idempotent(self, DatabaseManager):
+        mgr = DatabaseManager()
+        logs: list[tuple[str, str]] = []
+        mgr.log = lambda cat, msg: logs.append((cat, msg))
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (0,)
+            ],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(1,)],
+        }
+        db.sql_raises = {
+            "INSERT INTO torrentsIndex": Exception(
+                "1062 (23000): Duplicate entry '7-abcd' for key 'PRIMARY'"
+            )
+        }
+        mgr.set_database(db)
+        assert mgr.ensure_torrent_index(7, "abcd") is False
+        assert not any(cat == "DB_ERROR" for cat, _ in logs)
+
+    def test_non_duplicate_insert_error_still_fails(self, DatabaseManager):
+        mgr = DatabaseManager()
+        logs: list[tuple[str, str]] = []
+        mgr.log = lambda cat, msg: logs.append((cat, msg))
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (0,)
+            ],
+        }
+        db.sql_raises = {
+            "INSERT INTO torrentsIndex": RuntimeError("connection lost")
+        }
+        mgr.set_database(db)
+        assert mgr.ensure_torrent_index(7, "abcd") is False
+        assert any("Failed to ensure torrent index" in msg for cat, msg in logs if cat == "DB_ERROR")
 
 
 # ---------------------------------------------------------------------------

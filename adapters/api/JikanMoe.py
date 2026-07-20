@@ -9,6 +9,13 @@ try:
 except ImportError:
     from APIUtils import Anime, APIUtils, Character, EnhancedSession
 
+from domain.cover_images import (
+    JIKAN_COVER_DIMENSIONS,
+    cover_variants_from_mapping,
+    largest_cover_url,
+    variants_as_dicts,
+)
+
 
 def _current_anime_season() -> tuple[int, str]:
     """Return ``(year, season)`` for the current broadcast quarter."""
@@ -151,6 +158,43 @@ class JikanMoeWrapper(APIUtils):
             if count >= limit:
                 return
 
+    _TOP_FILTERS = {
+        "all": "bypopularity",
+        "airing": "airing",
+        "upcoming": "upcoming",
+    }
+
+    def top(self, category, limit=50):
+        """Yield top anime for a popularity browse category."""
+        filter_key = self._TOP_FILTERS.get(str(category or "").strip().lower())
+        if filter_key is None:
+            return
+        self.delay()
+        page = 1
+        count = 0
+        while count < limit:
+            params = {"filter": filter_key, "page": page}
+            rep = self.get("/top/anime", **params)
+            if not rep or not isinstance(rep, dict):
+                return
+            if rep.get("status") == 429:
+                return
+            rows = rep.get("data") or []
+            if not rows:
+                return
+            for anime in rows:
+                data = self._convertAnime(anime)
+                if not data:
+                    continue
+                yield data
+                count += 1
+                if count >= limit:
+                    return
+            pagination = rep.get("pagination") or {}
+            if not pagination.get("has_next_page"):
+                return
+            page += 1
+
     def searchAnime(self, search, limit=50):
         self.delay()
         rep = self.get("/anime", q=search, order_by="end_date", sort="desc")
@@ -208,7 +252,7 @@ class JikanMoeWrapper(APIUtils):
 
     def _convertAnime(self, a):
         external_ids = {"mal_id": int(a["mal_id"])}
-        if getattr(self, "schedule_light", False):
+        if getattr(self, "list_light", False) or getattr(self, "schedule_light", False):
             out = Anime()
             out._schedule_external_ids = external_ids
             out["title"] = a["title"]
@@ -241,6 +285,21 @@ class JikanMoeWrapper(APIUtils):
                 a["images"]["jpg"].get("large_image_url", None)
                 or a["images"]["jpg"]["image_url"]
             )
+            try:
+                jpg = a["images"]["jpg"]
+                variants = cover_variants_from_mapping(
+                    {k: jpg.get(k) for k in JIKAN_COVER_DIMENSIONS},
+                    dimensions_by_key=JIKAN_COVER_DIMENSIONS,
+                    size_labels={
+                        "small_image_url": "small",
+                        "image_url": "medium",
+                        "large_image_url": "large",
+                    },
+                )
+                out["picture"] = largest_cover_url(variants) or out["picture"]
+                out._pending_pictures = variants_as_dicts(variants)
+            except Exception:
+                pass
             out["synopsis"] = a["synopsis"] if "synopsis" in a.keys() else None
             out["episodes"] = a["episodes"] if "episodes" in a.keys() else None
             duration = (
@@ -325,18 +384,21 @@ class JikanMoeWrapper(APIUtils):
         )
 
         pictures = []
-
-        sizes = {
-            "image_url": "medium",
-            "small_image_url": "small",
-            "large_image_url": "large",
-        }
-        pictures = []
-        # for type, imgs in a['images'].items():
-        for size, url in a["images"]["jpg"].items():  # Ignoring webp images
-            size_lbl = sizes[size]
-            img = {"url": url, "size": size_lbl}
-            pictures.append(img)
+        try:
+            jpg = a["images"]["jpg"]
+            variants = cover_variants_from_mapping(
+                {k: jpg.get(k) for k in JIKAN_COVER_DIMENSIONS},
+                dimensions_by_key=JIKAN_COVER_DIMENSIONS,
+                size_labels={
+                    "small_image_url": "small",
+                    "image_url": "medium",
+                    "large_image_url": "large",
+                },
+            )
+            out["picture"] = largest_cover_url(variants) or out["picture"]
+            pictures = variants_as_dicts(variants)
+        except Exception:
+            pass
 
         self.save_pictures(id, pictures)
 

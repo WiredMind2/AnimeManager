@@ -47,15 +47,15 @@ def _service(repo=None, provider=None):
 
 def test_browse_genre_merges_local_and_provider():
     results = _service().browse_genre(
-        GenreBrowseRequest(genre="Comedy", limit=50)
+        GenreBrowseRequest(genres=["Comedy"], limit=50)
     )
-    assert sorted(item.id for item in results) == [1, 2]
+    assert sorted(item.id for item in results.items) == [1, 2]
 
 
 def test_stream_browse_genre_yields_local_then_remote():
     results = list(
         _service().stream_browse_genre(
-            GenreBrowseRequest(genre="Comedy", limit=50)
+            GenreBrowseRequest(genres=["Comedy"], limit=50)
         )
     )
     assert [item.id for item in results] == [1, 2]
@@ -64,16 +64,37 @@ def test_stream_browse_genre_yields_local_then_remote():
 def test_browse_genre_rejects_invalid_genre():
     try:
         _service().browse_genre(
-            GenreBrowseRequest(genre="Not A Genre", limit=50)
+            GenreBrowseRequest(genres=["Not A Genre"], limit=50)
         )
     except ValidationError:
         return
     raise AssertionError("expected ValidationError")
 
 
+def test_browse_genre_accepts_multi_genre_list():
+    seen = {}
+
+    class CapturingRepo(FakeRepository):
+        def list_by_genre(self, genre, limit=50):
+            seen["genres"] = genre
+            return []
+
+    class CapturingProvider(FakeProvider):
+        def browse_genre(self, genre, limit=50):
+            seen["remote"] = genre
+            return [AnimeEntity(id=9, title="Both", genres=["Action", "Comedy"])]
+
+    results = _service(repo=CapturingRepo(), provider=CapturingProvider()).browse_genre(
+        GenreBrowseRequest(genres=["Comedy", "Action"], limit=50)
+    )
+    assert seen["genres"] == ["Action", "Comedy"]
+    assert seen["remote"] == ["Action", "Comedy"]
+    assert [item.id for item in results.items] == [9]
+
+
 def test_search_anime_merges_local_genre_matches():
     results = _service().search_anime(SearchRequest(query="Comedy", limit=50))
-    assert sorted(item.id for item in results) == [1, 3]
+    assert sorted(item.id for item in results.items) == [1, 3]
 
 
 def test_stream_search_anime_yields_genre_matches_before_title_search():

@@ -28,6 +28,7 @@ from domain.dto import (
     GenreBrowseRequest,
     SearchRequest,
     SeasonBrowseRequest,
+    TopBrowseRequest,
 )
 from domain.entities import AnimeEntity
 from domain.errors import NotFoundError, ValidationError
@@ -35,7 +36,9 @@ from domain.policies import (
     is_anime_metadata_missing,
     normalize_airing_season,
     normalize_genre,
+    normalize_genres,
     normalize_search_query,
+    normalize_top_category,
     validate_season_year,
 )
 from ports.interfaces import (
@@ -75,6 +78,10 @@ class AnimeApplicationService:
             return
         self._hydration.schedule_entities(entities, priority=priority)
 
+    # Page-size / depth caps for merged browse+search lists.
+    _BROWSE_MAX_LIMIT = 100
+    _BROWSE_MAX_OFFSET = 2000
+
     def _prefetch_entity(
         self, entity: AnimeEntity, *, priority: int = PRIORITY_PREFETCH
     ) -> None:
@@ -84,16 +91,60 @@ class AnimeApplicationService:
             return
         self._prefetch_metadata([entity], priority=priority)
 
-    def search_anime(self, request: SearchRequest) -> list[AnimeEntity]:
+    def _normalize_page(self, offset: int, limit: int) -> tuple[int, int, int]:
+        """Return ``(offset, limit, fetch_count)`` for over-fetch paging."""
+        safe_offset = max(0, int(offset or 0))
+        if safe_offset > self._BROWSE_MAX_OFFSET:
+            raise ValidationError(
+                f"offset must be between 0 and {self._BROWSE_MAX_OFFSET}."
+            )
+        safe_limit = max(1, min(int(limit or 50), self._BROWSE_MAX_LIMIT))
+        return safe_offset, safe_limit, safe_offset + safe_limit + 1
+
+    @staticmethod
+    def _slice_page(
+        merged: list[AnimeEntity], offset: int, limit: int
+    ) -> AnimeListResponse:
+        has_next = len(merged) > offset + limit
+        return AnimeListResponse(
+            items=merged[offset : offset + limit],
+            has_next=has_next,
+        )
+
+    def _merge_unique(
+        self,
+        sources,
+        *,
+        fetch_count: int,
+    ) -> list[AnimeEntity]:
+        """Deduplicate entities from callables/iterables up to ``fetch_count``."""
+        seen_ids: set[int] = set()
+        merged: list[AnimeEntity] = []
+        for source in sources:
+            if len(merged) >= fetch_count:
+                break
+            batch = source() if callable(source) else source
+            if batch is None:
+                continue
+            for entity in batch:
+                if entity is None or entity.id <= 0 or entity.id in seen_ids:
+                    continue
+                seen_ids.add(entity.id)
+                merged.append(entity)
+                if len(merged) >= fetch_count:
+                    break
+        return merged
+
+    def search_anime(self, request: SearchRequest) -> AnimeListResponse:
         query = normalize_search_query(request.query)
         if len(query) < 3:
             raise ValidationError(
                 "Search query must contain at least 3 characters."
             )
 
-        seen_ids: set[int] = set()
-        merged: list[AnimeEntity] = []
-        limit = request.limit
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
 
         matched_genre: str | None = None
         try:
@@ -101,39 +152,27 @@ class AnimeApplicationService:
         except ValidationError:
             matched_genre = None
 
+        sources = []
         if matched_genre is not None:
-            for entity in self._anime_repository.list_by_genre(matched_genre, limit):
-                if entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                merged.append(entity)
-                if len(merged) >= limit:
-                    self._prefetch_metadata(merged)
-                    return merged
+            sources.append(
+                lambda g=matched_genre: self._anime_repository.list_by_genre(
+                    g, fetch_count
+                )
+            )
+        sources.append(
+            lambda: self._anime_repository.search(query, fetch_count)
+        )
+        sources.append(
+            lambda: self._metadata_provider.search(query, fetch_count)
+        )
 
-        for entity in self._anime_repository.search(query, limit):
-            if entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            merged.append(entity)
-            if len(merged) >= limit:
-                self._prefetch_metadata(merged)
-                return merged
-
-        for entity in self._metadata_provider.search(query, limit):
-            if entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            merged.append(entity)
-            if len(merged) >= limit:
-                self._prefetch_metadata(merged)
-                return merged
-
-        self._prefetch_metadata(merged)
-        return merged
+        merged = self._merge_unique(sources, fetch_count=fetch_count)
+        page = self._slice_page(merged, offset, limit)
+        self._prefetch_metadata(page.items)
+        return page
 
     def stream_search_anime(self, request: SearchRequest):
-        """Yield :class:`AnimeEntity` results progressively.
+        """Yield :class:`AnimeEntity` results progressively for one page.
 
         Emission order:
         1. The local catalog (fast, single batch) -- so the UI shows
@@ -142,8 +181,8 @@ class AnimeApplicationService:
         2. Each remote provider as it completes, deduplicated against
            what has already been emitted.
 
-        Callers can therefore append cards to the page as soon as the
-        first batch lands instead of waiting for the slowest provider.
+        When ``offset`` is set, earlier ranks are skipped so callers can
+        stream page 2+ without materializing the full list first.
         """
         query = normalize_search_query(request.query)
         if len(query) < 3:
@@ -151,7 +190,26 @@ class AnimeApplicationService:
                 "Search query must contain at least 3 characters."
             )
 
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
         seen_ids: set[int] = set()
+        skipped = 0
+        yielded = 0
+
+        def _emit(entity: AnimeEntity):
+            nonlocal skipped, yielded
+            if entity is None or entity.id <= 0 or entity.id in seen_ids:
+                return False
+            seen_ids.add(entity.id)
+            if skipped < offset:
+                skipped += 1
+                return False
+            if yielded >= limit:
+                return False
+            self._prefetch_entity(entity)
+            yielded += 1
+            return True
 
         matched_genre: str | None = None
         try:
@@ -161,197 +219,268 @@ class AnimeApplicationService:
 
         if matched_genre is not None:
             for entity in self._anime_repository.list_by_genre(
-                matched_genre, request.limit
+                matched_genre, fetch_count
             ):
-                if entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
-                yield entity
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
 
-        local_results = self._anime_repository.search(query, request.limit)
-        if local_results:
-            for entity in local_results:
-                if entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
+        for entity in self._anime_repository.search(query, fetch_count):
+            if _emit(entity):
                 yield entity
+            if yielded >= limit:
+                return
 
         streamer = getattr(self._metadata_provider, "stream_search", None)
         if callable(streamer):
-            for entity in streamer(query, request.limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
-                yield entity
+            for entity in streamer(query, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
             return
 
-        for entity in self._metadata_provider.search(query, request.limit):
-            if entity is None or entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            self._prefetch_entity(entity)
-            yield entity
+        for entity in self._metadata_provider.search(query, fetch_count):
+            if _emit(entity):
+                yield entity
+            if yielded >= limit:
+                return
 
-    def browse_season(self, request: SeasonBrowseRequest) -> list[AnimeEntity]:
+    def browse_season(self, request: SeasonBrowseRequest) -> AnimeListResponse:
         year = validate_season_year(request.year)
         season = normalize_airing_season(request.season)
-        limit = request.limit
-        seen_ids: set[int] = set()
-        merged: list[AnimeEntity] = []
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
 
-        for entity in self._anime_repository.list_by_airing_season(
-            year, season, limit
-        ):
-            if entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            merged.append(entity)
-            if len(merged) >= limit:
-                self._prefetch_metadata(merged)
-                return merged
-
+        sources = [
+            lambda: self._anime_repository.list_by_airing_season(
+                year, season, fetch_count
+            ),
+        ]
         browser = getattr(self._metadata_provider, "browse_season", None)
         if callable(browser):
-            for entity in browser(year, season, limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                merged.append(entity)
-                if len(merged) >= limit:
-                    break
-            self._prefetch_metadata(merged)
-            return merged
+            sources.append(lambda: browser(year, season, fetch_count))
+        else:
+            sources.append(
+                lambda: self._metadata_provider.search(
+                    f"{season} {year}", fetch_count
+                )
+            )
 
-        for entity in self._metadata_provider.search(f"{season} {year}", limit):
-            if entity is None or entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            merged.append(entity)
-            if len(merged) >= limit:
-                break
-        self._prefetch_metadata(merged)
-        return merged
+        merged = self._merge_unique(sources, fetch_count=fetch_count)
+        page = self._slice_page(merged, offset, limit)
+        self._prefetch_metadata(page.items)
+        return page
 
     def stream_browse_season(self, request: SeasonBrowseRequest):
         """Yield season browse results: local catalog first, then providers."""
         year = validate_season_year(request.year)
         season = normalize_airing_season(request.season)
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
         seen_ids: set[int] = set()
+        skipped = 0
+        yielded = 0
+
+        def _emit(entity: AnimeEntity):
+            nonlocal skipped, yielded
+            if entity is None or entity.id <= 0 or entity.id in seen_ids:
+                return False
+            seen_ids.add(entity.id)
+            if skipped < offset:
+                skipped += 1
+                return False
+            if yielded >= limit:
+                return False
+            self._prefetch_entity(entity)
+            yielded += 1
+            return True
 
         for entity in self._anime_repository.list_by_airing_season(
-            year, season, request.limit
+            year, season, fetch_count
         ):
-            if entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            self._prefetch_entity(entity)
-            yield entity
+            if _emit(entity):
+                yield entity
+            if yielded >= limit:
+                return
 
         streamer = getattr(self._metadata_provider, "stream_browse_season", None)
         if callable(streamer):
-            for entity in streamer(year, season, request.limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
-                yield entity
+            for entity in streamer(year, season, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
             return
 
         browser = getattr(self._metadata_provider, "browse_season", None)
         if callable(browser):
-            for entity in browser(year, season, request.limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
-                yield entity
+            for entity in browser(year, season, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
             return
 
-        for entity in self._metadata_provider.search(f"{season} {year}", request.limit):
-            if entity is None or entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            self._prefetch_entity(entity)
-            yield entity
+        for entity in self._metadata_provider.search(
+            f"{season} {year}", fetch_count
+        ):
+            if _emit(entity):
+                yield entity
+            if yielded >= limit:
+                return
 
-    def browse_genre(self, request: GenreBrowseRequest) -> list[AnimeEntity]:
-        genre = normalize_genre(request.genre)
-        limit = request.limit
-        seen_ids: set[int] = set()
-        merged: list[AnimeEntity] = []
+    def browse_genre(self, request: GenreBrowseRequest) -> AnimeListResponse:
+        genres = normalize_genres(request.genres)
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
 
-        for entity in self._anime_repository.list_by_genre(genre, limit):
-            if entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            merged.append(entity)
-            if len(merged) >= limit:
-                self._prefetch_metadata(merged)
-                return merged
-
+        sources = [
+            lambda: self._anime_repository.list_by_genre(genres, fetch_count),
+        ]
         browser = getattr(self._metadata_provider, "browse_genre", None)
         if callable(browser):
-            for entity in browser(genre, limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                merged.append(entity)
-                if len(merged) >= limit:
-                    break
-            self._prefetch_metadata(merged)
-            return merged
+            sources.append(lambda: browser(genres, fetch_count))
+        else:
+            sources.append(
+                lambda: self._metadata_provider.search(
+                    ", ".join(genres), fetch_count
+                )
+            )
 
-        for entity in self._metadata_provider.search(genre, limit):
-            if entity is None or entity.id in seen_ids:
-                continue
-            seen_ids.add(entity.id)
-            merged.append(entity)
-            if len(merged) >= limit:
-                break
-        self._prefetch_metadata(merged)
-        return merged
+        merged = self._merge_unique(sources, fetch_count=fetch_count)
+        page = self._slice_page(merged, offset, limit)
+        self._prefetch_metadata(page.items)
+        return page
 
     def stream_browse_genre(self, request: GenreBrowseRequest):
         """Yield genre browse results: local catalog first, then providers."""
-        genre = normalize_genre(request.genre)
+        genres = normalize_genres(request.genres)
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
         seen_ids: set[int] = set()
+        skipped = 0
+        yielded = 0
 
-        for entity in self._anime_repository.list_by_genre(genre, request.limit):
-            if entity.id in seen_ids:
-                continue
+        def _emit(entity: AnimeEntity):
+            nonlocal skipped, yielded
+            if entity is None or entity.id <= 0 or entity.id in seen_ids:
+                return False
             seen_ids.add(entity.id)
+            if skipped < offset:
+                skipped += 1
+                return False
+            if yielded >= limit:
+                return False
             self._prefetch_entity(entity)
-            yield entity
+            yielded += 1
+            return True
+
+        for entity in self._anime_repository.list_by_genre(genres, fetch_count):
+            if _emit(entity):
+                yield entity
+            if yielded >= limit:
+                return
 
         streamer = getattr(self._metadata_provider, "stream_browse_genre", None)
         if callable(streamer):
-            for entity in streamer(genre, request.limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
-                yield entity
+            for entity in streamer(genres, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
             return
 
         browser = getattr(self._metadata_provider, "browse_genre", None)
         if callable(browser):
-            for entity in browser(genre, request.limit):
-                if entity is None or entity.id in seen_ids:
-                    continue
-                seen_ids.add(entity.id)
-                self._prefetch_entity(entity)
-                yield entity
+            for entity in browser(genres, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
             return
 
-        for entity in self._metadata_provider.search(genre, request.limit):
-            if entity is None or entity.id in seen_ids:
-                continue
+        for entity in self._metadata_provider.search(
+            ", ".join(genres), fetch_count
+        ):
+            if _emit(entity):
+                yield entity
+            if yielded >= limit:
+                return
+
+    def browse_top(self, request: TopBrowseRequest) -> AnimeListResponse:
+        category = normalize_top_category(request.category)
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
+
+        sources = [
+            lambda: self._anime_repository.list_by_top_category(
+                category, fetch_count
+            ),
+        ]
+        browser = getattr(self._metadata_provider, "browse_top", None)
+        if callable(browser):
+            sources.append(lambda: browser(category, fetch_count))
+
+        merged = self._merge_unique(sources, fetch_count=fetch_count)
+        page = self._slice_page(merged, offset, limit)
+        self._prefetch_metadata(page.items)
+        return page
+
+    def stream_browse_top(self, request: TopBrowseRequest):
+        """Yield top browse results: local catalog first, then providers."""
+        category = normalize_top_category(request.category)
+        offset, limit, fetch_count = self._normalize_page(
+            request.offset, request.limit
+        )
+        seen_ids: set[int] = set()
+        skipped = 0
+        yielded = 0
+
+        def _emit(entity: AnimeEntity):
+            nonlocal skipped, yielded
+            if entity is None or entity.id <= 0 or entity.id in seen_ids:
+                return False
             seen_ids.add(entity.id)
+            if skipped < offset:
+                skipped += 1
+                return False
+            if yielded >= limit:
+                return False
             self._prefetch_entity(entity)
-            yield entity
+            yielded += 1
+            return True
+
+        for entity in self._anime_repository.list_by_top_category(
+            category, fetch_count
+        ):
+            if _emit(entity):
+                yield entity
+            if yielded >= limit:
+                return
+
+        streamer = getattr(self._metadata_provider, "stream_browse_top", None)
+        if callable(streamer):
+            for entity in streamer(category, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
+            return
+
+        browser = getattr(self._metadata_provider, "browse_top", None)
+        if callable(browser):
+            for entity in browser(category, fetch_count):
+                if _emit(entity):
+                    yield entity
+                if yielded >= limit:
+                    return
 
     def get_anime_list(self, request: AnimeListRequest) -> AnimeListResponse:
         items, has_next = self._anime_repository.list_anime(
@@ -376,17 +505,16 @@ class AnimeApplicationService:
             entity = AnimeEntity(id=anime_id, title="")
 
         pending = is_anime_metadata_missing(entity, catalog_id=anime_id)
+        can_hydrate = (
+            self._hydration is not None
+            and self._hydration.catalog_id_exists(anime_id)
+        )
         refreshing = (
             self._hydration.is_detail_refreshing(anime_id)
             if self._hydration is not None
             else False
         )
-        if (
-            pending
-            and self._hydration is not None
-            and self._hydration.catalog_id_exists(anime_id)
-            and not refreshing
-        ):
+        if pending and can_hydrate and not refreshing:
             self._hydration.kickoff_detail_refresh(
                 anime_id,
                 after_hydrate=self._refresh_detail_extras,
@@ -394,7 +522,8 @@ class AnimeApplicationService:
             refreshing = True
         return AnimeDetailsResult(
             entity=entity,
-            metadata_pending=pending,
+            # Only advertise pending when hydration can actually refresh.
+            metadata_pending=pending and can_hydrate,
             metadata_refreshing=refreshing,
         )
 
@@ -403,7 +532,10 @@ class AnimeApplicationService:
         if self._hydration is None:
             return {"accepted": False, "anime_id": anime_id}
         if not self._hydration.catalog_id_exists(anime_id):
-            raise NotFoundError(f"Anime with id={anime_id} not found")
+            # DB row may exist without an indexList entry; do not 404.
+            if self._anime_repository.get_anime(anime_id) is None:
+                raise NotFoundError(f"Anime with id={anime_id} not found")
+            return {"accepted": False, "anime_id": anime_id}
         self._hydration.kickoff_detail_refresh(
             anime_id,
             after_hydrate=self._refresh_detail_extras,
@@ -476,7 +608,7 @@ class AnimeApplicationService:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ) -> list[dict]:
         sanitized = self._sanitize_terms(terms)
@@ -488,7 +620,7 @@ class AnimeApplicationService:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ):
         """Yield torrent dicts progressively as engines emit them.
@@ -497,6 +629,9 @@ class AnimeApplicationService:
         list as a single batch) when the active download port has not
         implemented streaming. Callers can therefore consume the result
         uniformly with a ``for row in ...`` loop.
+
+        ``limit`` is a per-term row cap override; omit to use the profile
+        default. Total rows scale with the number of planned terms.
         """
         sanitized = self._sanitize_terms(terms)
         streamer = getattr(self._download_port, "stream_torrents", None)
@@ -520,12 +655,28 @@ class AnimeApplicationService:
 
     def set_tag(self, anime_id: int, tag: str, user_id: int) -> None:
         self._user_actions_port.set_tag(anime_id, tag, user_id)
+        if str(tag or "").strip().upper() == "SEEN":
+            self._remove_torrents_for_seen_anime(anime_id)
 
     def set_like(self, anime_id: int, user_id: int, liked: bool = True) -> None:
         self._user_actions_port.set_like(anime_id, liked, user_id)
 
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._user_actions_port.mark_seen(anime_id, file_name, user_id)
+        self._remove_torrents_for_seen_anime(anime_id)
+
+    def _remove_torrents_for_seen_anime(self, anime_id: int) -> None:
+        marker = getattr(
+            self._download_port,
+            "mark_torrents_deleted_for_seen_anime",
+            None,
+        )
+        if not callable(marker):
+            return
+        try:
+            marker(anime_id)
+        except Exception:
+            pass
 
     def get_user_state(self, anime_id: int, user_id: int) -> dict:
         return self._user_actions_port.get_user_state(anime_id, user_id)
@@ -627,6 +778,15 @@ class AnimeApplicationService:
         if not callable(getter):
             return []
         return list(getter(anime_id) or [])
+
+    def get_anime_pictures_batch(self, anime_ids: list[int]) -> dict[int, list[dict]]:
+        getter = getattr(self._anime_repository, "get_anime_pictures_batch", None)
+        if not callable(getter):
+            out: dict[int, list[dict]] = {}
+            for anime_id in anime_ids or []:
+                out[int(anime_id)] = self.get_anime_pictures(int(anime_id))
+            return out
+        return dict(getter(list(anime_ids) or []) or {})
 
     def refresh_anime_characters(self, anime_id: int) -> list[dict]:
         refresher = getattr(self._anime_repository, "refresh_anime_characters", None)

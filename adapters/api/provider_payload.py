@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from adapters.persistence.models import Anime
 from shared.contracts import (
@@ -10,12 +10,14 @@ from shared.contracts import (
     INDEX_PROVIDER_KEYS,
     ProviderAnimePayload,
     ProviderName,
+    payload_fingerprint,
 )
 
 _PROVIDER_KEY_TO_NAME = {
     "mal_id": ProviderName.JIKAN,
     "anilist_id": ProviderName.ANILIST,
     "kitsu_id": ProviderName.KITSU,
+    "anidb_id": ProviderName.ANIDB,
 }
 
 
@@ -59,6 +61,19 @@ def _tupled(value: Any) -> tuple[str, ...]:
     return (str(value),)
 
 
+def _picture_variants(value: Any) -> Tuple[Dict[str, Any], ...]:
+    if not value:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out: list[Dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        out.append(dict(item))
+    return tuple(out)
+
+
 def external_ids_from_anime(
     anime: Any,
     *,
@@ -76,6 +91,9 @@ def external_ids_from_anime(
                 if k in INDEX_PROVIDER_KEYS and v is not None
             }
         )
+    pending = getattr(anime, "_schedule_external_ids", None)
+    if pending:
+        out.update(_normalize_external_ids(pending))
     if primary_api_key and primary_external_id is not None:
         if primary_api_key in INDEX_PROVIDER_KEYS:
             out[primary_api_key] = int(primary_external_id)
@@ -88,27 +106,81 @@ def anime_to_provider_payload(
     source_provider: ProviderName = ProviderName.UNKNOWN,
     external_ids: Optional[Mapping[str, int]] = None,
 ) -> ProviderAnimePayload:
-    """Project a legacy ``Anime`` into a provider-neutral payload."""
+    """Project a legacy ``Anime`` into a provider-neutral payload.
+
+    Prefers ``_schedule_external_ids`` / explicit ``external_ids`` over any
+    catalogue id already stamped on the object (list-light rows).
+    """
     title = getattr(anime, "title", None) or ""
     synonyms = _tupled(getattr(anime, "title_synonyms", None))
     genres = _tupled(getattr(anime, "genres", None))
 
+    normalized = _normalize_external_ids(external_ids or {})
+    if not normalized:
+        normalized = _normalize_external_ids(
+            getattr(anime, "_schedule_external_ids", None) or {}
+        )
+
+    resolved_provider = source_provider
+    if resolved_provider == ProviderName.UNKNOWN and normalized:
+        first_key = next(iter(normalized.keys()))
+        resolved_provider = provider_name_for_api_key(first_key)
+
+    variants = _picture_variants(getattr(anime, "_pending_pictures", None))
+    if not variants:
+        variants = _picture_variants(getattr(anime, "picture_variants", None))
+
     return ProviderAnimePayload(
         title=str(title),
-        external_ids=_normalize_external_ids(external_ids or {}),
+        external_ids=normalized,
         title_synonyms=synonyms,
-        synopsis=getattr(anime, "synopsis", None),
-        episodes=getattr(anime, "episodes", None),
-        duration=getattr(anime, "duration", None),
-        status=getattr(anime, "status", None),
-        rating=getattr(anime, "rating", None),
-        date_from=getattr(anime, "date_from", None),
-        date_to=getattr(anime, "date_to", None),
-        picture=getattr(anime, "picture", None),
-        trailer=getattr(anime, "trailer", None),
-        broadcast=getattr(anime, "broadcast", None),
+        synopsis=_safe_str(getattr(anime, "synopsis", None)),
+        episodes=_safe_int(getattr(anime, "episodes", None)),
+        duration=_safe_int(getattr(anime, "duration", None)),
+        status=_safe_str(getattr(anime, "status", None)),
+        rating=_safe_str(getattr(anime, "rating", None)),
+        date_from=_safe_int(getattr(anime, "date_from", None)),
+        date_to=_safe_int(getattr(anime, "date_to", None)),
+        picture=_safe_str(getattr(anime, "picture", None)),
+        trailer=_safe_str(getattr(anime, "trailer", None)),
+        broadcast=_safe_str(getattr(anime, "broadcast", None)),
         genres=genres,
-        source_provider=source_provider,
+        source_provider=resolved_provider,
+        picture_variants=variants,
+    )
+
+
+def payload_to_anime_record(
+    payload: ProviderAnimePayload,
+    catalog_id: int,
+    *,
+    external_ids: Optional[Mapping[str, int]] = None,
+) -> AnimeRecord:
+    """Materialize a catalogue ``AnimeRecord`` after identity resolution."""
+    rid = int(catalog_id)
+    if rid <= 0:
+        raise ValueError(f"catalog_id must be positive, got {catalog_id!r}")
+    normalized = _normalize_external_ids(
+        external_ids if external_ids is not None else payload.external_ids
+    )
+    return AnimeRecord(
+        id=rid,
+        title=str(payload.title or ""),
+        title_synonyms=tuple(payload.title_synonyms or ()),
+        synopsis=payload.synopsis,
+        episodes=payload.episodes,
+        duration=payload.duration,
+        status=payload.status,
+        rating=payload.rating,
+        date_from=payload.date_from,
+        date_to=payload.date_to,
+        picture=payload.picture,
+        trailer=payload.trailer,
+        broadcast=payload.broadcast,
+        genres=tuple(payload.genres or ()),
+        external_ids=normalized,
+        source_provider=payload.source_provider,
+        picture_variants=tuple(payload.picture_variants or ()),
     )
 
 
@@ -166,10 +238,18 @@ def legacy_anime_to_record(
         return None
 
     normalized_external = _normalize_external_ids(external_ids or {})
+    if not normalized_external:
+        normalized_external = _normalize_external_ids(
+            getattr(anime, "_schedule_external_ids", None) or {}
+        )
     resolved_provider = source_provider or ProviderName.UNKNOWN
     if resolved_provider == ProviderName.UNKNOWN and normalized_external:
         first_key = next(iter(normalized_external.keys()))
         resolved_provider = provider_name_for_api_key(first_key)
+
+    variants = _picture_variants(getattr(anime, "_pending_pictures", None))
+    if not variants:
+        variants = _picture_variants(getattr(anime, "picture_variants", None))
 
     return AnimeRecord(
         id=rid_int,
@@ -188,6 +268,7 @@ def legacy_anime_to_record(
         genres=_tupled(_field("genres")),
         external_ids=normalized_external,
         source_provider=resolved_provider,
+        picture_variants=variants,
     )
 
 
@@ -196,5 +277,7 @@ __all__ = [
     "anime_to_provider_payload",
     "external_ids_from_anime",
     "legacy_anime_to_record",
+    "payload_fingerprint",
+    "payload_to_anime_record",
     "provider_name_for_api_key",
 ]

@@ -98,10 +98,6 @@ router = APIRouter(default_response_class=HTMLResponse)
 # ---------------------------------------------------------------------------
 PAGE_SIZE = 24
 DEFAULT_USER_ID = 1
-# Cap rows returned to the torrents page and anime-detail SSE stream.
-# Must stay <= profile ``max_results`` (750 interactive); aligns with
-# ``ClientSDK.search_torrents`` / REST default limit (200).
-TORRENT_RESULT_LIMIT = 200
 PLAYBACK_SESSION_TTL_SECONDS = 900
 
 # Maps to the historical Tk filter list (settings.json filter parity).
@@ -741,10 +737,22 @@ def _render_anime_card(request: Request | WebSocket, item: dict[str, Any]) -> st
     return template.render({"request": request, "item": item})
 
 
-# Cap on streamed cards per WS session. Mirrors the page-size we used
-# to materialize server-side so the user experience is identical, just
-# progressively rendered.
+# Cap on streamed cards per WS/SSE session. Clients may over-fetch by
+# one (page size + 1) to detect ``has_next`` for the pager.
 _LIBRARY_STREAM_MAX_RESULTS: int = 50
+_LIBRARY_STREAM_LIMIT_CAP: int = 101
+
+
+def _clamp_stream_limit(raw_limit: Any, default: int = _LIBRARY_STREAM_MAX_RESULTS) -> int:
+    limit = _safe_int(raw_limit, default)
+    if limit <= 0 or limit > _LIBRARY_STREAM_LIMIT_CAP:
+        return default
+    return limit
+
+
+def _clamp_stream_offset(raw_offset: Any) -> int:
+    offset = _safe_int(raw_offset, 0)
+    return max(0, offset)
 
 
 @router.websocket("/ui/library/ws", name="web_library_search_ws")
@@ -768,11 +776,8 @@ async def web_library_search_ws(websocket: WebSocket) -> None:
     """
     await websocket.accept()
     query = (websocket.query_params.get("q") or "").strip()
-    limit = _safe_int(
-        websocket.query_params.get("limit"), _LIBRARY_STREAM_MAX_RESULTS
-    )
-    if limit <= 0 or limit > 200:
-        limit = _LIBRARY_STREAM_MAX_RESULTS
+    limit = _clamp_stream_limit(websocket.query_params.get("limit"))
+    offset = _clamp_stream_offset(websocket.query_params.get("offset"))
 
     if not query:
         await websocket.send_json(
@@ -808,7 +813,7 @@ async def web_library_search_ws(websocket: WebSocket) -> None:
 
     def producer() -> None:
         try:
-            for item in sdk.stream_search_anime(query, limit=limit):
+            for item in sdk.stream_search_anime(query, limit=limit, offset=offset):
                 if stop.is_set():
                     break
                 try:
@@ -900,6 +905,7 @@ def web_library_search_stream(
     request: Request,
     q: str = "",
     limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+    offset: int = 0,
 ) -> StreamingResponse:
     """Server-Sent Events feed for library search (Next.js proxy compatible).
 
@@ -911,9 +917,8 @@ def web_library_search_stream(
     """
     _ = request  # reserved for future absolute-URL helpers
     query = (q or "").strip()
-    limit = _safe_int(limit, _LIBRARY_STREAM_MAX_RESULTS)
-    if limit <= 0 or limit > 200:
-        limit = _LIBRARY_STREAM_MAX_RESULTS
+    limit = _clamp_stream_limit(limit)
+    offset = _clamp_stream_offset(offset)
 
     def event_stream() -> Iterable[bytes]:
         if not query:
@@ -945,7 +950,9 @@ def web_library_search_stream(
         emitted = 0
         seen_ids: set[Any] = set()
         try:
-            for item in sdk.stream_search_anime(query, limit=limit):
+            for item in sdk.stream_search_anime(
+                query, limit=limit, offset=offset
+            ):
                 anime_id = item.get("id") if isinstance(item, dict) else None
                 if anime_id is not None:
                     if anime_id in seen_ids:
@@ -982,13 +989,13 @@ def web_library_season_stream(
     year: int = 0,
     season: str = "",
     limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+    offset: int = 0,
 ) -> StreamingResponse:
     """Server-Sent Events feed for broadcast-season browse."""
     _ = request
     season_raw = (season or "").strip()
-    limit = _safe_int(limit, _LIBRARY_STREAM_MAX_RESULTS)
-    if limit <= 0 or limit > 200:
-        limit = _LIBRARY_STREAM_MAX_RESULTS
+    limit = _clamp_stream_limit(limit)
+    offset = _clamp_stream_offset(offset)
 
     def event_stream() -> Iterable[bytes]:
         if not season_raw or not year:
@@ -1020,7 +1027,7 @@ def web_library_season_stream(
         seen_ids: set[Any] = set()
         try:
             for item in sdk.stream_browse_season(
-                year_value, season_value, limit=limit
+                year_value, season_value, limit=limit, offset=offset
             ):
                 anime_id = item.get("id") if isinstance(item, dict) else None
                 if anime_id is not None:
@@ -1057,13 +1064,13 @@ def web_library_genre_stream(
     request: Request,
     genre: str = "",
     limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+    offset: int = 0,
 ) -> StreamingResponse:
     """Server-Sent Events feed for genre browse."""
     _ = request
     genre_raw = (genre or "").strip()
-    limit = _safe_int(limit, _LIBRARY_STREAM_MAX_RESULTS)
-    if limit <= 0 or limit > 200:
-        limit = _LIBRARY_STREAM_MAX_RESULTS
+    limit = _clamp_stream_limit(limit)
+    offset = _clamp_stream_offset(offset)
 
     def event_stream() -> Iterable[bytes]:
         if not genre_raw:
@@ -1072,9 +1079,9 @@ def web_library_genre_stream(
             return
 
         try:
-            from domain.policies.genre import normalize_genre
+            from domain.policies.genre import normalize_genres
 
-            genre_value = normalize_genre(genre_raw)
+            genre_value = normalize_genres(genre_raw)
         except ValidationError as exc:
             yield _sse_event("error", str(exc))
             yield _sse_event("done", "0")
@@ -1090,7 +1097,9 @@ def web_library_genre_stream(
         emitted = 0
         seen_ids: set[Any] = set()
         try:
-            for item in sdk.stream_browse_genre(genre_value, limit=limit):
+            for item in sdk.stream_browse_genre(
+                genre_value, limit=limit, offset=offset
+            ):
                 anime_id = item.get("id") if isinstance(item, dict) else None
                 if anime_id is not None:
                     if anime_id in seen_ids:
@@ -1107,6 +1116,77 @@ def web_library_genre_stream(
             yield _sse_event(
                 "error",
                 "Genre browse failed; check the metadata provider configuration.",
+            )
+        yield _sse_event("done", str(emitted))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.get("/ui/library/top/stream", name="web_library_top_stream")
+def web_library_top_stream(
+    request: Request,
+    category: str = "all",
+    limit: int = _LIBRARY_STREAM_MAX_RESULTS,
+    offset: int = 0,
+) -> StreamingResponse:
+    """Server-Sent Events feed for top-by-popularity browse."""
+    _ = request
+    category_raw = (category or "").strip()
+    limit = _clamp_stream_limit(limit)
+    offset = _clamp_stream_offset(offset)
+
+    def event_stream() -> Iterable[bytes]:
+        if not category_raw:
+            yield _sse_event("error", "Missing category.")
+            yield _sse_event("done", "0")
+            return
+
+        try:
+            from domain.policies.top import normalize_top_category
+
+            category_value = normalize_top_category(category_raw)
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+            yield _sse_event("done", "0")
+            return
+        except Exception:  # noqa: BLE001
+            yield _sse_event("error", "Invalid top browse parameters.")
+            yield _sse_event("done", "0")
+            return
+
+        yield b": stream-open\n\n"
+
+        sdk = get_sdk()
+        emitted = 0
+        seen_ids: set[Any] = set()
+        try:
+            for item in sdk.stream_browse_top(
+                category_value, limit=limit, offset=offset
+            ):
+                anime_id = item.get("id") if isinstance(item, dict) else None
+                if anime_id is not None:
+                    if anime_id in seen_ids:
+                        continue
+                    seen_ids.add(anime_id)
+                yield _sse_event("card", json.dumps(item))
+                emitted += 1
+                if emitted >= limit:
+                    break
+        except ValidationError as exc:
+            yield _sse_event("error", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("library top stream failed: %s", exc)
+            yield _sse_event(
+                "error",
+                "Top browse failed; check the metadata provider configuration.",
             )
         yield _sse_event("done", str(emitted))
 
@@ -2239,7 +2319,7 @@ def web_torrents(
     if term_clean:
         terms = [t.strip() for t in term_clean.split(",") if t.strip()]
         try:
-            raw = sdk.search_torrents(terms, profile="interactive", limit=TORRENT_RESULT_LIMIT)
+            raw = sdk.search_torrents(terms, profile="interactive")
             results = _normalize_torrents(raw)
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2477,11 +2557,8 @@ def web_anime_torrent_stream(
             for raw in sdk.stream_torrents(
                 active_terms,
                 profile="interactive",
-                limit=TORRENT_RESULT_LIMIT,
                 allow_nsfw=allow_nsfw,
             ):
-                if emitted >= TORRENT_RESULT_LIMIT:
-                    break
                 row = _normalize_torrents([raw])
                 if not row:
                     continue

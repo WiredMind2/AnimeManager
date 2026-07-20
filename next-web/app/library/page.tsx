@@ -6,12 +6,14 @@ import { api, ApiError } from "@/lib/api";
 import { DEFAULT_USER_ID, type FilterValue } from "@/lib/config";
 import {
   apiFilterForBackend,
+  backUrlLabel,
   filterFooterLabel,
   libraryPageUrl,
   readAnimePerPage,
   readHideRatedDefault,
   resolveHideRated,
   resolvePageSize,
+  sanitizeBackUrl,
 } from "@/lib/library";
 
 type LibraryPageProps = {
@@ -21,6 +23,7 @@ type LibraryPageProps = {
     page?: string;
     size?: string;
     hide_rated?: string;
+    back?: string;
   }>;
 };
 
@@ -41,6 +44,7 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
   const page = safePage(params.page);
   const activeFilter = ((params.filter || "DEFAULT") as FilterValue).toUpperCase();
   const qClean = (params.q ?? "").trim();
+  const backUrl = sanitizeBackUrl(params.back);
 
   let settingsHideRated = false;
   let settingsPageSize = resolvePageSize(undefined, undefined);
@@ -98,9 +102,11 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
     hideRated,
     settingsHideRated,
     settingsPageSize,
+    back: backUrl,
   };
   const prevUrl = page > 1 ? libraryPageUrl({ ...urlBase, page: page - 1 }) : null;
-  const nextUrl = hasNext ? libraryPageUrl({ ...urlBase, page: page + 1 }) : null;
+  const nextUrlCandidate = libraryPageUrl({ ...urlBase, page: page + 1 });
+  const nextUrl = streamingSearch || hasNext ? nextUrlCandidate : null;
   const pageTitle = qClean ? "Search results" : "Library";
 
   const topbarActions = (
@@ -129,6 +135,8 @@ export default async function LibraryPage({ searchParams }: LibraryPageProps) {
       <LibraryPageContent
         pageTitle={pageTitle}
         q={qClean}
+        backUrl={backUrl}
+        backLabel={backUrl ? backUrlLabel(backUrl) : null}
         activeFilter={activeFilter}
         streamingSearch={streamingSearch}
         items={items}

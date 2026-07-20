@@ -16,6 +16,13 @@ try:
 except ImportError:
     from APIUtils import Anime, APIUtils, Character
 
+from domain.cover_images import (
+    MAL_COVER_DIMENSIONS,
+    cover_variants_from_mapping,
+    largest_cover_url,
+    variants_as_dicts,
+)
+
 try:
     from shared.security import load_secret
 except ImportError:  # pragma: no cover - executed only outside the package
@@ -146,6 +153,85 @@ class MyAnimeListNetWrapper(APIUtils):
 
     def _convertAnime(self, a, relations=False):
         external_ids = {"mal_id": int(a["id"])}
+        if getattr(self, "list_light", False) or getattr(self, "schedule_light", False):
+            out = Anime()
+            out._schedule_external_ids = external_ids
+            out["title"] = a["title"]
+            if a["title"][-1] == ".":
+                out["title"] = a["title"][:-1]
+
+            titles = [a["title"]]
+            if "alternative_titles" in a.keys():
+                for sub in a["alternative_titles"].values():
+                    if isinstance(sub, list):
+                        titles += sub
+                    else:
+                        titles.append(sub)
+            out["title_synonyms"] = titles
+
+            epoch = datetime(1970, 1, 1)
+            if "start_date" in a.keys() and len(a["start_date"].split("-")) == 3:
+                d = datetime.fromisoformat(a["start_date"])
+                out["date_from"] = int((d - epoch).total_seconds())
+            else:
+                out["date_from"] = None
+
+            if "end_date" in a.keys() and len(a["end_date"].split("-")) == 3:
+                d = datetime.fromisoformat(a["end_date"])
+                out["date_to"] = int((d - epoch).total_seconds())
+            else:
+                out["date_to"] = None
+
+            out["picture"] = (
+                list(a["main_picture"].items())[-1][1]
+                if "main_picture" in a.keys()
+                else None
+            )
+            if "main_picture" in a.keys():
+                variants = cover_variants_from_mapping(
+                    {
+                        size: url
+                        for size, url in a["main_picture"].items()
+                        if size in MAL_COVER_DIMENSIONS
+                    },
+                    dimensions_by_key=MAL_COVER_DIMENSIONS,
+                )
+                out["picture"] = largest_cover_url(variants) or out["picture"]
+                out._pending_pictures = variants_as_dicts(variants)
+
+            out["synopsis"] = a["synopsis"] if "synopsis" in a.keys() else None
+            out["episodes"] = (
+                a["num_episodes"] if "num_episodes" in a.keys() else None
+            )
+            out["duration"] = (
+                a["average_episode_duration"] // 60
+                if "average_episode_duration" in a.keys()
+                else None
+            )
+            out["rating"] = a["rating"].upper() if "rating" in a.keys() else None
+            if "broadcast" in a.keys() and "start_time" in a["broadcast"].keys():
+                weekdays = (
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday",
+                )
+                weekday = a["broadcast"]["day_of_the_week"]
+                if weekday in weekdays:
+                    w = weekdays.index(weekday)
+                    h, m = a["broadcast"]["start_time"].split(":")[:2]
+                    out["broadcast"] = "{}-{}-{}".format(w, h, m)
+            if out["date_from"] is None:
+                out["status"] = "UPDATE"
+            else:
+                out["status"] = (
+                    self.getStatus(out) if "status" in a.keys() else None
+                )
+            return out
+
         id = self.resolve_catalog_id(external_ids)
         out = Anime()
 
@@ -186,9 +272,16 @@ class MyAnimeListNetWrapper(APIUtils):
 
         pictures = []
         if "main_picture" in a.keys():
-            for size, url in a["main_picture"].items():
-                if size in ("small", "medium", "large"):
-                    pictures.append({"url": url, "size": size})
+            variants = cover_variants_from_mapping(
+                {
+                    size: url
+                    for size, url in a["main_picture"].items()
+                    if size in MAL_COVER_DIMENSIONS
+                },
+                dimensions_by_key=MAL_COVER_DIMENSIONS,
+            )
+            out["picture"] = largest_cover_url(variants) or out["picture"]
+            pictures = variants_as_dicts(variants)
 
         self.save_pictures(id, pictures)
 

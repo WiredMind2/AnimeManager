@@ -60,17 +60,32 @@ class ApiCoordinatorAdapter:
         for item in self.browse_season(year, season, limit=limit):
             yield item
 
-    def browse_genre(self, genre: str, limit: int = 50) -> list[AnimeEntity]:
+    def browse_genre(self, genre, limit: int = 50) -> list[AnimeEntity]:
         results = self._api_coordinator.browse_genre(genre, limit=limit)
         if not results:
             return []
         return [from_legacy_anime(item) for item in results]
 
-    def stream_browse_genre(self, genre: str, limit: int = 50):
+    def stream_browse_genre(self, genre, limit: int = 50):
         streamer = getattr(self._api_coordinator, "stream_browse_genre", None)
         if callable(streamer):
             for item in streamer(genre, limit=limit):
                 yield from_legacy_anime(item)
             return
         for item in self.browse_genre(genre, limit=limit):
+            yield item
+
+    def browse_top(self, category: str, limit: int = 50) -> list[AnimeEntity]:
+        results = self._api_coordinator.browse_top(category, limit=limit)
+        if not results:
+            return []
+        return [from_legacy_anime(item) for item in results]
+
+    def stream_browse_top(self, category: str, limit: int = 50):
+        streamer = getattr(self._api_coordinator, "stream_browse_top", None)
+        if callable(streamer):
+            for item in streamer(category, limit=limit):
+                yield from_legacy_anime(item)
+            return
+        for item in self.browse_top(category, limit=limit):
             yield item

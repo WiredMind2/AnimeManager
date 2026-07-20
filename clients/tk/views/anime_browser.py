@@ -331,12 +331,13 @@ class AnimeBrowserView(tk.Frame):
         self._end_loading()
         self.set_status(f"Loaded {len(items)} anime entries")
 
-    def _render_search(self, rows: list[dict[str, Any]]) -> None:
-        self._has_next = False
-        self._last_items = list(rows)
-        self._grid.set_rows(rows)
+    def _render_search(self, payload: dict[str, Any]) -> None:
+        items = list(payload.get("items", []))
+        self._has_next = bool(payload.get("has_next"))
+        self._last_items = items
+        self._grid.set_rows(items)
         self._end_loading()
-        self.set_status(f"Search returned {len(rows)} entries")
+        self.set_status(f"Search returned {len(items)} entries")
 
     def next_page(self) -> None:
         if not self._has_next and self._last_items:

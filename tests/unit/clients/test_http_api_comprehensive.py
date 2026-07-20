@@ -92,10 +92,12 @@ class RecordingSDK:
     def get_active_downloads(self):
         return self._invoke("get_active_downloads", (), {}, default=lambda: [])
 
-    def search_torrents(self, terms, profile="interactive", limit=200):
+    def search_torrents(
+        self, terms, profile="interactive", limit=None, allow_nsfw=False
+    ):
         return self._invoke(
             "search_torrents",
-            (tuple(terms), profile, limit),
+            (tuple(terms), profile, limit, allow_nsfw),
             {},
             default=lambda: [],
         )
@@ -418,10 +420,11 @@ class TestTorrentSearch:
     def test_splits_comma_terms(self, client, sdk):
         client.get("/torrents/search", params={"term": "naruto, shippuden , 1080p"})
         _, args, _ = sdk.last_call("search_torrents")
-        terms, profile, limit = args
+        terms, profile, limit, allow_nsfw = args
         assert list(terms) == ["naruto", "shippuden", "1080p"]
         assert profile == "interactive"
-        assert limit == 200
+        assert limit is None
+        assert allow_nsfw is False
 
     def test_custom_profile_and_limit(self, client, sdk):
         client.get(

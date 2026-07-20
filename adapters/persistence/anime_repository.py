@@ -73,8 +73,14 @@ class AnimeRepositoryAdapter:
             return []
         return [from_legacy_anime(item) for item in results]
 
-    def list_by_genre(self, genre: str, limit: int = 50) -> list[AnimeEntity]:
+    def list_by_genre(self, genre, limit: int = 50) -> list[AnimeEntity]:
         results = self._db_manager.list_anime_by_genre(genre, limit=limit)
+        if not results:
+            return []
+        return [from_legacy_anime(item) for item in results]
+
+    def list_by_top_category(self, category: str, limit: int = 50) -> list[AnimeEntity]:
+        results = self._db_manager.list_anime_by_top_category(category, limit=limit)
         if not results:
             return []
         return [from_legacy_anime(item) for item in results]
@@ -453,19 +459,84 @@ class AnimeRepositoryAdapter:
             return []
         try:
             rows = db.sql(
-                "SELECT url, size FROM pictures WHERE id=?",
+                "SELECT url, size, width, height FROM pictures WHERE id=?",
                 (anime_id,),
                 to_dict=True,
             )
-        except Exception as exc:
-            message = str(exc).lower()
-            if "locked" in message or "deadlock" in message:
-                return []
-            raise InfrastructureError(
-                f"Failed to load pictures for anime {anime_id}: {exc}"
-            ) from exc
+        except Exception:
+            try:
+                rows = db.sql(
+                    "SELECT url, size FROM pictures WHERE id=?",
+                    (anime_id,),
+                    to_dict=True,
+                )
+            except Exception as exc:
+                message = str(exc).lower()
+                if "locked" in message or "deadlock" in message:
+                    return []
+                raise InfrastructureError(
+                    f"Failed to load pictures for anime {anime_id}: {exc}"
+                ) from exc
+        return self._normalize_picture_rows(rows)
+
+    def get_anime_pictures_batch(self, anime_ids: list[int]) -> dict[int, list[dict]]:
+        """Load cover variants for many anime ids in one query."""
+        ids = [int(i) for i in anime_ids if i is not None]
+        if not ids:
+            return {}
+        db = self._database
+        if db is None:
+            return {}
+        placeholders = ",".join(["?"] * len(ids))
+        try:
+            rows = db.sql(
+                f"SELECT id, url, size, width, height FROM pictures WHERE id IN ({placeholders})",
+                ids,
+                to_dict=True,
+            )
+        except Exception:
+            try:
+                rows = db.sql(
+                    f"SELECT id, url, size FROM pictures WHERE id IN ({placeholders})",
+                    ids,
+                    to_dict=True,
+                )
+            except Exception as exc:
+                message = str(exc).lower()
+                if "locked" in message or "deadlock" in message:
+                    return {}
+                raise InfrastructureError(
+                    f"Failed to load pictures batch: {exc}"
+                ) from exc
+        out: dict[int, list[dict]] = {}
+        for row in rows or []:
+            if not row or not row.get("url"):
+                continue
+            anime_id = int(row["id"])
+            out.setdefault(anime_id, []).append(self._picture_row_dict(row))
+        return out
+
+    @staticmethod
+    def _picture_row_dict(row: dict) -> dict:
+        item: dict = {"url": row.get("url"), "size": row.get("size") or "medium"}
+        width = row.get("width")
+        height = row.get("height")
+        if width is not None:
+            try:
+                item["width"] = int(width)
+            except (TypeError, ValueError):
+                pass
+        if height is not None:
+            try:
+                item["height"] = int(height)
+            except (TypeError, ValueError):
+                pass
+        return item
+
+    @classmethod
+    def _normalize_picture_rows(cls, rows) -> list[dict]:
         return [
-            {"url": row.get("url"), "size": row.get("size")}
+            cls._picture_row_dict(row)
             for row in (rows or [])
             if row and row.get("url")
         ]
@@ -626,6 +697,8 @@ class AnimeRepositoryAdapter:
                 f"Failed to refresh pictures for anime {anime_id}: {exc}"
             ) from exc
 
+        from domain.cover_images import JIKAN_COVER_DIMENSIONS, merge_kitsu_dimensions
+
         normalized: list[dict] = []
         for pic in pictures or []:
             if not isinstance(pic, dict):
@@ -634,12 +707,24 @@ class AnimeRepositoryAdapter:
                     for size in ("small", "medium", "large", "original"):
                         url = getter(size)
                         if url:
-                            normalized.append({"url": url, "size": size})
+                            width, height = merge_kitsu_dimensions(pic, size)
+                            entry = {"url": url, "size": size}
+                            if width is not None:
+                                entry["width"] = width
+                            if height is not None:
+                                entry["height"] = height
+                            normalized.append(entry)
                 continue
             if "url" in pic and pic.get("url"):
-                normalized.append(
-                    {"url": pic["url"], "size": pic.get("size") or "medium"}
-                )
+                entry = {
+                    "url": pic["url"],
+                    "size": pic.get("size") or "medium",
+                }
+                if pic.get("width") is not None:
+                    entry["width"] = pic["width"]
+                if pic.get("height") is not None:
+                    entry["height"] = pic["height"]
+                normalized.append(entry)
                 continue
             jpg = pic.get("jpg") if isinstance(pic.get("jpg"), dict) else None
             if jpg:
@@ -650,7 +735,11 @@ class AnimeRepositoryAdapter:
                 ):
                     url = jpg.get(size_key)
                     if url:
-                        normalized.append({"url": url, "size": size_label})
+                        dims = JIKAN_COVER_DIMENSIONS.get(size_key)
+                        entry = {"url": url, "size": size_label}
+                        if dims:
+                            entry["width"], entry["height"] = dims
+                        normalized.append(entry)
 
         if normalized:
             try:

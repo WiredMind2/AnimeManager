@@ -31,7 +31,13 @@ def _setup_dummy_db(monkeypatch):
             return DummyDB._Lock()
 
         def sql(self, *args, **kwargs):
+            query = args[0] if args else ""
+            if isinstance(query, str) and "EXISTS" in query.upper():
+                return [(0,)]
             return []
+
+        def save(self):
+            return None
 
         def procedure(self, name, *args):
             return (name, *args), []
@@ -57,7 +63,11 @@ def test_anilist_convert_methods(monkeypatch):
         "episodes": 12,
         "duration": 24,
         "isAdult": False,
-        "coverImage": {"medium": "http://img", "large": "http://imgl"},
+        "coverImage": {
+            "medium": "http://img",
+            "large": "http://imgl",
+            "extraLarge": "http://imgxl",
+        },
         "genres": ["Action"],
         "idMal": 62604,
     }
@@ -66,6 +76,7 @@ def test_anilist_convert_methods(monkeypatch):
     assert data is not None
     assert "title" in data and data["title"] is not None
     assert "title_synonyms" in data
+    assert data["picture"] == "http://imgxl"
 
     # Character conversion
     c = {

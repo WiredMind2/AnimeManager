@@ -1,4 +1,7 @@
 import { FILTER_OPTIONS, PAGE_SIZE, type FilterValue } from "./config";
+import { formatGenreLabel, parseGenreBrowseParams } from "./genres";
+import { formatSeasonLabel, parseSeasonBrowseParams } from "./season";
+import { formatTopLabel, parseTopBrowseParams } from "./top";
 
 export const PAGE_SIZE_OPTIONS = [24, 48] as const;
 
@@ -66,6 +69,43 @@ export function resolveHideRated(
   return settingsDefault;
 }
 
+/** Browse routes the top-bar search may link back to via the `back` param. */
+export const SEARCH_BACK_PREFIXES = [
+  "/library/season",
+  "/library/genre",
+  "/library/top",
+] as const;
+
+/** Accept only same-app browse URLs so `back` can never navigate elsewhere. */
+export function sanitizeBackUrl(value: string | null | undefined): string | null {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  const matches = SEARCH_BACK_PREFIXES.some(
+    (prefix) => raw === prefix || raw.startsWith(`${prefix}?`),
+  );
+  return matches ? raw : null;
+}
+
+/** Human label for a sanitized back URL, e.g. "Fall 2025" or "Action + Comedy". */
+export function backUrlLabel(backUrl: string): string {
+  const [path, queryString = ""] = backUrl.split("?");
+  const params = new URLSearchParams(queryString);
+  if (path === "/library/season") {
+    const parsed = parseSeasonBrowseParams(
+      params.get("season") ?? undefined,
+      params.get("year") ?? undefined,
+    );
+    if (parsed) return formatSeasonLabel(parsed.season, parsed.year);
+  } else if (path === "/library/genre") {
+    const genres = parseGenreBrowseParams(params.get("name") ?? undefined);
+    if (genres) return formatGenreLabel(genres);
+  } else if (path === "/library/top") {
+    const category = parseTopBrowseParams(params.get("category") ?? undefined);
+    if (category) return `Top ${formatTopLabel(category)}`;
+  }
+  return "browse";
+}
+
 export type LibraryUrlParams = {
   page?: number;
   filter?: FilterValue | string;
@@ -74,6 +114,7 @@ export type LibraryUrlParams = {
   hideRated?: boolean;
   settingsHideRated?: boolean;
   settingsPageSize?: PageSizeOption;
+  back?: string | null;
 };
 
 export function libraryPageUrl(params: LibraryUrlParams): string {
@@ -96,6 +137,9 @@ export function libraryPageUrl(params: LibraryUrlParams): string {
   if (hideRated !== settingsHideRated) {
     parts.push(`hide_rated=${hideRated ? "true" : "false"}`);
   }
+
+  const back = sanitizeBackUrl(params.back);
+  if (back) parts.push(`back=${encodeURIComponent(back)}`);
 
   return parts.length ? `/library?${parts.join("&")}` : "/library";
 }

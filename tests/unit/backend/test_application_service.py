@@ -117,15 +117,15 @@ def _service():
 
 def test_search_prefers_repository():
     result = _service().search_anime(SearchRequest(query="cowboy"))
-    assert len(result) == 2
-    assert result[0].title == "Cowboy Bebop"
-    assert result[1].title == "Remote Cowboy"
+    assert len(result.items) == 2
+    assert result.items[0].title == "Cowboy Bebop"
+    assert result.items[1].title == "Remote Cowboy"
 
 
 def test_search_falls_back_to_provider():
     result = _service().search_anime(SearchRequest(query="naruto"))
-    assert len(result) == 1
-    assert result[0].id == 2
+    assert len(result.items) == 1
+    assert result.items[0].id == 2
 
 
 def test_search_rejects_short_query():
