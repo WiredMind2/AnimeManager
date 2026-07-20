@@ -26,9 +26,11 @@ def test_list_h264_encoders_parses_available_encoders() -> None:
     with patch(
         "adapters.media.ffmpeg_encoder.subprocess.run",
         return_value=type("R", (), {"stdout": _NVENC_AND_QSV_OUTPUT, "stderr": ""})(),
-    ):
+    ) as run:
         found = list_h264_encoders("ffmpeg")
     assert found == {"libx264", "h264_nvenc", "h264_qsv"}
+    assert run.call_args.kwargs.get("encoding") == "utf-8"
+    assert run.call_args.kwargs.get("errors") == "replace"
 
 
 def test_auto_prefers_nvenc_when_available() -> None:
@@ -102,6 +104,8 @@ def test_build_video_encode_args_nvenc() -> None:
     assert args[args.index("-cq") + 1] == "23"
     assert "-pix_fmt" in args
     assert args[args.index("-pix_fmt") + 1] == "yuv420p"
+    assert args[args.index("-forced-idr") + 1] == "1"
+    assert args[args.index("-no-scenecut") + 1] == "1"
     assert "-force_key_frames" in args
 
 
@@ -110,3 +114,12 @@ def test_build_video_encode_args_qsv() -> None:
     assert args[args.index("-c:v") + 1] == "h264_qsv"
     assert "-global_quality" in args
     assert args[args.index("-global_quality") + 1] == "23"
+    assert args[args.index("-forced_idr") + 1] == "1"
+    assert "-force_key_frames" in args
+
+
+def test_build_video_encode_args_amf_forces_idr() -> None:
+    args = build_video_encode_args("h264_amf", keyframe_expr="expr:gte(t,n_forced*4)")
+    assert args[args.index("-c:v") + 1] == "h264_amf"
+    assert args[args.index("-forced_idr") + 1] == "1"
+    assert "-force_key_frames" in args
