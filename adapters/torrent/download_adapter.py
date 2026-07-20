@@ -215,7 +215,6 @@ class DownloadAdapter:
         yield from facade.search(terms)
 
     @staticmethod
-
     def _search_profile(
         profile: str, limit: int | None, allow_nsfw: bool
     ):
