@@ -87,7 +87,7 @@ class TestLoadProfile:
             ("MAX_CONCURRENT_JOBS", "1"),
             ("PER_JOB_TIMEOUT_S", "1"),
             ("REQUEST_DEADLINE_S", "1"),
-            ("MAX_RESULTS", "1"),
+            ("MAX_RESULTS_PER_TERM", "1"),
             ("MAX_OUTPUT_BYTES", "1"),
             ("MAX_LINE_BYTES", "1"),
             ("QUEUE_CAPACITY", "1"),
@@ -101,12 +101,17 @@ class TestLoadProfile:
             "max_concurrent_jobs",
             "per_job_timeout_s",
             "request_deadline_s",
-            "max_results",
+            "max_results_per_term",
             "max_output_bytes",
             "max_line_bytes",
             "queue_capacity",
         ):
             assert getattr(prof.limits, attr) == 1
+
+    def test_legacy_max_results_env_alias(self, monkeypatch):
+        monkeypatch.setenv("ANIME_SEARCH_INTERACTIVE_MAX_RESULTS", "7")
+        prof = load_profile("interactive")
+        assert prof.limits.max_results_per_term == 7
 
 
 class TestProfileConstruction:

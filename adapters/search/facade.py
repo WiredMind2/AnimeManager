@@ -185,7 +185,6 @@ class SearchFacade:
         stream = _ResultStream(self._profile.limits.queue_capacity)
         outcomes: List[JobOutcome] = []
         results_emitted = 0
-        max_results = self._profile.limits.max_results
 
         def sink(result: TorrentResult, job: SearchJob) -> None:
             nonlocal results_emitted
@@ -201,8 +200,8 @@ class SearchFacade:
                 return
             stream.put(result)
             results_emitted += 1
-            if results_emitted >= max_results:
-                cancel.set()
+            # Per-term caps are enforced in the worker; do not cancel the
+            # whole request when one term fills its budget.
 
         jobs = [
             SearchJob(

@@ -81,7 +81,7 @@ def _profile(**overrides) -> SearchProfile:
             max_concurrent_jobs=2,
             per_job_timeout_s=1.0,
             request_deadline_s=2.0,
-            max_results=10,
+            max_results_per_term=10,
             max_output_bytes=4096,
             max_line_bytes=512,
             queue_capacity=32,

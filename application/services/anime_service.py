@@ -476,7 +476,7 @@ class AnimeApplicationService:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ) -> list[dict]:
         sanitized = self._sanitize_terms(terms)
@@ -488,7 +488,7 @@ class AnimeApplicationService:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ):
         """Yield torrent dicts progressively as engines emit them.
