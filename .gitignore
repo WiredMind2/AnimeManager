@@ -162,3 +162,5 @@ next-web/.next/
 next-web/node_modules/
 next-web/.env.local
 next-web/tsconfig.tsbuildinfo
+
+.worktrees/
