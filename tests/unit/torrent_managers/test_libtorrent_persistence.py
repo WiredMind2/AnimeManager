@@ -580,3 +580,74 @@ def test_list_files_returns_absolute_paths(libtorrent_manager):
         r"C:\Anime\Show - 7\[ANi] Example - 01.mp4",
         r"C:\Anime\Show - 7\readme.txt",
     ]
+
+
+def test_connect_applies_connections_limit_from_settings(
+    lt_module, mock_lt, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(lt_module, "lt", mock_lt)
+    monkeypatch.setattr(lt_module, "LIBTORRENT_AVAILABLE", True)
+
+    data_path = str(tmp_path / "data")
+    os.makedirs(data_path, exist_ok=True)
+    settings = {
+        "dataPath": data_path,
+        "download_path": os.path.join(data_path, "Downloads"),
+        "listen_port": 6882,
+        "max_connections": 50,
+    }
+    with patch.object(lt_module.LibTorrent, "initialize", lambda self: None):
+        manager = lt_module.LibTorrent(settings)
+    manager.settings = settings
+    manager.listen_port = 6882
+    manager.max_connections = 50
+
+    session = MagicMock()
+    mock_lt.session = MagicMock(return_value=session)
+
+    with (
+        patch.object(manager, "_wait_for_restore_callbacks"),
+        patch.object(manager, "_run_session_restore"),
+        patch.object(manager, "_session_thread"),
+    ):
+        manager.connect(thread=False)
+
+    applied = [
+        call.args[0]
+        for call in session.apply_settings.call_args_list
+        if call.args and isinstance(call.args[0], dict)
+    ]
+    assert any(d.get("connections_limit") == 50 for d in applied)
+    first = next(d for d in applied if "connections_limit" in d)
+    assert first["listen_interfaces"] == "0.0.0.0:6882"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (50, 50),
+        ("100", 100),
+        (0, 1),
+        (100000, 65535),
+        ("bad", 200),
+        (None, 200),
+    ],
+)
+def test_resolve_max_connections_clamps(
+    lt_module, mock_lt, tmp_path, monkeypatch, raw, expected
+):
+    monkeypatch.setattr(lt_module, "lt", mock_lt)
+    monkeypatch.setattr(lt_module, "LIBTORRENT_AVAILABLE", True)
+
+    data_path = str(tmp_path / "data")
+    os.makedirs(data_path, exist_ok=True)
+    settings = {
+        "dataPath": data_path,
+        "download_path": os.path.join(data_path, "Downloads"),
+        "max_connections": raw,
+    }
+    with patch.object(lt_module.LibTorrent, "initialize", lambda self: None):
+        manager = lt_module.LibTorrent(settings)
+    manager.settings = settings
+
+    assert manager._resolve_max_connections() == expected

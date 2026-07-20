@@ -198,6 +198,8 @@ _LEAF_LABELS: dict[str, str] = {
     "rate_limit": "Rate limit (per minute)",
     "timeout": "Timeout (seconds)",
     "max_concurrent": "Max concurrent downloads",
+    "max_connections": "Max peer connections",
+    "listen_port": "Listen port",
     "scheduleTimeout": "Schedule refresh interval (seconds, minimum 86400)",
     "lastSchedule": "Last schedule (epoch)",
     "scheduleRecencyDays": "Schedule recency window (days)",

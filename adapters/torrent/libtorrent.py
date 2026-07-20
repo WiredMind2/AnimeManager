@@ -49,6 +49,10 @@ _SESSION_READY_TIMEOUT_S = 30.0
 _RESTORE_WIRE_TIMEOUT_S = 5.0
 # Cap concurrent piece checks to reduce HDD thrash at boot.
 _DEFAULT_ACTIVE_CHECKING = 1
+# Global peer connections limit (libtorrent session connections_limit).
+_DEFAULT_MAX_CONNECTIONS = 200
+_MIN_MAX_CONNECTIONS = 1
+_MAX_MAX_CONNECTIONS = 65535
 
 
 class LibTorrent(BaseTorrentManager):
@@ -277,6 +281,7 @@ class LibTorrent(BaseTorrentManager):
             if isinstance(self.settings, dict)
             else 6881
         )
+        self.max_connections = self._resolve_max_connections()
 
         try:
             os.makedirs(self.download_path, exist_ok=True)
@@ -288,6 +293,16 @@ class LibTorrent(BaseTorrentManager):
 
         self._session_ready.clear()
         self.connect()
+
+    def _resolve_max_connections(self) -> int:
+        raw = _DEFAULT_MAX_CONNECTIONS
+        if isinstance(self.settings, dict):
+            raw = self.settings.get("max_connections", _DEFAULT_MAX_CONNECTIONS)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_MAX_CONNECTIONS
+        return max(_MIN_MAX_CONNECTIONS, min(_MAX_MAX_CONNECTIONS, value))
 
     def connect(self, thread=True):
         if thread is True:
@@ -303,6 +318,12 @@ class LibTorrent(BaseTorrentManager):
                     active_checking = max(1, int(raw))
                 except (TypeError, ValueError):
                     active_checking = _DEFAULT_ACTIVE_CHECKING
+            max_connections = getattr(
+                self, "max_connections", None
+            )
+            if max_connections is None:
+                max_connections = self._resolve_max_connections()
+                self.max_connections = max_connections
             # DHT/UPnP stay off until torrents are restored (less boot contention).
             settings = {
                 "listen_interfaces": f"0.0.0.0:{self.listen_port}",
@@ -311,6 +332,7 @@ class LibTorrent(BaseTorrentManager):
                 "enable_upnp": False,
                 "enable_natpmp": False,
                 "active_checking": active_checking,
+                "connections_limit": max_connections,
             }
             self.session.apply_settings(settings)
             try:
