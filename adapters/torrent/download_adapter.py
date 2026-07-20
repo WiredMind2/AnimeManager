@@ -98,10 +98,6 @@ class DownloadAdapter:
             self._scanner.resolve_anime_folder
         )
 
-        """Merge on-disk library folders that share the same anime id."""
-        anime_path = str(getattr(self._scanner, "_anime_path", "") or "").strip()
-        return self._download_manager.consolidate_duplicate_anime_folders(anime_path)
-
     def mark_torrents_deleted_for_removed_file(
         self, anime_id: int, deleted_path: str
     ) -> int:
