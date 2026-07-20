@@ -39,6 +39,8 @@ def list_h264_encoders(ffmpeg_bin: str) -> set[str]:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         output = (result.stdout or "") + (result.stderr or "")
@@ -91,7 +93,12 @@ def resolve_video_encoder(*, requested: str, ffmpeg_bin: str) -> str:
 
 
 def build_video_encode_args(encoder: str, *, keyframe_expr: str) -> list[str]:
-    """Return FFmpeg video encode flags for browser-compatible HLS output."""
+    """Return FFmpeg video encode flags for browser-compatible HLS output.
+
+    Hardware encoders ignore ``-force_key_frames`` unless forced-IDR mode is
+    enabled, which leaves seek-restart segments longer than ``hls_time`` and
+    desyncs the player timeline from the playlist clock.
+    """
     resolved = encoder if encoder in SUPPORTED_ENCODERS else SOFTWARE_ENCODER
     args: list[str] = [
         "-c:v",
@@ -107,12 +114,39 @@ def build_video_encode_args(encoder: str, *, keyframe_expr: str) -> list[str]:
     if resolved == SOFTWARE_ENCODER:
         args.extend(["-preset", "veryfast", "-crf", "23"])
     elif resolved == "h264_nvenc":
-        args.extend(["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23"])
+        # NVENC option spelling is ``-forced-idr`` (hyphen), not ``_``.
+        args.extend(
+            [
+                "-preset",
+                "p4",
+                "-tune",
+                "hq",
+                "-rc",
+                "vbr",
+                "-cq",
+                "23",
+                "-forced-idr",
+                "1",
+                "-no-scenecut",
+                "1",
+            ]
+        )
     elif resolved == "h264_qsv":
-        args.extend(["-global_quality", "23"])
+        args.extend(["-global_quality", "23", "-forced_idr", "1"])
     elif resolved == "h264_amf":
         args.extend(
-            ["-quality", "balanced", "-rc", "cqp", "-qp_i", "23", "-qp_p", "23"]
+            [
+                "-quality",
+                "balanced",
+                "-rc",
+                "cqp",
+                "-qp_i",
+                "23",
+                "-qp_p",
+                "23",
+                "-forced_idr",
+                "1",
+            ]
         )
     elif resolved == "h264_mf":
         args.extend(["-rate_control", "quality", "-quality", "50"])
