@@ -37,3 +37,42 @@ def test_before_send_log_drops_otel_sdk_internal():
         "body": "Exception while exporting Log.",
     }
     assert sentry_module._before_send_log(log, {}) is None
+
+
+def test_before_send_drops_otlp_connection_error():
+    event = {
+        "logger": "animemanager.observability",
+        "exception": {
+            "values": [
+                {
+                    "type": "ConnectionError",
+                    "value": (
+                        "HTTPConnectionPool(host='127.0.0.1', port=4318): "
+                        "Max retries exceeded with url: /v1/logs"
+                    ),
+                }
+            ]
+        },
+    }
+    assert sentry_module._before_send(event, {}) is None
+
+
+def test_before_send_drops_failed_export_span_batch_message():
+    event = {
+        "message": "Failed to export span batch due to timeout, max retries or shutdown.",
+    }
+    assert sentry_module._before_send(event, {}) is None
+
+
+def test_before_send_keeps_unrelated_connection_error():
+    event = {
+        "exception": {
+            "values": [
+                {
+                    "type": "ConnectionError",
+                    "value": "Failed to reach api.example.com:443",
+                }
+            ]
+        },
+    }
+    assert sentry_module._before_send(event, {}) == event
