@@ -25,6 +25,23 @@ describe("telemetry client", () => {
       expect.objectContaining({ method: "POST" }),
     );
   });
+
+  it("includes a compact summary in the console error line", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { trackEvent } = await import("@/lib/telemetry/client");
+    trackEvent("client.error", "error", {
+      path: "/anime/1/refresh",
+      status: 404,
+      error_message: "Request failed: /anime/1/refresh",
+      source: "api.request",
+    });
+    expect(errorSpy).toHaveBeenCalled();
+    const line = String(errorSpy.mock.calls[0]?.[0] ?? "");
+    expect(line).toContain("client.error");
+    expect(line).toContain('"status":404');
+    expect(line).toContain("Request failed: /anime/1/refresh");
+    errorSpy.mockRestore();
+  });
 });
 
 describe("reportError dedupe", () => {

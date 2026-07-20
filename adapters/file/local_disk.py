@@ -5,7 +5,6 @@ import aiofiles
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from tkinter.filedialog import askdirectory
 from typing import Optional, BinaryIO, TextIO, List, Dict, Any
 import time
 
@@ -220,6 +219,8 @@ class LocalFileManager(BaseFileManager):
             raise Exception("No input folder??")
             path = input("Please input the path of your data folder: ")
         else:
+            from tkinter.filedialog import askdirectory
+
             path = askdirectory(title="Choose data folder", initialdir=root)
 
         self.settings = {"dataPath": path}

@@ -220,7 +220,10 @@ def _run_web(
     backend_origin = _service_origin(host, port)
     frontend_origin = _service_origin("127.0.0.1", next_port)
 
-    _kickoff_startup_jobs()
+    # Startup jobs run inside the uvicorn child via FastAPI lifespan
+    # (``_warm_embedded_backend``). Do not kick off here: this parent
+    # process has a separate ClientSDK/LibTorrent graph and would race
+    # the child on MariaDB (duplicate torrents PRIMARY inserts).
 
     api_env = os.environ.copy()
     api_env["WEB_FRONTEND_URL"] = frontend_origin
