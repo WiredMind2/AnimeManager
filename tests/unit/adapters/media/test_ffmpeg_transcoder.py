@@ -93,18 +93,22 @@ def test_seek_without_subtitles_uses_input_seek_and_output_ts_offset():
     assert _output_seek_value(command) is None
     assert "-copyts" not in command
     assert _output_ts_offset_value(command) == "40"
+    # make_zero nullifies output_ts_offset in the HLS mpegts muxer.
+    assert "-avoid_negative_ts" not in command
 
 
-def test_seek_keyframe_expression_is_offset_from_seek_point():
+def test_seek_keyframe_expression_is_zero_based():
+    """Encoder ``t`` is 0-based after input ``-ss``; absolute seek offsets delay IDRs."""
     command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
     idx = command.index("-force_key_frames")
-    assert command[idx + 1] == "expr:gte(t,40+n_forced*4)"
+    assert command[idx + 1] == "expr:gte(t,n_forced*4)"
 
 
 def test_start_keyframe_expression_starts_at_zero():
     command = _build(subtitle_track=None, start_segment_index=0, segment_seconds=4)
     idx = command.index("-force_key_frames")
     assert command[idx + 1] == "expr:gte(t,n_forced*4)"
+    assert command[command.index("-avoid_negative_ts") + 1] == "make_zero"
 
 
 def test_command_forces_browser_compatible_h264_output():
@@ -272,3 +276,119 @@ def test_forward_restart_does_not_purge_segments(monkeypatch, tmp_path: Path):
     adapter.ensure_hls_session(**common, start_segment_index=177)
 
     purge_spy.assert_not_called()
+
+
+class _FakeProbeResult:
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+
+
+def _install_fake_ffprobe(monkeypatch, stdout: str) -> list[int]:
+    """Route subprocess.run to a fake ffprobe; returns a call counter."""
+    calls: list[int] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(1)
+        return _FakeProbeResult(stdout)
+
+    monkeypatch.setattr("adapters.media.ffmpeg_transcoder.subprocess.run", fake_run)
+    return calls
+
+
+_TRACKS_JSON = (
+    '{"streams": ['
+    '{"index": 1, "codec_type": "audio", "tags": {"language": "jpn"}},'
+    '{"index": 2, "codec_type": "subtitle", "codec_name": "ass",'
+    ' "tags": {"language": "eng"}}'
+    "]}"
+)
+
+
+def test_probe_media_tracks_is_cached_for_unchanged_file(monkeypatch, tmp_path: Path):
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter()
+    calls = _install_fake_ffprobe(monkeypatch, _TRACKS_JSON)
+
+    first = adapter.probe_media_tracks(str(source))
+    second = adapter.probe_media_tracks(str(source))
+
+    assert len(calls) == 1
+    assert first == second
+    assert first["audio"] == [{"id": 0, "label": "JPN"}]
+    assert first["subtitles"] == [{"id": 0, "label": "ENG", "codec": "ass"}]
+
+
+def test_probe_media_tracks_cache_invalidated_on_mtime_change(
+    monkeypatch, tmp_path: Path
+):
+    import os as _os
+
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter()
+    calls = _install_fake_ffprobe(monkeypatch, _TRACKS_JSON)
+
+    adapter.probe_media_tracks(str(source))
+    stat = _os.stat(source)
+    _os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    adapter.probe_media_tracks(str(source))
+
+    assert len(calls) == 2
+
+
+def test_probe_media_tracks_cached_copy_is_isolated(monkeypatch, tmp_path: Path):
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter()
+    _install_fake_ffprobe(monkeypatch, _TRACKS_JSON)
+
+    first = adapter.probe_media_tracks(str(source))
+    first["audio"].clear()
+    first["subtitles"][:] = []
+
+    second = adapter.probe_media_tracks(str(source))
+    assert second["audio"] == [{"id": 0, "label": "JPN"}]
+
+
+def test_probe_media_tracks_failure_is_not_cached(monkeypatch, tmp_path: Path):
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter()
+    calls: list[int] = []
+
+    def failing_run(command, **_kwargs):
+        calls.append(1)
+        raise OSError("ffprobe missing")
+
+    monkeypatch.setattr("adapters.media.ffmpeg_transcoder.subprocess.run", failing_run)
+
+    assert adapter.probe_media_tracks(str(source)) == {"audio": [], "subtitles": []}
+    assert adapter.probe_media_tracks(str(source)) == {"audio": [], "subtitles": []}
+    assert len(calls) == 2
+
+
+def test_probe_media_duration_is_cached_for_unchanged_file(
+    monkeypatch, tmp_path: Path
+):
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter()
+    calls = _install_fake_ffprobe(
+        monkeypatch, '{"format": {"duration": "1420.5"}}'
+    )
+
+    assert adapter.probe_media_duration(str(source)) == 1420.5
+    assert adapter.probe_media_duration(str(source)) == 1420.5
+    assert len(calls) == 1
+
+
+def test_probe_media_duration_zero_is_not_cached(monkeypatch, tmp_path: Path):
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter()
+    calls = _install_fake_ffprobe(monkeypatch, "{}")
+
+    assert adapter.probe_media_duration(str(source)) == 0.0
+    assert adapter.probe_media_duration(str(source)) == 0.0
+    assert len(calls) == 2

@@ -1,0 +1,15 @@
+{
+  "summary": {
+    "releases_parsed": 0,
+    "unique_shows": 0,
+    "catalog_entries": 176,
+    "matched_to_catalog": 0,
+    "would_find_count": 0,
+    "missed_matched": 0,
+    "unmatched_shows": 0,
+    "patterns": {}
+  },
+  "missed": [],
+  "unmatched": [],
+  "reports": []
+}

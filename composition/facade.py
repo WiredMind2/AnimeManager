@@ -190,7 +190,7 @@ class EmbeddedClientFacade:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ) -> list[dict]:
         return self._service.search_torrents(
@@ -201,7 +201,7 @@ class EmbeddedClientFacade:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ):
         return self._service.stream_torrents(

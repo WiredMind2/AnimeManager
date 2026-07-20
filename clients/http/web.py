@@ -101,7 +101,6 @@ DEFAULT_USER_ID = 1
 # Cap rows returned to the torrents page and anime-detail SSE stream.
 # Must stay <= profile ``max_results`` (750 interactive); aligns with
 # ``ClientSDK.search_torrents`` / REST default limit (200).
-TORRENT_RESULT_LIMIT = 200
 PLAYBACK_SESSION_TTL_SECONDS = 900
 
 # Maps to the historical Tk filter list (settings.json filter parity).
@@ -2239,7 +2238,7 @@ def web_torrents(
     if term_clean:
         terms = [t.strip() for t in term_clean.split(",") if t.strip()]
         try:
-            raw = sdk.search_torrents(terms, profile="interactive", limit=TORRENT_RESULT_LIMIT)
+            raw = sdk.search_torrents(terms, profile="interactive")
             results = _normalize_torrents(raw)
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2477,11 +2476,8 @@ def web_anime_torrent_stream(
             for raw in sdk.stream_torrents(
                 active_terms,
                 profile="interactive",
-                limit=TORRENT_RESULT_LIMIT,
-                allow_nsfw=allow_nsfw,
+                                allow_nsfw=allow_nsfw,
             ):
-                if emitted >= TORRENT_RESULT_LIMIT:
-                    break
                 row = _normalize_torrents([raw])
                 if not row:
                     continue

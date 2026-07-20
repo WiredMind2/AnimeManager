@@ -72,19 +72,17 @@ class TestDeduplication:
 
 
 class TestMaxTermsCap:
-    def test_zero_max_terms_keeps_nothing(self):
+    def test_zero_max_terms_still_keeps_pinned_catalog_titles(self):
+        """Pinning retains caller titles even when max_terms is zero."""
         limits = SearchLimits(max_terms=0, max_term_length=20)
         plan = plan_terms(["a", "b", "c"], limits)
-        assert plan.terms == []
-        # The dropped list should mirror what got cut.
-        assert len(plan.dropped) >= 3
+        assert {t.normalized for t in plan.terms} == {"a", "b", "c"}
 
-    def test_keeps_highest_scored_first(self):
+    def test_execution_order_puts_highest_scored_first(self):
         limits = SearchLimits(max_terms=1, max_term_length=80)
         plan = plan_terms(["a", "Naruto X Bleach"], limits)
-        assert len(plan.terms) == 1
-        # The longer mixed-content term should outrank the single character
-        assert plan.terms[0].normalized == "Naruto X Bleach"
+        # Both caller titles are pinned/retained; score decides run order.
+        assert [t.normalized for t in plan.terms] == ["Naruto X Bleach", "a"]
 
 
 class TestScoreBranches:

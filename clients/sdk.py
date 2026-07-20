@@ -157,7 +157,7 @@ class ClientSDK:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ) -> list[dict[str, Any]]:
         return self._facade.search_torrents(
@@ -168,7 +168,7 @@ class ClientSDK:
         self,
         terms: list[str],
         profile: str = "interactive",
-        limit: int = 200,
+        limit: int | None = None,
         allow_nsfw: bool = False,
     ):
         """Iterate torrent results as soon as the underlying engines return them.

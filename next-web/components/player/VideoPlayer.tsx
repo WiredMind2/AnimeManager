@@ -26,7 +26,6 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
     setSubtitleTrackId,
     queueReplayCurrent,
     streamDurationSeconds,
-    playbackStartSeconds,
   } = session;
 
   // MSE/HLS can report UINT32-scale durations when segment PTS is wrong.
@@ -42,30 +41,25 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
 
     const syncTimeline = () => {
       const reportedDuration = video.duration;
-      const reportedTime = video.currentTime;
       const durationAbsurd =
         Number.isFinite(reportedDuration) && reportedDuration > streamDurationSeconds * 1.2;
-      const timeAbsurd =
-        Number.isFinite(reportedTime) && reportedTime > streamDurationSeconds * 1.2;
 
+      // Only pin the displayed duration. Never rewrite mediaCurrentTime to
+      // playbackStartSeconds — that snaps the scrubber back to the session
+      // resume point on every mid-watch seek that briefly reports a bad PTS.
       if (durationAbsurd) {
         controller.mediaDuration = streamDurationSeconds;
-      }
-      if (durationAbsurd || timeAbsurd) {
-        controller.mediaCurrentTime = playbackStartSeconds > 0 ? playbackStartSeconds : 0;
       }
     };
 
     syncTimeline();
     video.addEventListener("durationchange", syncTimeline);
     video.addEventListener("loadedmetadata", syncTimeline);
-    video.addEventListener("timeupdate", syncTimeline);
     return () => {
       video.removeEventListener("durationchange", syncTimeline);
       video.removeEventListener("loadedmetadata", syncTimeline);
-      video.removeEventListener("timeupdate", syncTimeline);
     };
-  }, [panelRef, playbackStartSeconds, streamDurationSeconds, videoRef]);
+  }, [panelRef, streamDurationSeconds, videoRef]);
 
   // Keyboard shortcuts on the player host, matching the legacy web UI:
   // Space/k play-pause, ←/→ seek ±10s, m mute, f fullscreen.

@@ -15,7 +15,10 @@ then terminate the current ffmpeg process and spawn a new one that
 input-seeks to ``N * segment_seconds`` and resumes segment numbering at
 ``N``. ``-output_ts_offset`` stamps muxed packets on the canonical
 playlist clock so the player can splice from any previous segment to
-the new ones without an ``#EXT-X-DISCONTINUITY`` marker.
+the new ones without an ``#EXT-X-DISCONTINUITY`` marker. Seek restarts
+must not use ``-avoid_negative_ts make_zero`` (it cancels the offset)
+and hardware encoders need forced-IDR mode so ``-force_key_frames``
+actually cuts on the playlist cadence.
 """
 
 from __future__ import annotations
@@ -86,6 +89,11 @@ class FFmpegTranscoderAdapter:
         )
         self._active: dict[str, _ActiveTranscode] = {}
         self._lock = threading.RLock()
+        # ffprobe results keyed by path, validated against (mtime_ns, size)
+        # so repeated episode listings don't re-spawn ffprobe per file.
+        self._probe_cache_lock = threading.Lock()
+        self._tracks_cache: dict[str, tuple[tuple[int, int], dict[str, list[dict[str, object]]]]] = {}
+        self._duration_cache: dict[str, tuple[tuple[int, int], float]] = {}
         self._telemetry = get_telemetry()
         _LOG.info("ffmpeg_transcoder_init video_encoder=%s", self._video_encoder)
 
@@ -283,7 +291,40 @@ class FFmpegTranscoderAdapter:
             active = self._active.get(session_id)
             return active is not None and active.process.poll() is None
 
+    @staticmethod
+    def _stat_signature(source_path: str) -> tuple[int, int] | None:
+        """File identity for probe caching; ``None`` when the file is gone."""
+        try:
+            stat = os.stat(source_path)
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    @staticmethod
+    def _copy_tracks(
+        tracks: dict[str, list[dict[str, object]]],
+    ) -> dict[str, list[dict[str, object]]]:
+        return {key: [dict(item) for item in items] for key, items in tracks.items()}
+
     def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
+        signature = self._stat_signature(source_path)
+        if signature is not None:
+            with self._probe_cache_lock:
+                cached = self._tracks_cache.get(source_path)
+                if cached is not None and cached[0] == signature:
+                    return self._copy_tracks(cached[1])
+        tracks = self._probe_media_tracks_uncached(source_path)
+        if tracks is None:
+            return {"audio": [], "subtitles": []}
+        if signature is not None:
+            with self._probe_cache_lock:
+                self._tracks_cache[source_path] = (signature, self._copy_tracks(tracks))
+        return tracks
+
+    def _probe_media_tracks_uncached(
+        self, source_path: str
+    ) -> dict[str, list[dict[str, object]]] | None:
+        """Run ffprobe for stream metadata; ``None`` when the probe fails."""
         ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
         command = [
             ffprobe_cmd,
@@ -301,12 +342,14 @@ class FFmpegTranscoderAdapter:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
             payload = json.loads(result.stdout or "{}")
             streams = list(payload.get("streams") or [])
         except Exception:
-            return {"audio": [], "subtitles": []}
+            return None
 
         audio: list[dict[str, object]] = []
         subtitles: list[dict[str, object]] = []
@@ -337,6 +380,21 @@ class FFmpegTranscoderAdapter:
         duration is not available — the caller is expected to drop back
         to a live-style playlist when that happens.
         """
+        signature = self._stat_signature(source_path)
+        if signature is not None:
+            with self._probe_cache_lock:
+                cached = self._duration_cache.get(source_path)
+                if cached is not None and cached[0] == signature:
+                    return cached[1]
+        duration = self._probe_media_duration_uncached(source_path)
+        # A zero duration usually means the probe failed or the file is
+        # still being written; don't pin that answer in the cache.
+        if duration > 0 and signature is not None:
+            with self._probe_cache_lock:
+                self._duration_cache[source_path] = (signature, duration)
+        return duration
+
+    def _probe_media_duration_uncached(self, source_path: str) -> float:
         ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
         command = [
             ffprobe_cmd,
@@ -354,6 +412,8 @@ class FFmpegTranscoderAdapter:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
             payload = json.loads(result.stdout or "{}")
@@ -458,6 +518,16 @@ class FFmpegTranscoderAdapter:
         # stamps muxed MPEG-TS packets on the canonical playlist clock
         # without ``-copyts``, which preserved raw source timestamps and
         # made browsers report UINT32-scale ``video.duration`` values.
+        #
+        # Critical: do **not** combine ``-avoid_negative_ts make_zero`` with
+        # ``-output_ts_offset`` on seek restarts. ``make_zero`` rebases the
+        # packet clock so the offset never lands in the .ts files — seek-ahead
+        # segments then start near PTS 0 while earlier segments / the playlist
+        # stay on the absolute timeline, and Shaka plays A/V off the scrubber.
+        # Encoder time ``t`` is still 0-based after input ``-ss``, so forced
+        # keyframes use ``n_forced*seg`` (not ``seek+n_forced*seg``); the
+        # absolute form delays IDRs and yields irregular segment lengths that
+        # disagree with ``#EXTINF``.
         seek_seconds = start_segment_index * segment_seconds
         if duration_seconds > 0:
             # Avoid landing past EOF when ffprobe over-estimates duration.
@@ -474,14 +544,12 @@ class FFmpegTranscoderAdapter:
         ]
         if seek_seconds > 0:
             command.extend(["-ss", f"{seek_seconds}"])
-        command.extend(["-i", source_path, "-avoid_negative_ts", "make_zero"])
+        command.extend(["-i", source_path])
         if seek_seconds > 0:
             command.extend(["-output_ts_offset", f"{seek_seconds:g}"])
-        keyframe_expr = (
-            f"expr:gte(t,{seek_seconds}+n_forced*{segment_seconds})"
-            if seek_seconds > 0
-            else f"expr:gte(t,n_forced*{segment_seconds})"
-        )
+        else:
+            command.extend(["-avoid_negative_ts", "make_zero"])
+        keyframe_expr = f"expr:gte(t,n_forced*{segment_seconds})"
         command.extend(["-map", "0:v:0"])
         if audio_track is None:
             command.extend(["-map", "0:a:0?"])

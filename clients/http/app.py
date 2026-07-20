@@ -266,9 +266,15 @@ def active_downloads():
 def search_torrents(
     term: str,
     profile: str = "interactive",
-    limit: int = 200,
+    limit: int | None = None,
     allow_nsfw: bool = False,
 ):
+    """Search torrents.
+
+    `limit` is a **per-term** row cap (overrides the active profile).
+    Omit it to use the profile default. Total rows scale with the number
+    of search terms — there is no global hard ceiling.
+    """
     terms = [part.strip() for part in term.split(",") if part.strip()]
     return get_sdk().search_torrents(
         terms=terms, profile=profile, limit=limit, allow_nsfw=allow_nsfw

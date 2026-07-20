@@ -102,7 +102,7 @@ def test_subprocess_fanout_is_bounded_by_planner(monkeypatch):
             max_concurrent_jobs=2,
             per_job_timeout_s=0.5,
             request_deadline_s=1.5,
-            max_results=10,
+            max_results_per_term=10,
             max_output_bytes=1024,
             max_line_bytes=512,
             queue_capacity=32,

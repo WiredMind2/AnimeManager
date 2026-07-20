@@ -192,7 +192,7 @@ class NovaWorker:
                     self._metrics.incr("worker_sink_error")
                     continue
                 rows += 1
-                if rows >= limits.max_results:
+                if rows >= limits.max_results_per_term:
                     exit_reason = "result_cap_reached"
                     break
 
