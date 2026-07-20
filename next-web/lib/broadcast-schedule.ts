@@ -211,7 +211,7 @@ export function latestEpisodeLabel(
 export function buildBroadcastAiringLines(
   broadcast?: string | null,
   now: Date = new Date(),
-  timeZone: string,
+  timeZone: string = "Asia/Tokyo",
 ): string[] {
   const slot = parseBroadcast(broadcast);
   if (!slot) return [];
@@ -225,7 +225,7 @@ export function mergeAiringLines(
   serverLines: string[],
   broadcast?: string | null,
   now: Date = new Date(),
-  timeZone: string,
+  timeZone: string = "Asia/Tokyo",
 ): string[] {
   const base = serverLines.filter(
     (line) =>

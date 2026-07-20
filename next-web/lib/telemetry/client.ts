@@ -79,7 +79,7 @@ export function trackEvent(
     listenersInstalled = true;
     scheduleFlush();
   }
-  const payload = {
+  const payload: Record<string, unknown> = {
     ...(data ?? {}),
     client_ts_ms: Date.now(),
     path: typeof window !== "undefined" ? window.location.pathname : undefined,
