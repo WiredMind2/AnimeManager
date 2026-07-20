@@ -419,6 +419,9 @@
         ams.disposeOctopus(panel.__amLibassOctopus);
       }
       panel.__amLibassOctopus = null;
+      if (ams && typeof ams.disposeSubtitleAutohideGuard === "function") {
+        ams.disposeSubtitleAutohideGuard(video);
+      }
       const bridge = video.__amShakaTextBridge;
       if (bridge && typeof bridge.setAssBridgeActive === "function") {
         bridge.setAssBridgeActive(false);
@@ -831,6 +834,16 @@
           /* networking filters optional */
         }
         await shakaPlayer.attach(video);
+        if (
+          window.AmPlaybackSubtitles &&
+          typeof window.AmPlaybackSubtitles.installSubtitleAutohideGuard === "function"
+        ) {
+          window.AmPlaybackSubtitles.disposeSubtitleAutohideGuard(video);
+          const guard = window.AmPlaybackSubtitles.installSubtitleAutohideGuard(video);
+          if (guard) {
+            video.__amSubtitleAutohideGuard = guard;
+          }
+        }
         shakaPlayer.addEventListener("error", (evt) => {
           const detail = evt && evt.detail ? evt.detail : {};
           const plain = shakaErrorToPlain(shaka, detail);
