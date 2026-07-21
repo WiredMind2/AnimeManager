@@ -13,6 +13,18 @@ from shared.utils.folder_names import (
     match_anime_folder_names,
 )
 
+_VIDEO_SUFFIXES = ("mkv", "mp4", "avi")
+
+
+def _folder_has_video_files(path: str) -> bool:
+    if not path or not os.path.isdir(path):
+        return False
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            if name.rsplit(".", 1)[-1].lower() in _VIDEO_SUFFIXES:
+                return True
+    return False
+
 
 class LocalEpisodeScanner:
     """Filesystem scanner for locally downloaded anime episodes."""
@@ -54,6 +66,7 @@ class LocalEpisodeScanner:
             folder_name = choose_canonical_anime_folder_name(
                 existing,
                 animes_root=self._anime_path,
+                has_video_files=_folder_has_video_files,
             )
             return f"{self._anime_path}/{folder_name}"
 

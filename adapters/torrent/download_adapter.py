@@ -202,6 +202,12 @@ class DownloadAdapter:
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_manager.cancel_download(anime_id)
 
+    def consolidate_duplicate_anime_folders(self) -> int:
+        """Merge on-disk library folders that share the same anime id."""
+        anime_path = str(getattr(self._scanner, "_anime_path", "") or "").strip()
+        return self._download_manager.consolidate_duplicate_anime_folders(anime_path)
+
+
     def apply_max_connections(self, value: int | str | None) -> int | None:
         """Apply LibTorrent peer connections limit when that client is active."""
         tm = self._torrent_manager

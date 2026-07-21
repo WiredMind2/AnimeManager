@@ -53,6 +53,31 @@ def test_resolve_anime_folder_existing_match():
     assert scanner.resolve_anime_folder(1907) == "/animes/Naruto - 1907"
 
 
+def test_resolve_anime_folder_prefers_folder_with_videos(tmp_path):
+    root = tmp_path / "Animes"
+    empty = root / "Z Empty - 2210"
+    filled = root / "A Filled - 2210"
+    empty.mkdir(parents=True)
+    filled.mkdir(parents=True)
+    (filled / "ep01.mkv").write_bytes(b"x")
+
+    class _TmpFM(_FakeFM):
+        def list(self, _path: str):
+            return ["Z Empty - 2210", "A Filled - 2210"]
+
+        def isdir(self, path: str) -> bool:
+            return path.endswith("2210")
+
+    scanner = LocalEpisodeScanner(
+        file_manager=_TmpFM(),
+        database=_FakeDB("Whatever"),
+        anime_path=str(root),
+    )
+    assert scanner.resolve_anime_folder(2210).replace("\\", "/") == str(filled).replace(
+        "\\", "/"
+    )
+
+
 def test_scan_episodes_empty_when_folder_missing():
     scanner = LocalEpisodeScanner(
         file_manager=SimpleNamespace(exists=lambda _p: False, list=lambda _p: []),
