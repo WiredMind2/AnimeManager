@@ -1367,3 +1367,58 @@ class TestTorrentDeletedStatus:
             fm.delete.assert_not_called()
         finally:
             mgr.close()
+
+
+class TestPauseAndResume:
+    def test_pause_resume_delegate_to_torrent_manager(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("AbCd") is True
+            tm.pause.assert_called_once_with(["AbCd"])
+            assert mgr.resume_torrent("AbCd") is True
+            tm.resume.assert_called_once_with(["AbCd"])
+        finally:
+            mgr.close()
+
+    def test_pause_returns_false_without_manager_or_hash(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        try:
+            assert mgr.pause_torrent("") is False
+            assert mgr.resume_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_pause_returns_false_when_manager_lacks_methods(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock(spec=[])
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("abc") is False
+            assert mgr.resume_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_pause_swallows_torrent_manager_errors(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.pause.side_effect = RuntimeError("boom")
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_pauseddl_buckets_as_active(self, DownloadManager):
+        assert DownloadManager._normalise_category("pausedDL", 0.4) == "active"
+        assert DownloadManager._normalise_category("pausedUP", 1.0) == "completed"
+
+
+# ---------------------------------------------------------------------------
+# URL handling: magnet vs http, validation
+# ---------------------------------------------------------------------------

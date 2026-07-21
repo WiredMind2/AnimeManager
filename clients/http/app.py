@@ -275,6 +275,16 @@ def cancel_download(anime_id: int):
     return {"cancelled": get_sdk().cancel_download(anime_id)}
 
 
+@app.post("/download/pause/{hash_value}")
+def pause_download(hash_value: str):
+    return {"paused": get_sdk().pause_torrent(hash_value)}
+
+
+@app.post("/download/resume/{hash_value}")
+def resume_download(hash_value: str):
+    return {"resumed": get_sdk().resume_torrent(hash_value)}
+
+
 @app.get("/download/active")
 def active_downloads():
     return {"items": get_sdk().get_active_downloads()}

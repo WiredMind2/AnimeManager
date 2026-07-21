@@ -66,6 +66,12 @@ class BaseTorrentManager(Logger):
     def delete(self, hashes):
         raise NotImplementedError()
 
+    def pause(self, hashes):
+        raise NotImplementedError()
+
+    def resume(self, hashes):
+        raise NotImplementedError()
+
 
 class TorrentListFilter(enum.Enum):
     ALL = "ALL"

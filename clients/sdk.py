@@ -226,6 +226,12 @@ class ClientSDK:
     def cancel_download(self, anime_id: int) -> bool:
         return self._facade.cancel_download(anime_id)
 
+    def pause_torrent(self, hash_value: str) -> bool:
+        return self._facade.pause_torrent(hash_value)
+
+    def resume_torrent(self, hash_value: str) -> bool:
+        return self._facade.resume_torrent(hash_value)
+
     def get_active_downloads(self) -> list[dict[str, Any]]:
         return self._facade.get_active_downloads()
 

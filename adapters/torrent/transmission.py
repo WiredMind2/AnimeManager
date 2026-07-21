@@ -187,6 +187,24 @@ class Transmission(BaseTorrentManager):
         for h in ids:
             self.client.remove_torrent(h, delete_data=True)
 
+    def pause(self, hashes):
+        if not getattr(self, "client", None):
+            raise TorrentException("Transmission client not initialized")
+        if not hashes:
+            return
+        ids = hashes if isinstance(hashes, (list, tuple)) else [hashes]
+        for h in ids:
+            self.client.stop_torrent(h)
+
+    def resume(self, hashes):
+        if not getattr(self, "client", None):
+            raise TorrentException("Transmission client not initialized")
+        if not hashes:
+            return
+        ids = hashes if isinstance(hashes, (list, tuple)) else [hashes]
+        for h in ids:
+            self.client.start_torrent(h)
+
     def list_files(self, hash_value):
         if not getattr(self, "client", None) or not hash_value:
             return []
