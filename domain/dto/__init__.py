@@ -57,6 +57,7 @@ class DownloadRequest:
     url: Optional[str] = None
     hash_value: Optional[str] = None
     user_id: Optional[int] = None
+    source: Optional[str] = None
 
 
 @dataclass(slots=True)

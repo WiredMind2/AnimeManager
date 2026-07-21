@@ -82,13 +82,25 @@ def test_set_tag_can_be_modified_multiple_times(adapter_unique):
     adapter, db = adapter_unique
 
     adapter.set_tag(anime_id=23, tag="WATCHING", user_id=1)
-    assert adapter.get_user_state(23, 1) == {"tag": "WATCHING", "liked": False}
+    assert adapter.get_user_state(23, 1) == {
+        "tag": "WATCHING",
+        "liked": False,
+        "auto_download": True,
+    }
 
     adapter.set_tag(anime_id=23, tag="WATCHLIST", user_id=1)
-    assert adapter.get_user_state(23, 1) == {"tag": "WATCHLIST", "liked": False}
+    assert adapter.get_user_state(23, 1) == {
+        "tag": "WATCHLIST",
+        "liked": False,
+        "auto_download": True,
+    }
 
     adapter.set_tag(anime_id=23, tag="SEEN", user_id=1)
-    assert adapter.get_user_state(23, 1) == {"tag": "SEEN", "liked": False}
+    assert adapter.get_user_state(23, 1) == {
+        "tag": "SEEN",
+        "liked": False,
+        "auto_download": True,
+    }
 
     rows = [r for r in db.raw_rows() if r[0] == 23 and r[1] == 1]
     assert len(rows) == 1
@@ -114,7 +126,7 @@ def test_set_tag_does_not_overwrite_like(adapter_unique):
     adapter.set_tag(anime_id=42, tag="WATCHING", user_id=1)
 
     state = adapter.get_user_state(42, 1)
-    assert state == {"tag": "WATCHING", "liked": True}
+    assert state == {"tag": "WATCHING", "liked": True, "auto_download": True}
 
 
 def test_set_like_does_not_overwrite_tag(adapter_unique):
@@ -125,7 +137,7 @@ def test_set_like_does_not_overwrite_tag(adapter_unique):
     adapter.set_like(anime_id=42, liked=False, user_id=1)
 
     state = adapter.get_user_state(42, 1)
-    assert state == {"tag": "WATCHLIST", "liked": False}
+    assert state == {"tag": "WATCHLIST", "liked": False, "auto_download": False}
 
 
 def test_get_user_state_merges_legacy_duplicate_rows(adapter_no_constraint):
@@ -136,12 +148,16 @@ def test_get_user_state_merges_legacy_duplicate_rows(adapter_no_constraint):
     db.force_insert(99, 1, "SEEN", None)
 
     state = adapter.get_user_state(99, 1)
-    assert state == {"tag": "SEEN", "liked": True}
+    assert state == {"tag": "SEEN", "liked": True, "auto_download": False}
 
 
 def test_get_user_state_missing_row_returns_neutral_defaults(adapter_unique):
     adapter, _ = adapter_unique
-    assert adapter.get_user_state(1, 1) == {"tag": "NONE", "liked": False}
+    assert adapter.get_user_state(1, 1) == {
+        "tag": "NONE",
+        "liked": False,
+        "auto_download": False,
+    }
 
 
 def test_mark_seen_writes_seen_tag(adapter_unique):
@@ -151,7 +167,11 @@ def test_mark_seen_writes_seen_tag(adapter_unique):
     adapter.set_like(7, True, 1)
     adapter.mark_seen(7, file_name="ep01.mkv", user_id=1)
 
-    assert adapter.get_user_state(7, 1) == {"tag": "SEEN", "liked": True}
+    assert adapter.get_user_state(7, 1) == {
+        "tag": "SEEN",
+        "liked": True,
+        "auto_download": False,
+    }
 
 
 def test_list_anime_ids_with_tag(adapter_unique):
@@ -263,3 +283,36 @@ def test_episode_progress_empty_file_id_raises(adapter_unique):
 def test_delete_episode_progress_noop_for_empty_file_id(adapter_unique):
     adapter, _ = adapter_unique
     adapter.delete_episode_progress(1, 1, "")
+
+
+def test_set_auto_download_toggle_and_eligibility(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_tag(10, "WATCHING", user_id=1)
+    assert adapter.get_user_state(10, 1)["auto_download"] is True
+    assert adapter.list_auto_download_eligible(1) == [10]
+
+    adapter.set_auto_download(10, False, user_id=1)
+    assert adapter.get_user_state(10, 1)["auto_download"] is False
+    assert adapter.list_auto_download_eligible(1) == []
+
+    # Opt-out is preserved when re-tagging WATCHING.
+    adapter.set_tag(10, "WATCHLIST", user_id=1)
+    adapter.set_tag(10, "WATCHING", user_id=1)
+    assert adapter.get_user_state(10, 1)["auto_download"] is False
+    assert adapter.list_auto_download_eligible(1) == []
+
+    adapter.set_auto_download(10, True, user_id=1)
+    assert adapter.list_auto_download_eligible(1) == [10]
+
+
+def test_legacy_watching_without_column_value_is_eligible(adapter_unique):
+    adapter, db = adapter_unique
+    db.force_insert(11, 1, "WATCHING", 0)
+    # Ensure column exists but leave NULL for this row.
+    adapter._ensure_auto_download_column()
+    db.conn.execute(
+        "UPDATE user_tags SET auto_download=NULL WHERE anime_id=11 AND user_id=1"
+    )
+    db.conn.commit()
+    assert adapter.get_user_state(11, 1)["auto_download"] is True
+    assert adapter.list_auto_download_eligible(1) == [11]

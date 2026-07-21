@@ -124,6 +124,16 @@ def test_get_download_progress_and_cancel():
     assert adapter.cancel_download(1) is True
 
 
+def test_pause_and_resume_torrent():
+    adapter, dm = _make_adapter()
+    dm.pause_torrent.return_value = True
+    dm.resume_torrent.return_value = True
+    assert adapter.pause_torrent("abc") is True
+    assert adapter.resume_torrent("abc") is True
+    dm.pause_torrent.assert_called_once_with("abc")
+    dm.resume_torrent.assert_called_once_with("abc")
+
+
 def test_get_active_downloads():
     adapter, dm = _make_adapter()
     dm.get_active_downloads.return_value = [{"anime_id": 1}]
@@ -147,6 +157,23 @@ def test_reconcile_deleted_torrents():
     adapter, dm = _make_adapter()
     dm.reconcile_deleted_torrents.return_value = 3
     assert adapter.reconcile_deleted_torrents() == 3
+
+
+def test_apply_max_connections_delegates_to_libtorrent():
+    tm = MagicMock()
+    tm.name = "LibTorrent"
+    tm.set_max_connections.return_value = 55
+    adapter, _ = _make_adapter(torrent_manager=tm)
+    assert adapter.apply_max_connections(55) == 55
+    tm.set_max_connections.assert_called_once_with(55)
+
+
+def test_apply_max_connections_noop_for_other_clients():
+    tm = MagicMock()
+    tm.name = "qBittorrent"
+    adapter, _ = _make_adapter(torrent_manager=tm)
+    assert adapter.apply_max_connections(55) is None
+    tm.set_max_connections.assert_not_called()
 
 
 def test_mark_torrents_deleted_for_seen_anime():
@@ -214,30 +241,3 @@ def test_close_tolerates_errors():
     dm.close.side_effect = RuntimeError("boom")
     adapter._torrent_manager.close.side_effect = RuntimeError("boom")
     adapter.close()
-
-
-def test_pause_and_resume_torrent():
-    adapter, dm = _make_adapter()
-    dm.pause_torrent.return_value = True
-    dm.resume_torrent.return_value = True
-    assert adapter.pause_torrent("abc") is True
-    assert adapter.resume_torrent("abc") is True
-    dm.pause_torrent.assert_called_once_with("abc")
-    dm.resume_torrent.assert_called_once_with("abc")
-
-
-def test_apply_max_connections_delegates_to_libtorrent():
-    tm = MagicMock()
-    tm.name = "LibTorrent"
-    tm.set_max_connections.return_value = 55
-    adapter, _ = _make_adapter(torrent_manager=tm)
-    assert adapter.apply_max_connections(55) == 55
-    tm.set_max_connections.assert_called_once_with(55)
-
-
-def test_apply_max_connections_noop_for_other_clients():
-    tm = MagicMock()
-    tm.name = "qBittorrent"
-    adapter, _ = _make_adapter(torrent_manager=tm)
-    assert adapter.apply_max_connections(55) is None
-    tm.set_max_connections.assert_not_called()

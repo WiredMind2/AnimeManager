@@ -107,7 +107,7 @@ class RecordingSDK:
             "get_user_state",
             (anime_id, user_id),
             {},
-            default=lambda: {"tag": "NONE", "liked": False},
+            default=lambda: {"tag": "NONE", "liked": False, "auto_download": False},
         )
 
     def get_search_terms(self, anime_id: int):
@@ -188,6 +188,14 @@ class RecordingSDK:
     def set_like(self, anime_id, user_id, liked=True):
         return self._invoke(
             "set_like", (anime_id, user_id, liked), {}, default=lambda: None
+        )
+
+    def set_auto_download(self, anime_id, user_id, enabled=True):
+        return self._invoke(
+            "set_auto_download",
+            (anime_id, user_id, enabled),
+            {},
+            default=lambda: None,
         )
 
     def mark_seen(self, anime_id, file_name, user_id):
@@ -477,6 +485,14 @@ class TestUserActions:
         _, args, _ = sdk.last_call("set_like")
         assert args == (5, 1, False)
 
+    def test_auto_download_toggle(self, client, sdk):
+        client.post("/auto-download/5", params={"user_id": 1, "enabled": True})
+        _, args, _ = sdk.last_call("set_auto_download")
+        assert args == (5, 1, True)
+        client.post("/auto-download/5", params={"user_id": 1, "enabled": False})
+        _, args, _ = sdk.last_call("set_auto_download")
+        assert args == (5, 1, False)
+
     def test_seen_passes_file_name(self, client, sdk):
         client.post(
             "/seen/5",
@@ -488,9 +504,14 @@ class TestUserActions:
         sdk.overrides["get_user_state"] = lambda *_: {
             "tag": "WATCHING",
             "liked": True,
+            "auto_download": True,
         }
         body = client.get("/state/5", params={"user_id": 1}).json()
-        assert body == {"tag": "WATCHING", "liked": True}
+        assert body == {
+            "tag": "WATCHING",
+            "liked": True,
+            "auto_download": True,
+        }
 
     def test_unauthorized_does_not_leak_500(self, client, sdk):
         """UnauthorizedError currently maps to 500 by design (no 401

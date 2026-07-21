@@ -44,13 +44,31 @@ export default function AnimeActions({
     }
   }
 
+  async function toggleAutoDownload() {
+    const next = !userState.auto_download;
+    setUserState((s) => ({ ...s, auto_download: next }));
+    try {
+      await api.setAutoDownload(animeId, DEFAULT_USER_ID, next);
+    } catch {
+      setUserState((s) => ({ ...s, auto_download: !next }));
+      showToast("Failed to update auto-download. Please try again.", "error");
+    }
+  }
+
   async function changeTag(tag: string) {
     const prev = userState.tag;
-    setUserState((s) => ({ ...s, tag }));
+    const prevAuto = userState.auto_download;
+    const nextAuto =
+      tag.toUpperCase() === "WATCHING"
+        ? prevAuto === false
+          ? false
+          : true
+        : prevAuto;
+    setUserState((s) => ({ ...s, tag, auto_download: nextAuto }));
     try {
       await api.setTag(animeId, tag, DEFAULT_USER_ID);
     } catch {
-      setUserState((s) => ({ ...s, tag: prev }));
+      setUserState((s) => ({ ...s, tag: prev, auto_download: prevAuto }));
       showToast("Failed to update tag. Please try again.", "error");
     }
   }
@@ -109,6 +127,20 @@ export default function AnimeActions({
             ))}
           </select>
         </form>
+
+        {(userState.tag || "").toUpperCase() === "WATCHING" ||
+        userState.auto_download ? (
+          <form style={{ display: "inline" }} onSubmit={(e) => e.preventDefault()}>
+            <button
+              className={`btn${userState.auto_download ? " btn--primary" : " btn--ghost"}`}
+              type="button"
+              onClick={() => void toggleAutoDownload()}
+              title="Automatically download the next episode matching your usual release group and quality"
+            >
+              {userState.auto_download ? "Auto-download on" : "Auto-download off"}
+            </button>
+          </form>
+        ) : null}
 
         <form
           className="detail__seen-form"

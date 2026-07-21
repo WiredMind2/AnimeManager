@@ -196,6 +196,7 @@ class DownloadPort(Protocol):
         url: str | None = None,
         hash_value: str | None = None,
         user_id: int | None = None,
+        source: str | None = None,
     ) -> bool:
         ...
 
@@ -269,6 +270,9 @@ class UserActionsPort(Protocol):
     def set_like(self, anime_id: int, liked: bool, user_id: int) -> None:
         ...
 
+    def set_auto_download(self, anime_id: int, enabled: bool, user_id: int) -> None:
+        ...
+
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         ...
 
@@ -277,6 +281,10 @@ class UserActionsPort(Protocol):
 
     def list_anime_ids_with_tag(self, tag: str) -> list[int]:
         """Return anime IDs whose ``user_tags.tag`` equals ``tag`` (any user)."""
+        ...
+
+    def list_auto_download_eligible(self, user_id: int = 1) -> list[int]:
+        """Return WATCHING anime IDs with auto-download enabled for ``user_id``."""
         ...
 
     def get_episode_progress_map(self, anime_id: int, user_id: int) -> dict[str, dict[str, Any]]:

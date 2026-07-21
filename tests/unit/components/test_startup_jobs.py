@@ -175,8 +175,9 @@ def test_startup_pipeline_runs_lean_jobs_only():
         "reconcile_deleted_torrents",
         "restore_libtorrent_sessions",
         "repair_torrent_index",
+        "consolidate_duplicate_anime_folders",
     ]
-    assert report.total == 9
+    assert report.total == 10
     assert db.enrich_calls == []
 
 
@@ -207,13 +208,10 @@ def test_fetch_latest_persists_deduped_batch():
         service._api_coordinator.close()
 
     assert isinstance(report, StartupJobReport)
-    # Lean pipeline: ``repair_date_from``, ``purge_provisional_anime``,
-    # ``fetch_latest_anime``, ``update_status``, ``purge_deleted_torrents``,
-    # ``reconcile_seen_anime_torrents``, ``reconcile_deleted_torrents``,
-    # ``restore_libtorrent_sessions``, ``repair_torrent_index``.
-    # cleanly here because ``_RecordingDBManager.get_database()`` returns
-    # ``None``.
-    assert report.total == 9
+    # Lean pipeline runs reconcile_deleted_torrents before
+    # restore_libtorrent_sessions. ``repair_date_from`` is skipped cleanly
+    # here because ``_RecordingDBManager.get_database()`` returns ``None``.
+    assert report.total == 10
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
@@ -378,6 +376,30 @@ def test_reconcile_deleted_torrents_job_runs_with_adapter():
     assert detail == "marked 2 torrent(s) deleted"
 
 
+def test_consolidate_duplicate_anime_folders_job_runs_with_adapter():
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    adapter = SimpleNamespace(consolidate_duplicate_anime_folders=lambda: 1)
+    coord = APICoordinator(max_workers=2, provider_timeout_s=2.0)
+    coord.set_api(api)
+    coord.set_database_manager(db)
+    coord.log = lambda *a, **k: None
+    service = StartupJobsService(
+        api_coordinator=coord,
+        database_manager=db,
+        config=SimpleNamespace(settings={}),
+        torrent_manager=None,
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+        download_adapter=adapter,
+        schedule_limit=10,
+    )
+    try:
+        detail = service._job_consolidate_duplicate_anime_folders()
+    finally:
+        coord.close()
+    assert detail == "merged folders for 1 anime id(s)"
+
+
 def test_purge_deleted_torrents_job_runs_before_restore():
     api = _FakeAPI([])
     db = _RecordingDBManager()
@@ -408,6 +430,9 @@ def test_purge_deleted_torrents_job_runs_before_restore():
         )
         assert names.index("restore_libtorrent_sessions") < names.index(
             "repair_torrent_index"
+        )
+        assert names.index("repair_torrent_index") < names.index(
+            "consolidate_duplicate_anime_folders"
         )
         detail = service._job_purge_deleted_torrents()
     finally:

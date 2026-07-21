@@ -76,11 +76,23 @@ class EmbeddedClientFacade:
             return None
         return self._startup_jobs.start_schedule_loop()
 
+    def start_auto_download_loop(self):
+        """Start the periodic auto-download loop."""
+        if self._startup_jobs is None:
+            return None
+        starter = getattr(self._startup_jobs, "start_auto_download_loop", None)
+        if not callable(starter):
+            return None
+        return starter()
+
     def stop_schedule_loop(self) -> None:
         """Stop the daily provider schedule refresh loop."""
         if self._startup_jobs is None:
             return
         self._startup_jobs.stop_schedule_loop()
+        stopper = getattr(self._startup_jobs, "stop_auto_download_loop", None)
+        if callable(stopper):
+            stopper()
 
     def search_anime(self, query: str, limit: int = 50, offset: int = 0):
         return self._service.search_anime(
@@ -255,6 +267,11 @@ class EmbeddedClientFacade:
         self, anime_id: int, user_id: int, liked: bool = True
     ) -> None:
         self._service.set_like(anime_id, user_id, liked)
+
+    def set_auto_download(
+        self, anime_id: int, user_id: int, enabled: bool = True
+    ) -> None:
+        self._service.set_auto_download(anime_id, user_id, enabled)
 
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._service.mark_seen(anime_id, file_name, user_id)
