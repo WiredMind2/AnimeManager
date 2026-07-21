@@ -202,6 +202,20 @@ class DownloadAdapter:
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_manager.cancel_download(anime_id)
 
+    def apply_max_connections(self, value: int | str | None) -> int | None:
+        """Apply LibTorrent peer connections limit when that client is active."""
+        tm = self._torrent_manager
+        if tm is None or getattr(tm, "name", None) != "LibTorrent":
+            return None
+        setter = getattr(tm, "set_max_connections", None)
+        if not callable(setter):
+            return None
+        try:
+            return int(setter(value))
+        except Exception:
+            return None
+
+
     def pause_torrent(self, hash_value: str) -> bool:
         return self._download_manager.pause_torrent(hash_value)
 

@@ -732,9 +732,10 @@ class AnimeApplicationService:
     def update_settings(self, updates: dict) -> dict:
         if not isinstance(updates, dict) or not updates:
             raise ValidationError("Settings updates must be a non-empty object.")
-        return self._anime_repository.update_settings(updates)
+        result = self._anime_repository.update_settings(updates)
+        self._apply_libtorrent_max_connections(updates)
+        return result
 
-    @staticmethod
     def _normalize_relation_row(row: dict) -> dict:
         rel_id = row.get("rel_id") or row.get("anime_id")
         relation_name = row.get("relation") or row.get("name")
