@@ -111,9 +111,12 @@ class LibTorrent(BaseTorrentManager):
             return None
 
     def ensure_restored(self) -> None:
-        """Block until the background connect thread finished session restore."""
+        """Wait for the session, then restore torrents (after disk reconcile)."""
         if not self._session_ready.wait(timeout=_SESSION_READY_TIMEOUT_S):
             raise TorrentException("LibTorrent session restore timed out")
+        if self.session is None or not self._running:
+            raise TorrentException("LibTorrent session not available")
+        self._run_session_restore()
 
     def purge_deleted_torrents(self) -> int:
         """Drop resume files and live handles for torrents marked deleted in the DB."""
@@ -304,6 +307,24 @@ class LibTorrent(BaseTorrentManager):
             return _DEFAULT_MAX_CONNECTIONS
         return max(_MIN_MAX_CONNECTIONS, min(_MAX_MAX_CONNECTIONS, value))
 
+    def set_max_connections(self, value: int | str | None) -> int:
+        """Update and apply the global peer connections limit on a live session."""
+        if isinstance(self.settings, dict):
+            self.settings["max_connections"] = value
+        else:
+            self.settings = {"max_connections": value}
+        resolved = self._resolve_max_connections()
+        self.max_connections = resolved
+        if isinstance(self.settings, dict):
+            self.settings["max_connections"] = resolved
+        session = self.session
+        if session is not None:
+            try:
+                session.apply_settings({"connections_limit": resolved})
+            except Exception:
+                pass
+        return resolved
+
     def connect(self, thread=True):
         if thread is True:
             threading.Thread(target=self.connect, args=(False,), daemon=True).start()
@@ -348,8 +369,10 @@ class LibTorrent(BaseTorrentManager):
             self._thread = threading.Thread(target=self._session_thread, daemon=True)
             self._thread.start()
 
+            # Wait for DB callbacks so ensure_restored() can skip deleted
+            # torrents, but defer loading resume/DB torrents until after
+            # startup reconcile marks missing completed payloads deleted.
             self._wait_for_restore_callbacks()
-            self._run_session_restore()
             self._session_ready.set()
         except Exception as e:
             self._session_ready.set()
@@ -885,6 +908,38 @@ class LibTorrent(BaseTorrentManager):
                 pass
 
     @wait_connection
+    def pause(self, hashes):
+        if isinstance(hashes, str):
+            hashes = [hashes]
+        if not hashes:
+            return
+        for hash_str in hashes:
+            key = self._normalise_hash(hash_str)
+            handle = self.handles.get(key)
+            if handle is None or not handle.is_valid():
+                continue
+            try:
+                handle.pause()
+            except Exception as e:
+                raise TorrentException(f"Failed to pause torrent {hash_str}: {str(e)}")
+
+    @wait_connection
+    def resume(self, hashes):
+        if isinstance(hashes, str):
+            hashes = [hashes]
+        if not hashes:
+            return
+        for hash_str in hashes:
+            key = self._normalise_hash(hash_str)
+            handle = self.handles.get(key)
+            if handle is None or not handle.is_valid():
+                continue
+            try:
+                handle.resume()
+            except Exception as e:
+                raise TorrentException(f"Failed to resume torrent {hash_str}: {str(e)}")
+
+    @wait_connection
     def list_files(self, hash_value):
         if self.session is None or lt is None:
             return []
@@ -962,6 +1017,9 @@ class LibTorrent(BaseTorrentManager):
             return None
 
     def _get_torrent_state(self, status):
+        if bool(getattr(status, "paused", False)):
+            progress = float(getattr(status, "progress", 0) or 0)
+            return "pausedUP" if progress >= 0.999 else "pausedDL"
         state_map = {
             lt.torrent_status.queued_for_checking: "queued",
             lt.torrent_status.checking_files: "checking",

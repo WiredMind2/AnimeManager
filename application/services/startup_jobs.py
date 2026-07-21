@@ -88,10 +88,10 @@ class StartupJobsService:
       (``UPCOMING`` / ``AIRING``) based on airing dates.
     * ``purge_deleted_torrents`` -- remove resume artifacts for DB-
       deleted torrents before session restore.
-    * ``restore_libtorrent_sessions`` -- wait for embedded LibTorrent
-      session restore when that backend is active.
     * ``reconcile_deleted_torrents`` -- mark completed torrents whose
-      files are missing as ``deleted``.
+      files are missing as ``deleted`` (before LibTorrent restore).
+    * ``restore_libtorrent_sessions`` -- restore embedded LibTorrent
+      torrents after missing-file reconcile.
 
     Heavy backlog work (catalog enrichment, synonym backfill, duplicate
     repair) is intentionally **not** run here; it is handled by post-
@@ -430,12 +430,12 @@ class StartupJobsService:
             self._job_reconcile_seen_anime_torrents,
         )
         yield StartupJob(
+            "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
+        )
+        yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
         )
         yield StartupJob("repair_torrent_index", self._job_repair_torrent_index)
-        yield StartupJob(
-            "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
-        )
 
     def _job_purge_deleted_torrents(self) -> str:
         adapter = self._download_adapter
