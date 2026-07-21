@@ -2893,6 +2893,50 @@ tr:hover .torrent-name::after,
 /* -------------------------------------------------------------------------- *
  * Downloads page: per-bucket sections
  * -------------------------------------------------------------------------- */
+.downloads-peer-limit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin: 0 0 var(--sp-6);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+
+.downloads-peer-limit__title {
+  margin: 0 0 var(--sp-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.downloads-peer-limit__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-faint);
+  max-width: 42ch;
+}
+
+.downloads-peer-limit__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.downloads-peer-limit__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.downloads-peer-limit__input {
+  width: 7rem;
+}
+
 .downloads-section {
   margin-bottom: var(--sp-6);
 }

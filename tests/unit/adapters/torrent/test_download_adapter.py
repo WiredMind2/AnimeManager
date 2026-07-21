@@ -224,3 +224,20 @@ def test_pause_and_resume_torrent():
     assert adapter.resume_torrent("abc") is True
     dm.pause_torrent.assert_called_once_with("abc")
     dm.resume_torrent.assert_called_once_with("abc")
+
+
+def test_apply_max_connections_delegates_to_libtorrent():
+    tm = MagicMock()
+    tm.name = "LibTorrent"
+    tm.set_max_connections.return_value = 55
+    adapter, _ = _make_adapter(torrent_manager=tm)
+    assert adapter.apply_max_connections(55) == 55
+    tm.set_max_connections.assert_called_once_with(55)
+
+
+def test_apply_max_connections_noop_for_other_clients():
+    tm = MagicMock()
+    tm.name = "qBittorrent"
+    adapter, _ = _make_adapter(torrent_manager=tm)
+    assert adapter.apply_max_connections(55) is None
+    tm.set_max_connections.assert_not_called()

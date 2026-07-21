@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import DownloadsPanel from "@/components/downloads/DownloadsPanel";
+import PeerConnectionsControl from "@/components/downloads/PeerConnectionsControl";
 import { api } from "@/lib/api";
 import type { DownloadsSnapshot } from "@/lib/api";
 import { backendPath } from "@/lib/config";
@@ -258,6 +259,8 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
           </span>
         </div>
       </header>
+
+      <PeerConnectionsControl />
 
       <DownloadsPanel overview={snapshot.overview ?? {}} onRefresh={requestRefresh} />
     </AppShell>
