@@ -600,6 +600,22 @@ def test_downloads_ws_pushes_initial_snapshot(client):
         assert active[0]["progress_pct"] == 42.0
 
 
+def test_downloads_stream_pushes_initial_snapshot(client, monkeypatch):
+    """SSE feed delivers a complete overview on the first snapshot event."""
+    # TestClient cannot concurrently consume an infinite body; stop after
+    # the first snapshot (production keeps streaming via the real wait).
+    monkeypatch.setattr(http_web, "_downloads_stream_wait", lambda: False)
+    resp = client.get("/ui/downloads/stream")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert "event: snapshot" in body
+    assert '"overview"' in body
+    assert '"counts"' in body
+    assert "[SubsPlease] Bleach - 01.mkv" in body
+    assert "42.0" in body
+
+
 def test_downloads_ws_responds_to_refresh_request(client):
     """Sending ``{"type": "refresh"}`` triggers an out-of-band snapshot."""
     with client.websocket_connect("/ui/downloads/ws") as ws:

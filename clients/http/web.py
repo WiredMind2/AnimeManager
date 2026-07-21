@@ -287,6 +287,8 @@ def _normalize_anime_torrent_row(row: Any) -> dict[str, Any]:
             "path": getattr(row, "path", None),
         }
     data["size_human"] = _humanize_size(data.get("size"))
+    source = str(data.get("source") or "").strip().lower()
+    data["source"] = source if source in ("manual", "auto") else "manual"
     persisted_status = str(data.get("status") or "").lower()
     if persisted_status == "deleted":
         data["state"] = "DELETED"
@@ -312,6 +314,7 @@ def _normalize_anime_torrent_row(row: Any) -> dict[str, Any]:
 
 
 def _normalize_active_download(dl: dict[str, Any]) -> dict[str, Any]:
+    source = str(dl.get("source") or "").strip().lower()
     return {
         "hash": dl.get("hash"),
         "name": dl.get("name") or dl.get("title") or f"Anime #{dl.get('anime_id') or '?'}",
@@ -328,6 +331,7 @@ def _normalize_active_download(dl: dict[str, Any]) -> dict[str, Any]:
         "eta": dl.get("eta"),
         "path": dl.get("path"),
         "anime_id": dl.get("anime_id"),
+        "source": source if source in ("manual", "auto") else "manual",
     }
 
 
@@ -2193,11 +2197,81 @@ def web_downloads_overview_json() -> JSONResponse:
     )
 
 
-# Push cadence for the downloads WebSocket. Picked to feel "live" on
-# the UI without hammering the torrent client when several tabs are
-# subscribed at once -- the underlying SDK call already throttles to
-# ~0.5s, this just bounds how often we wake up to poll.
+# Push cadence for the downloads live streams (WebSocket + SSE). Picked
+# to feel "live" on the UI without hammering the torrent client when
+# several tabs are subscribed at once -- the underlying SDK call already
+# throttles to ~0.5s, this just bounds how often we wake up to poll.
 _DOWNLOADS_WS_INTERVAL_S: float = 2.0
+
+
+def _downloads_snapshot_payload(sdk: Any) -> dict[str, Any]:
+    """Build one overview/counts/ts payload for downloads live streams."""
+    try:
+        overview = _load_torrents_overview(sdk)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("downloads snapshot failed: %s", exc)
+        overview = {bucket: [] for bucket in _DOWNLOAD_BUCKETS}
+    return {
+        "overview": overview,
+        "counts": _overview_counts(overview),
+        "ts": time.time(),
+    }
+
+
+def _downloads_stream_wait() -> bool:
+    """Pause between SSE snapshots.
+
+    Returns ``True`` to keep streaming. Tests monkeypatch this to
+    ``lambda: False`` so the infinite feed terminates after the first
+    snapshot (Starlette's TestClient cannot concurrently read an
+    infinite body).
+    """
+    time.sleep(_DOWNLOADS_WS_INTERVAL_S)
+    return True
+
+
+@router.get("/ui/downloads/stream", name="web_downloads_stream")
+def web_downloads_stream(request: Request) -> StreamingResponse:
+    """Server-Sent Events feed for the downloads page (Next.js proxy compatible).
+
+    Pushes ``event: snapshot`` frames with
+    ``{"overview": {...}, "counts": {...}, "ts": <epoch>}`` every
+    ``_DOWNLOADS_WS_INTERVAL_S`` seconds plus an immediate first snapshot
+    on connect. Works through the Next.js ``/backend`` HTTP proxy unlike
+    the legacy WebSocket at :func:`web_downloads_ws`.
+
+    Out-of-band refresh is handled by the client via
+    ``GET /ui/downloads/overview.json`` (EventSource is one-way).
+    """
+    _ = request  # reserved for disconnect helpers / absolute-URL needs
+    sdk = get_sdk()
+
+    def event_stream() -> Iterable[bytes]:
+        yield b": stream-open\n\n"
+        while True:
+            try:
+                payload = _downloads_snapshot_payload(sdk)
+            except Exception as exc:  # noqa: BLE001
+                _LOG.warning("downloads stream snapshot failed: %s", exc)
+                empty = {bucket: [] for bucket in _DOWNLOAD_BUCKETS}
+                payload = {
+                    "overview": empty,
+                    "counts": _overview_counts(empty),
+                    "ts": time.time(),
+                }
+            yield _sse_event("snapshot", json.dumps(payload))
+            if not _downloads_stream_wait():
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.websocket("/ui/downloads/ws", name="web_downloads_ws")
@@ -2219,20 +2293,8 @@ async def web_downloads_ws(websocket: WebSocket) -> None:
     sdk = get_sdk()
 
     async def send_snapshot() -> None:
-        try:
-            overview = await asyncio.to_thread(_load_torrents_overview, sdk)
-        except Exception as exc:  # noqa: BLE001
-            _LOG.warning("downloads ws snapshot failed: %s", exc)
-            overview = {bucket: [] for bucket in _DOWNLOAD_BUCKETS}
-        import time as _time
-
-        await websocket.send_json(
-            {
-                "overview": overview,
-                "counts": _overview_counts(overview),
-                "ts": _time.time(),
-            }
-        )
+        payload = await asyncio.to_thread(_downloads_snapshot_payload, sdk)
+        await websocket.send_json(payload)
 
     async def reader() -> None:
         """Consume inbound frames so we notice client-side refreshes / pings."""

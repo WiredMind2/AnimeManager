@@ -6,9 +6,9 @@ import AppShell from "@/components/shell/AppShell";
 import DownloadsPanel from "@/components/downloads/DownloadsPanel";
 import { api } from "@/lib/api";
 import type { DownloadsSnapshot } from "@/lib/api";
-import { wsBackendUrl } from "@/lib/config";
+import { backendPath } from "@/lib/config";
 
-const WS_PATH = "/ui/downloads/ws";
+const STREAM_PATH = "/ui/downloads/stream";
 const POLL_INTERVAL_MS = 4000;
 const RECONNECT_MIN_MS = 1500;
 const RECONNECT_MAX_MS = 30000;
@@ -32,7 +32,7 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [usingPolling, setUsingPolling] = useState(false);
 
-  const socketRef = useRef<WebSocket | null>(null);
+  const sourceRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const failureCountRef = useRef(0);
@@ -62,6 +62,17 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
     }
   }, []);
 
+  const closeSource = useCallback(() => {
+    if (sourceRef.current) {
+      try {
+        sourceRef.current.close();
+      } catch {
+        /* ignore */
+      }
+      sourceRef.current = null;
+    }
+  }, []);
+
   const pollOnce = useCallback(async () => {
     try {
       const data = await api.getDownloadsOverview();
@@ -77,94 +88,82 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
     usingPollingRef.current = true;
     setUsingPolling(true);
     setStatus("error");
+    closeSource();
+    clearReconnect();
     void pollOnce();
     pollTimerRef.current = window.setInterval(() => {
       void pollOnce();
     }, POLL_INTERVAL_MS);
-  }, [pollOnce]);
+  }, [clearReconnect, closeSource, pollOnce]);
+
+  const scheduleReconnect = useCallback(
+    (connectFn: () => void) => {
+      failureCountRef.current += 1;
+      if (failureCountRef.current >= MAX_FAILURES_BEFORE_POLLING) {
+        startPolling();
+        return;
+      }
+      setStatus("connecting");
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connectFn();
+      }, reconnectDelayRef.current);
+      reconnectDelayRef.current = Math.min(
+        RECONNECT_MAX_MS,
+        Math.round(reconnectDelayRef.current * 1.6),
+      );
+    },
+    [startPolling],
+  );
 
   const connect = useCallback(() => {
     if (closedRef.current || usingPollingRef.current) return;
-    if (typeof WebSocket === "undefined") {
+    if (typeof EventSource === "undefined") {
       startPolling();
       return;
     }
 
     clearReconnect();
+    closeSource();
     setStatus("connecting");
 
-    let socket: WebSocket;
+    let source: EventSource;
     try {
-      socket = new WebSocket(wsBackendUrl(WS_PATH));
+      source = new EventSource(backendPath(STREAM_PATH));
     } catch {
-      failureCountRef.current += 1;
-      if (failureCountRef.current >= MAX_FAILURES_BEFORE_POLLING) {
-        startPolling();
-      } else {
-        reconnectTimerRef.current = window.setTimeout(() => {
-          connect();
-        }, reconnectDelayRef.current);
-        reconnectDelayRef.current = Math.min(
-          RECONNECT_MAX_MS,
-          Math.round(reconnectDelayRef.current * 1.6),
-        );
-      }
+      scheduleReconnect(connect);
       return;
     }
 
-    socketRef.current = socket;
+    sourceRef.current = source;
 
-    socket.addEventListener("open", () => {
+    source.addEventListener("open", () => {
       failureCountRef.current = 0;
       reconnectDelayRef.current = RECONNECT_MIN_MS;
       setStatus("live");
     });
 
-    socket.addEventListener("message", (ev) => {
+    source.addEventListener("snapshot", (ev) => {
       try {
-        const payload = JSON.parse(String(ev.data)) as DownloadsSnapshot;
+        const payload = JSON.parse(String((ev as MessageEvent).data)) as DownloadsSnapshot;
         if (payload && typeof payload === "object") {
           applySnapshot(payload);
+          failureCountRef.current = 0;
+          reconnectDelayRef.current = RECONNECT_MIN_MS;
+          setStatus("live");
         }
       } catch {
         /* ignore malformed frames */
       }
     });
 
-    socket.addEventListener("close", () => {
-      socketRef.current = null;
+    source.onerror = () => {
       if (closedRef.current || usingPollingRef.current) return;
-      failureCountRef.current += 1;
-      if (failureCountRef.current >= MAX_FAILURES_BEFORE_POLLING) {
-        setStatus("error");
-        startPolling();
-        return;
-      }
-      setStatus("connecting");
-      reconnectTimerRef.current = window.setTimeout(() => {
-        connect();
-      }, reconnectDelayRef.current);
-      reconnectDelayRef.current = Math.min(
-        RECONNECT_MAX_MS,
-        Math.round(reconnectDelayRef.current * 1.6),
-      );
-    });
-
-    socket.addEventListener("error", () => {
-      setStatus("error");
-    });
-  }, [applySnapshot, clearReconnect, startPolling]);
+      closeSource();
+      scheduleReconnect(connect);
+    };
+  }, [applySnapshot, clearReconnect, closeSource, scheduleReconnect, startPolling]);
 
   const requestRefresh = useCallback(() => {
-    const socket = socketRef.current;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      try {
-        socket.send(JSON.stringify({ type: "refresh" }));
-        return;
-      } catch {
-        /* fall through */
-      }
-    }
     void pollOnce();
   }, [pollOnce]);
 
@@ -174,15 +173,9 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
 
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
-        try {
-          socketRef.current?.close();
-        } catch {
-          /* ignore */
-        }
+        closeSource();
       } else if (usingPollingRef.current) {
         void pollOnce();
-      } else if (socketRef.current?.readyState === WebSocket.OPEN) {
-        requestRefresh();
       } else {
         reconnectDelayRef.current = RECONNECT_MIN_MS;
         connect();
@@ -196,14 +189,9 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
       clearReconnect();
       stopPolling();
       document.removeEventListener("visibilitychange", onVisibility);
-      try {
-        socketRef.current?.close();
-      } catch {
-        /* ignore */
-      }
-      socketRef.current = null;
+      closeSource();
     };
-  }, [clearReconnect, connect, pollOnce, requestRefresh, stopPolling]);
+  }, [clearReconnect, closeSource, connect, pollOnce, stopPolling]);
 
   const counts = snapshot.counts ?? {};
   const badgeClass =
@@ -239,7 +227,7 @@ export default function DownloadsDashboard({ initial }: DownloadsDashboardProps)
           <h1 className="page-head__title">Downloads &amp; seeding</h1>
           <p className="page-head__subtitle">
             Live view of every torrent the app is downloading, seeding or keeping on disk.
-            Streaming over WebSocket{" "}
+            Live updates{" "}
             <span
               className={badgeClass}
               data-downloads-status={status}
