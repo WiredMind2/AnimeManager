@@ -20,6 +20,8 @@ from application.commands import (
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.playback.contract import (
     FORWARD_WAIT_SECONDS,
+    MAX_FORWARD_JUMP_SEGMENTS,
+    PREFETCH_MARGIN,
     RESERVED_INTERNAL_NAMES,
     RESUME_SEGMENT_WAIT_SECONDS,
     SEGMENT_SECONDS,
@@ -423,10 +425,33 @@ class PlaybackService:
             if wait_for_file(target, wait_secs):
                 return
 
+        if self._is_speculative_far_request(session, segment_index):
+            player_session_log.append(
+                session.output_dir,
+                source="server",
+                event="segment_speculative_rejected",
+                level="warn",
+                session_id=session.session_id,
+                segment=segment_name,
+                segment_index=segment_index,
+                playhead_segment=resume_segment_index(
+                    session.playback_start_seconds,
+                    total_segments=session.total_segments,
+                    segment_seconds=session.segment_seconds,
+                ),
+                transcode_start_segment=session.transcode_start_segment,
+                latest_segment=latest,
+            )
+            raise NotFoundError("Requested segment is too far ahead of the playhead.")
+
         lock = self._restart_lock(session.session_id)
         with lock:
             if target.is_file():
                 return
+            if self._is_speculative_far_request(session, segment_index):
+                raise NotFoundError(
+                    "Requested segment is too far ahead of the playhead."
+                )
             self._restart_at(session, segment_index)
             if not wait_for_file(target, wait_secs):
                 _LOG.warning(
@@ -436,6 +461,31 @@ class PlaybackService:
                     latest_existing_segment(session.output_dir),
                 )
                 raise NotFoundError("Requested media artifact is not available.")
+
+    def _is_speculative_far_request(
+        self,
+        session: PlaybackSessionDTO,
+        segment_index: int,
+    ) -> bool:
+        """True when a far-ahead probe would yank a healthy playhead encode.
+
+        Shaka probes near the live edge of incomplete EVENT playlists during
+        load. Restarting ffmpeg there corrupts the MSE timeline (playhead
+        jumps, UINT32-scale duration). Intentional scrub-ahead within
+        ``MAX_FORWARD_JUMP_SEGMENTS`` still restarts as before.
+        """
+        if not self._transcode.is_running(session.session_id):
+            return False
+        playhead = resume_segment_index(
+            session.playback_start_seconds,
+            total_segments=session.total_segments,
+            segment_seconds=session.segment_seconds,
+        )
+        encode_near_playhead = (
+            session.transcode_start_segment <= playhead + PREFETCH_MARGIN
+        )
+        too_far = segment_index > playhead + MAX_FORWARD_JUMP_SEGMENTS
+        return encode_near_playhead and too_far
 
     def _segment_wait_seconds(
         self,
