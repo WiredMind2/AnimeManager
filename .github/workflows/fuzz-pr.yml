@@ -51,11 +51,17 @@ jobs:
       - name: Setup Atheris
         run: |
           set -euo pipefail
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -r fuzz/requirements.txt
+          # Ubuntu Noble marks system Python as PEP 668; use a job-local venv.
+          python3 -m venv "${GITHUB_WORKSPACE}/.venv-fuzz"
+          # shellcheck disable=SC1091
+          source "${GITHUB_WORKSPACE}/.venv-fuzz/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install -r fuzz/requirements.txt
           if [[ -f pyproject.toml ]] || [[ -f setup.py ]]; then
-            python3 -m pip install -e . || python3 -m pip install -e ".[dev]" || true
+            python -m pip install -e . || true
           fi
+          echo "PYTHON=${GITHUB_WORKSPACE}/.venv-fuzz/bin/python" >> "$GITHUB_ENV"
+          echo "${GITHUB_WORKSPACE}/.venv-fuzz/bin" >> "$GITHUB_PATH"
 
       - name: Timed Atheris
         run: |
@@ -66,6 +72,7 @@ jobs:
           HARNESSES=(${ATHERIS_HARNESSES})
           PER=$(( FUZZ_SECONDS / ${#HARNESSES[@]} ))
           if [[ "${PER}" -lt 5 ]]; then PER=5; fi
+          export PYTHON="${PYTHON:-${GITHUB_WORKSPACE}/.venv-fuzz/bin/python}"
           for h in "${HARNESSES[@]}"; do
             echo "==> Harness ${h} (${PER}s)"
             "${DEPLOY}/scripts/run_timed_atheris.sh" "${h}" "${PER}" "${ARTIFACT_DIR}"
