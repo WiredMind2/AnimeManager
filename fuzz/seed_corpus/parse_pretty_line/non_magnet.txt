@@ -1,0 +1,1 @@
+https://example.com/torrent|Some Name|100|1|0|https://example.com|https://example.com/desc

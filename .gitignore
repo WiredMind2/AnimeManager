@@ -155,7 +155,10 @@ venv/
 # =========================
 docs/_build/
 coverage.xml
-.github/
+# Keep Actions workflows tracked; ignore other local .github clutter if any
+.github/*
+!.github/workflows/
+!.github/workflows/**
 .vscode/
 test-results/
 next-web/.next/

@@ -1,0 +1,109 @@
+# AnimeManager PR fuzz — Atheris on self-hosted ClusterFuzz runner.
+# Template source: clusterfuzz/deploy/workflows/fuzz-pr.yml (atheris path).
+# Runner labels: self-hosted, linux, clusterfuzz-local
+
+name: ClusterFuzz PR fuzz
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  fuzz:
+    runs-on: [self-hosted, clusterfuzz-local]
+    timeout-minutes: 30
+
+    env:
+      FUZZ_ENGINE: atheris
+      FUZZ_SECONDS: ${{ vars.FUZZ_SECONDS || '60' }}
+      CLUSTERFUZZ_UI_URL: ${{ vars.CLUSTERFUZZ_UI_URL || 'http://127.0.0.1:9300' }}
+      TARGET_ID: animemanager
+      SKIP_INGEST: "1"
+      ATHERIS_HARNESSES: fuzz/parse_pretty_line_fuzzer.py fuzz/is_safe_url_fuzzer.py
+      ARTIFACT_DIR: ${{ github.workspace }}/fuzz-artifacts
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:4318' }}
+      OTEL_SERVICE_NAME: clusterfuzz-pr-fuzz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate ClusterFuzz deploy glue
+        id: glue
+        run: |
+          set -euo pipefail
+          for candidate in \
+              "${GITHUB_WORKSPACE}/deploy" \
+              "/opt/clusterfuzz/deploy" \
+              "/clusterfuzz/deploy"; do
+            if [[ -x "${candidate}/scripts/run_timed_atheris.sh" ]]; then
+              echo "deploy=${candidate}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "error: deploy/ scripts not found (mount deploy into the runner)" >&2
+          exit 1
+
+      - name: Setup Atheris
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r fuzz/requirements.txt
+          if [[ -f pyproject.toml ]] || [[ -f setup.py ]]; then
+            python3 -m pip install -e . || python3 -m pip install -e ".[dev]" || true
+          fi
+
+      - name: Timed Atheris
+        run: |
+          set -euo pipefail
+          DEPLOY="${{ steps.glue.outputs.deploy }}"
+          mkdir -p "${ARTIFACT_DIR}"
+          # shellcheck disable=SC2086
+          HARNESSES=(${ATHERIS_HARNESSES})
+          PER=$(( FUZZ_SECONDS / ${#HARNESSES[@]} ))
+          if [[ "${PER}" -lt 5 ]]; then PER=5; fi
+          for h in "${HARNESSES[@]}"; do
+            echo "==> Harness ${h} (${PER}s)"
+            "${DEPLOY}/scripts/run_timed_atheris.sh" "${h}" "${PER}" "${ARTIFACT_DIR}"
+          done
+
+      - name: Post PR review comments
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ARTIFACT_DIR: ${{ env.ARTIFACT_DIR }}
+          CLUSTERFUZZ_UI_URL: ${{ env.CLUSTERFUZZ_UI_URL }}
+          FUZZ_ENGINE: atheris
+        run: |
+          set -euo pipefail
+          DEPLOY="${{ steps.glue.outputs.deploy }}"
+          python3 "${DEPLOY}/scripts/post_pr_comments.py"
+
+      - name: Report OTLP (best-effort)
+        if: always()
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ARTIFACT_DIR: ${{ env.ARTIFACT_DIR }}
+          FUZZ_ENGINE: atheris
+          FUZZ_SECONDS: ${{ env.FUZZ_SECONDS }}
+          TARGET_ID: animemanager
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ env.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_SERVICE_NAME: ${{ env.OTEL_SERVICE_NAME }}
+        run: |
+          set -euo pipefail
+          DEPLOY="${{ steps.glue.outputs.deploy }}"
+          python3 "${DEPLOY}/scripts/report_fuzz_otel.py" || true
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-pr-${{ github.event.pull_request.number }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: ignore
