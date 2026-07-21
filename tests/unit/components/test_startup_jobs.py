@@ -172,9 +172,9 @@ def test_startup_pipeline_runs_lean_jobs_only():
         "update_status",
         "purge_deleted_torrents",
         "reconcile_seen_anime_torrents",
+        "reconcile_deleted_torrents",
         "restore_libtorrent_sessions",
         "repair_torrent_index",
-        "reconcile_deleted_torrents",
     ]
     assert report.total == 9
     assert db.enrich_calls == []
@@ -209,8 +209,8 @@ def test_fetch_latest_persists_deduped_batch():
     assert isinstance(report, StartupJobReport)
     # Lean pipeline: ``repair_date_from``, ``purge_provisional_anime``,
     # ``fetch_latest_anime``, ``update_status``, ``purge_deleted_torrents``,
-    # ``reconcile_seen_anime_torrents``, ``restore_libtorrent_sessions``,
-    # ``repair_torrent_index``, ``reconcile_deleted_torrents``.
+    # ``reconcile_seen_anime_torrents``, ``reconcile_deleted_torrents``,
+    # ``restore_libtorrent_sessions``, ``repair_torrent_index``.
     # cleanly here because ``_RecordingDBManager.get_database()`` returns
     # ``None``.
     assert report.total == 9
@@ -401,13 +401,13 @@ def test_purge_deleted_torrents_job_runs_before_restore():
             "reconcile_seen_anime_torrents"
         )
         assert names.index("reconcile_seen_anime_torrents") < names.index(
+            "reconcile_deleted_torrents"
+        )
+        assert names.index("reconcile_deleted_torrents") < names.index(
             "restore_libtorrent_sessions"
         )
         assert names.index("restore_libtorrent_sessions") < names.index(
             "repair_torrent_index"
-        )
-        assert names.index("repair_torrent_index") < names.index(
-            "reconcile_deleted_torrents"
         )
         detail = service._job_purge_deleted_torrents()
     finally:
