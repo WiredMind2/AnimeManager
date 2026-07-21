@@ -169,6 +169,47 @@ class DownloadManager(BaseComponent):
         self.log("DOWNLOAD_MANAGER", f"No active download found for anime {anime_id}")
         return False
 
+    def pause_torrent(self, hash_value: str) -> bool:
+        """Pause a torrent in the attached torrent client by info-hash."""
+        return self._set_torrent_paused(hash_value, paused=True)
+
+    def resume_torrent(self, hash_value: str) -> bool:
+        """Resume a paused torrent in the attached torrent client by info-hash."""
+        return self._set_torrent_paused(hash_value, paused=False)
+
+    def _set_torrent_paused(self, hash_value: str, *, paused: bool) -> bool:
+        key = str(hash_value or "").strip()
+        if not key:
+            return False
+        tm = self._torrent_manager
+        if tm is None:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Cannot {'pause' if paused else 'resume'} {key}: no torrent manager",
+            )
+            return False
+        method_name = "pause" if paused else "resume"
+        method = getattr(tm, method_name, None)
+        if not callable(method):
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Torrent manager does not support {method_name}",
+            )
+            return False
+        try:
+            method([key])
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"{'Paused' if paused else 'Resumed'} torrent {key}",
+            )
+            return True
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Failed to {method_name} torrent {key}: {exc}",
+            )
+            return False
+
     def get_download_status(self, anime_id: int) -> Optional[Dict[str, Any]]:
         """
         Get download status for an anime.
@@ -221,6 +262,7 @@ class DownloadManager(BaseComponent):
         "allocating",
         "queued",
         "queued_for_checking",
+        "pauseddl",
     })
     _SEEDING_STATES = frozenset({
         "seeding",

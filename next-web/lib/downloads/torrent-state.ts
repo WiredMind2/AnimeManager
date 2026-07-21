@@ -18,11 +18,21 @@ const ACTIVE_TORRENT_STATES = new Set([
   "allocating",
   "queued",
   "queued_for_checking",
+  "pauseddl",
 ]);
 
+export function normalizeTorrentStateToken(state?: string | null): string {
+  return (state || "").trim().toLowerCase().replace(/ /g, "_");
+}
+
 export function isActiveTorrentState(state?: string | null): boolean {
-  const token = (state || "").trim().toLowerCase().replace(/ /g, "_");
-  return ACTIVE_TORRENT_STATES.has(token);
+  return ACTIVE_TORRENT_STATES.has(normalizeTorrentStateToken(state));
+}
+
+/** True when the torrent client reports a paused download/seed state. */
+export function isPausedTorrentState(state?: string | null): boolean {
+  const token = normalizeTorrentStateToken(state);
+  return token === "pauseddl" || token === "pausedup" || token.startsWith("paused");
 }
 
 /** Return progress as 0–100 percent, or null when not applicable. */

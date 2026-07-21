@@ -570,6 +570,12 @@ class AnimeApplicationService:
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_port.cancel_download(anime_id)
 
+    def pause_torrent(self, hash_value: str) -> bool:
+        return self._download_port.pause_torrent(hash_value)
+
+    def resume_torrent(self, hash_value: str) -> bool:
+        return self._download_port.resume_torrent(hash_value)
+
     def get_active_downloads(self) -> list[dict]:
         return self._download_port.get_active_downloads()
 

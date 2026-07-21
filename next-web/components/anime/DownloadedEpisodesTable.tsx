@@ -8,6 +8,7 @@ import {
   DOWNLOAD_STARTED_EVENT,
   hasActiveTorrents,
   isActiveTorrentState,
+  isPausedTorrentState,
   torrentProgressPercent,
 } from "@/lib/downloads/torrent-state";
 
@@ -107,6 +108,35 @@ export default function DownloadedEpisodesTable({
     }
   }
 
+  async function togglePause(hash: string | undefined, state: string) {
+    if (!hash) return;
+    const snapshot = torrents;
+    const pausing = !isPausedTorrentState(state);
+    setTorrents((prev) =>
+      prev.map((t) =>
+        t.hash === hash
+          ? { ...t, state: pausing ? "pausedDL" : "DOWNLOADING" }
+          : t,
+      ),
+    );
+    try {
+      if (pausing) {
+        await api.pauseDownload(hash);
+      } else {
+        await api.resumeDownload(hash);
+      }
+      await refresh();
+    } catch {
+      setTorrents(snapshot);
+      showToast(
+        pausing
+          ? "Failed to pause torrent. Please try again."
+          : "Failed to resume torrent. Please try again.",
+        "error",
+      );
+    }
+  }
+
   useEffect(() => {
     const onDownload = () => {
       dispatchDownloadActivityChanged({ animeId, active: true });
@@ -167,6 +197,9 @@ export default function DownloadedEpisodesTable({
                 const state = (row.state || "SAVED").toUpperCase();
                 const pct = torrentProgressPercent(row.progress, state);
                 const active = isActiveTorrentState(state);
+                const paused = isPausedTorrentState(state);
+                const seeding = state === "SEEDING" || state === "UPLOADING";
+                const canPauseOrResume = Boolean(row.hash) && (active || seeding || paused);
                 return (
                   <tr key={row.hash || row.name || String(pct)}>
                     <td className="truncate" title={row.name}>
@@ -191,24 +224,42 @@ export default function DownloadedEpisodesTable({
                       )}
                     </td>
                     <td>
-                      {state === "COMPLETE" ? (
-                        <span className="badge badge--good">{state}</span>
-                      ) : active || state === "DOWNLOADING" ? (
-                        <span className="badge badge--accent">{state}</span>
-                      ) : state === "DELETED" ? (
-                        <span className="badge" style={{ opacity: 0.75 }}>
-                          {state}
-                        </span>
-                      ) : (
-                        <span className="badge">{state}</span>
-                      )}
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        {state === "COMPLETE" ? (
+                          <span className="badge badge--good">{state}</span>
+                        ) : active || state === "DOWNLOADING" ? (
+                          <span className="badge badge--accent">{state}</span>
+                        ) : state === "DELETED" ? (
+                          <span className="badge" style={{ opacity: 0.75 }}>
+                            {state}
+                          </span>
+                        ) : (
+                          <span className="badge">{state}</span>
+                        )}
+                        {String(row.source || "").toLowerCase() === "auto" ? (
+                          <span className="badge" title="Downloaded automatically">
+                            AUTO
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="num">
-                      {active ? (
-                        <button className="btn btn--ghost" type="button" onClick={() => void cancelDownload()}>
-                          Cancel
-                        </button>
-                      ) : null}
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                        {canPauseOrResume ? (
+                          <button
+                            className="btn btn--ghost"
+                            type="button"
+                            onClick={() => void togglePause(row.hash, state)}
+                          >
+                            {paused ? "Resume" : "Pause"}
+                          </button>
+                        ) : null}
+                        {active ? (
+                          <button className="btn btn--ghost" type="button" onClick={() => void cancelDownload()}>
+                            Cancel
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 );

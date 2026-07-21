@@ -214,6 +214,12 @@ class EmbeddedClientFacade:
     def cancel_download(self, anime_id: int) -> bool:
         return self._service.cancel_download(anime_id)
 
+    def pause_torrent(self, hash_value: str) -> bool:
+        return self._service.pause_torrent(hash_value)
+
+    def resume_torrent(self, hash_value: str) -> bool:
+        return self._service.resume_torrent(hash_value)
+
     def get_active_downloads(self) -> list[dict]:
         return self._service.get_active_downloads()
 

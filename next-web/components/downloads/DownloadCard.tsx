@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { api, uiPost } from "@/lib/api";
 import type { DownloadOverviewRow } from "@/lib/api";
+import { isPausedTorrentState } from "@/lib/downloads/torrent-state";
 
 type DownloadCardProps = {
   item: DownloadOverviewRow;
@@ -13,11 +14,15 @@ type DownloadCardProps = {
 
 export default function DownloadCard({ item, bucket, onCancel }: DownloadCardProps) {
   const [cancelling, setCancelling] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const cardBucket = item.category || bucket;
   const pct =
     item.progress_pct !== null && item.progress_pct !== undefined
       ? Number(item.progress_pct)
       : 0;
+  const paused = isPausedTorrentState(item.state);
+  const canPauseOrResume =
+    Boolean(item.hash) && (cardBucket === "active" || cardBucket === "seeding" || paused);
 
   async function handleCancel() {
     if (!item.anime_id) return;
@@ -30,6 +35,21 @@ export default function DownloadCard({ item, bucket, onCancel }: DownloadCardPro
       await uiPost(`/ui/anime/${item.anime_id}/cancel`, {});
     } finally {
       setCancelling(false);
+      onCancel?.();
+    }
+  }
+
+  async function handlePauseToggle() {
+    if (!item.hash) return;
+    setPausing(true);
+    try {
+      if (paused) {
+        await api.resumeDownload(item.hash);
+      } else {
+        await api.pauseDownload(item.hash);
+      }
+    } finally {
+      setPausing(false);
       onCancel?.();
     }
   }
@@ -71,6 +91,16 @@ export default function DownloadCard({ item, bucket, onCancel }: DownloadCardPro
             <Link className="btn btn--ghost" href={`/anime/${item.anime_id}`}>
               Open anime
             </Link>
+            {canPauseOrResume ? (
+              <button
+                type="button"
+                className="btn btn--ghost"
+                disabled={pausing}
+                onClick={() => void handlePauseToggle()}
+              >
+                {pausing ? (paused ? "Resuming…" : "Pausing…") : paused ? "Resume" : "Pause"}
+              </button>
+            ) : null}
             {cardBucket === "active" ? (
               <button
                 type="button"
@@ -82,6 +112,15 @@ export default function DownloadCard({ item, bucket, onCancel }: DownloadCardPro
               </button>
             ) : null}
           </>
+        ) : canPauseOrResume ? (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            disabled={pausing}
+            onClick={() => void handlePauseToggle()}
+          >
+            {pausing ? (paused ? "Resuming…" : "Pausing…") : paused ? "Resume" : "Pause"}
+          </button>
         ) : null}
       </div>
     </article>

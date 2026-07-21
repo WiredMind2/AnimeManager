@@ -498,6 +498,14 @@ export const api = {
   },
   cancelDownload: (animeId: number) =>
     request<{ cancelled: boolean }>(`/download/cancel/${animeId}`, { method: "POST" }),
+  pauseDownload: (hash: string) =>
+    request<{ paused: boolean }>(`/download/pause/${encodeURIComponent(hash)}`, {
+      method: "POST",
+    }),
+  resumeDownload: (hash: string) =>
+    request<{ resumed: boolean }>(`/download/resume/${encodeURIComponent(hash)}`, {
+      method: "POST",
+    }),
   getDownloadProgress: (animeId: number) =>
     request<unknown>(`/download/progress/${animeId}`),
   getActiveDownloads: () => request<{ items: DownloadItem[] }>("/download/active"),

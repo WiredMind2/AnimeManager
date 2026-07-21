@@ -35,6 +35,12 @@ class FakeFacade:
     def get_download_progress(self, anime_id: int):
         return {"anime_id": anime_id, "progress": 42}
 
+    def pause_torrent(self, hash_value: str):
+        return True
+
+    def resume_torrent(self, hash_value: str):
+        return True
+
     def cancel_download(self, anime_id: int):
         _ = anime_id
         return True
@@ -87,6 +93,8 @@ def test_sdk_extended_contract(monkeypatch):
     monkeypatch.setattr(sdk_module, "_facade", lambda: FakeFacade())
     sdk = sdk_module.ClientSDK()
 
+    assert sdk.pause_torrent("abc") is True
+    assert sdk.resume_torrent("abc") is True
     assert sdk.cancel_download(1) is True
     assert sdk.get_active_downloads()[0]["anime_id"] == 1
     assert sdk.search_torrents(["naruto"])[0]["name"] == "t"

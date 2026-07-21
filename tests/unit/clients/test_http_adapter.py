@@ -37,6 +37,12 @@ class FakeSDK:
     def get_download_progress(self, anime_id: int):
         return {"anime_id": anime_id, "progress": 42}
 
+    def pause_torrent(self, hash_value: str):
+        return True
+
+    def resume_torrent(self, hash_value: str):
+        return True
+
     def cancel_download(self, anime_id: int):
         _ = anime_id
         return True

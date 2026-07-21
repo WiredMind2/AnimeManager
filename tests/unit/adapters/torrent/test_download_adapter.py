@@ -214,3 +214,13 @@ def test_close_tolerates_errors():
     dm.close.side_effect = RuntimeError("boom")
     adapter._torrent_manager.close.side_effect = RuntimeError("boom")
     adapter.close()
+
+
+def test_pause_and_resume_torrent():
+    adapter, dm = _make_adapter()
+    dm.pause_torrent.return_value = True
+    dm.resume_torrent.return_value = True
+    assert adapter.pause_torrent("abc") is True
+    assert adapter.resume_torrent("abc") is True
+    dm.pause_torrent.assert_called_once_with("abc")
+    dm.resume_torrent.assert_called_once_with("abc")

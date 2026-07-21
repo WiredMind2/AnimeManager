@@ -273,6 +273,22 @@ class qBittorrent(BaseTorrentManager):
         self.qb.torrents_delete(delete_files=delete_files, torrent_hashes=hashes)
 
     @wait_connection
+    def pause(self, hashes):
+        if self.qb is None:
+            raise TorrentException("Couldn't connect to qBittorrent")
+        if not hashes:
+            return
+        self.qb.torrents_pause(torrent_hashes=hashes)
+
+    @wait_connection
+    def resume(self, hashes):
+        if self.qb is None:
+            raise TorrentException("Couldn't connect to qBittorrent")
+        if not hashes:
+            return
+        self.qb.torrents_resume(torrent_hashes=hashes)
+
+    @wait_connection
     def list_files(self, hash_value):
         if self.qb is None or not hash_value:
             return []
