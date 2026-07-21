@@ -114,7 +114,7 @@ def _service(tmp_path: Path, duration: float = 3600.0) -> tuple[PlaybackService,
     return svc, transcoder
 
 
-def test_manifest_has_no_ext_x_start_and_full_timeline(tmp_path: Path):
+def test_manifest_has_no_ext_x_start_and_sliding_event_window(tmp_path: Path):
     session = PlaybackSessionDTO(
         session_id="s",
         anime_id=1,
@@ -133,10 +133,39 @@ def test_manifest_has_no_ext_x_start_and_full_timeline(tmp_path: Path):
     text = render_manifest(session)
     assert "#EXT-X-START" not in text
     assert "#EXT-X-MEDIA-SEQUENCE:0" in text
+    assert "#EXT-X-PLAYLIST-TYPE:EVENT" in text
+    assert "segment_00000.ts" in text
+    # Incomplete EVENT playlists only advertise through lookahead, not the
+    # full episode (avoids Shaka live-edge probes of unencoded segments).
+    assert "segment_00015.ts" in text
+    assert "segment_00032.ts" not in text
+    assert "#EXT-X-ENDLIST" not in text
+
+
+def test_complete_manifest_lists_full_vod_timeline(tmp_path: Path):
+    for index in range(33):
+        (tmp_path / f"segment_{index:05d}.ts").write_bytes(b"seg")
+    session = PlaybackSessionDTO(
+        session_id="s",
+        anime_id=1,
+        file_id="ep-1",
+        file_title="Ep",
+        manifest_path=str(tmp_path / "index.m3u8"),
+        output_dir=str(tmp_path),
+        token="t",
+        expires_at=0.0,
+        created_at=0.0,
+        last_seen_at=0.0,
+        duration_seconds=130.0,
+        segment_seconds=4,
+        total_segments=33,
+    )
+    text = render_manifest(session)
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in text
+    assert "#EXT-X-ENDLIST" in text
     assert "segment_00000.ts" in text
     assert "segment_00032.ts" in text
     assert "#EXTINF:2.000," in text
-
 
 def test_resume_segment_and_anchor_math():
     assert resume_segment_index(708.0, total_segments=900, segment_seconds=4) == 177
@@ -186,7 +215,7 @@ def test_create_session_waits_for_resume_playhead_segment(tmp_path: Path):
 
 
 def test_far_ahead_segment_on_fresh_start_restarts_encoder(tmp_path: Path):
-    """Fresh sessions anchor at 0; far-ahead segments restart ffmpeg rather than 404."""
+    """Fresh sessions anchor at 0; scrub-ahead within jump budget restarts ffmpeg."""
     svc, transcoder = _service(tmp_path)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -207,3 +236,30 @@ def test_far_ahead_segment_on_fresh_start_restarts_encoder(tmp_path: Path):
     )
     assert Path(seg_path).is_file()
     assert len(transcoder.calls) >= 2
+
+
+def test_speculative_far_segment_rejected_without_restart(tmp_path: Path):
+    """Live-edge probes far past the playhead must not yank a healthy encode."""
+    from domain.errors import NotFoundError
+
+    svc, transcoder = _service(tmp_path, duration=1422.0)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=133.0,
+        )
+    )
+    calls_before = len(transcoder.calls)
+    assert session.hls_anchor_segment > 0
+    with pytest.raises(NotFoundError, match="too far ahead"):
+        svc.resolve_media_path(
+            GetPlaybackSessionQuery(
+                session_id=session.session_id,
+                token=session.token,
+                segment_name="segment_00193.ts",
+            )
+        )
+    assert len(transcoder.calls) == calls_before

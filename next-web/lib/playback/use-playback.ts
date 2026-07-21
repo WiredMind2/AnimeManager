@@ -16,6 +16,7 @@ import {
 import {
   createProgressReporter,
   saveLocalPosition,
+  shouldRecoverTimelineJump,
   toAbsoluteSourceSeconds,
 } from "@/lib/playback/progress";
 import {
@@ -118,6 +119,9 @@ export function usePlayback(
   const startupStallReportedRef = useRef(false);
   const shakaAttachInProgressRef = useRef(false);
   const progressReporterRef = useRef(createProgressReporter(animeId));
+  const lastSaneCurrentTimeRef = useRef(0);
+  const userSeekingRef = useRef(false);
+  const timelineRecoveringRef = useRef(false);
 
   const anchorProgressOpts = useCallback(
     () => ({
@@ -449,6 +453,9 @@ export function usePlayback(
       playbackStartSecondsRef.current = playbackStartSeconds;
       hlsAnchorSegmentRef.current = hlsAnchorSegment;
       segmentSecondsRef.current = segmentSeconds;
+      lastSaneCurrentTimeRef.current = loadStartTime;
+      userSeekingRef.current = false;
+      timelineRecoveringRef.current = false;
 
       try {
         const { player, shaka } = await createShakaPlayer(panelRef.current);
@@ -569,6 +576,7 @@ export function usePlayback(
             t > knownDuration * 0.85;
           if (durationAbsurd || timeAbsurd || wrongEndWhenStartingFromZero) {
             video.currentTime = expectedStart;
+            lastSaneCurrentTimeRef.current = expectedStart;
             playerLoggerRef.current?.log("warn", "timeline_sanity_seek", {
               reported_duration: dur,
               reported_current_time: t,
@@ -576,6 +584,8 @@ export function usePlayback(
               known_duration: knownDuration,
               wrong_end: wrongEndWhenStartingFromZero,
             });
+          } else if (Number.isFinite(t)) {
+            lastSaneCurrentTimeRef.current = t;
           }
         }
 
@@ -733,8 +743,45 @@ export function usePlayback(
     if (!video) return;
 
     const onTimeupdate = () => {
+      const t = Number(video.currentTime || 0);
+      if (
+        !timelineRecoveringRef.current &&
+        shouldRecoverTimelineJump({
+          currentTime: t,
+          lastSaneTime: lastSaneCurrentTimeRef.current,
+          knownDuration: streamDurationRef.current,
+          userSeeking: userSeekingRef.current,
+        })
+      ) {
+        const snapTo = lastSaneCurrentTimeRef.current;
+        timelineRecoveringRef.current = true;
+        video.currentTime = snapTo;
+        playerLoggerRef.current?.log("warn", "timeline_jump_recovered", {
+          reported_current_time: t,
+          recovered_to: snapTo,
+          known_duration: streamDurationRef.current,
+        });
+        return;
+      }
+      if (!userSeekingRef.current && !timelineRecoveringRef.current && Number.isFinite(t)) {
+        lastSaneCurrentTimeRef.current = t;
+      }
       savePosition();
       maybePostProgressThrottled();
+    };
+    const onSeeking = () => {
+      if (timelineRecoveringRef.current) return;
+      userSeekingRef.current = true;
+    };
+    const onSeeked = () => {
+      const t = Number(video.currentTime || 0);
+      if (timelineRecoveringRef.current) {
+        timelineRecoveringRef.current = false;
+        if (Number.isFinite(t)) lastSaneCurrentTimeRef.current = t;
+        return;
+      }
+      userSeekingRef.current = false;
+      if (Number.isFinite(t)) lastSaneCurrentTimeRef.current = t;
     };
     const onEnded = () => {
       savePosition();
@@ -799,6 +846,8 @@ export function usePlayback(
     };
 
     video.addEventListener("timeupdate", onTimeupdate);
+    video.addEventListener("seeking", onSeeking);
+    video.addEventListener("seeked", onSeeked);
     video.addEventListener("ended", onEnded);
     video.addEventListener("pause", onPause);
     video.addEventListener("waiting", onWaiting);
@@ -807,6 +856,8 @@ export function usePlayback(
 
     return () => {
       video.removeEventListener("timeupdate", onTimeupdate);
+      video.removeEventListener("seeking", onSeeking);
+      video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("ended", onEnded);
       video.removeEventListener("pause", onPause);
       video.removeEventListener("waiting", onWaiting);

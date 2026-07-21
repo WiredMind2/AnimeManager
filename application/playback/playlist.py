@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 
 from application.dto import PlaybackSessionDTO
+from application.playback.contract import EVENT_MANIFEST_LOOKAHEAD
+from application.playback.resume import resume_segment_index
 
 _SEGMENT_NAME_RE = re.compile(r"^segment_(\d+)\.ts$")
 
@@ -29,6 +31,31 @@ def latest_existing_segment(output_dir: str) -> int:
         if idx > latest:
             latest = idx
     return latest
+
+
+def event_manifest_end_index(
+    session: PlaybackSessionDTO,
+    *,
+    latest: int,
+    total: int,
+    anchor: int,
+) -> int:
+    """Last segment index to advertise on an incomplete EVENT playlist.
+
+    Listing the full episode while still EVENT-typed makes Shaka treat the
+    fictional end as the live edge and request far-ahead segments that yank
+    ffmpeg away from the playhead.
+    """
+    playhead = 0
+    if session.duration_seconds > 0 and session.segment_seconds > 0:
+        playhead = resume_segment_index(
+            session.playback_start_seconds,
+            total_segments=total,
+            segment_seconds=session.segment_seconds,
+        )
+    transcode_start = max(0, int(getattr(session, "transcode_start_segment", 0) or 0))
+    head = max(latest, playhead, transcode_start, anchor)
+    return min(total - 1, head + EVENT_MANIFEST_LOOKAHEAD)
 
 
 def render_manifest(session: PlaybackSessionDTO) -> str:
@@ -53,14 +80,23 @@ def render_manifest(session: PlaybackSessionDTO) -> str:
         Path(session.output_dir) / f"segment_{total - 1:05d}.ts"
     ).is_file()
 
+    if complete:
+        end_index = total - 1
+        playlist_type = "VOD"
+    else:
+        end_index = event_manifest_end_index(
+            session, latest=latest, total=total, anchor=anchor
+        )
+        playlist_type = "EVENT"
+
     lines: list[str] = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         f"#EXT-X-TARGETDURATION:{seg_secs}",
         f"#EXT-X-MEDIA-SEQUENCE:{anchor}",
-        "#EXT-X-PLAYLIST-TYPE:VOD" if complete else "#EXT-X-PLAYLIST-TYPE:EVENT",
+        f"#EXT-X-PLAYLIST-TYPE:{playlist_type}",
     ]
-    for index in range(anchor, total):
+    for index in range(anchor, end_index + 1):
         seg_dur = last_seg_seconds if index == total - 1 else float(seg_secs)
         lines.append(f"#EXTINF:{seg_dur:.3f},")
         lines.append(f"segment_{index:05d}.ts")
@@ -100,6 +136,7 @@ def write_initial_playlist(*, manifest_path: str, duration: float, segment_secon
 
 __all__ = [
     "latest_existing_segment",
+    "event_manifest_end_index",
     "render_manifest",
     "write_manifest_file",
     "write_initial_playlist",

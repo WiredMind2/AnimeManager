@@ -33,6 +33,26 @@ export function toAbsoluteSourceSeconds(
   return clampPlaybackSeconds(absolute, opts.maxSeconds);
 }
 
+/** Mid-playback MSE corruption: playhead jumps without a user seek. */
+export const TIMELINE_JUMP_THRESHOLD_SECONDS = 30;
+
+export function shouldRecoverTimelineJump(opts: {
+  currentTime: number;
+  lastSaneTime: number;
+  knownDuration: number | null | undefined;
+  userSeeking: boolean;
+}): boolean {
+  if (opts.userSeeking) return false;
+  const t = Number(opts.currentTime);
+  const last = Number(opts.lastSaneTime);
+  if (!Number.isFinite(t) || !Number.isFinite(last)) return false;
+  const known = Number(opts.knownDuration);
+  if (Number.isFinite(known) && known > 0 && t > known * 1.2) {
+    return true;
+  }
+  return Math.abs(t - last) > TIMELINE_JUMP_THRESHOLD_SECONDS;
+}
+
 export function saveLocalPosition(
   animeId: number,
   fileId: string,

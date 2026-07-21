@@ -626,7 +626,7 @@ def test_resume_segment_index_from_playback_start():
 
 
 def test_create_session_resume_manifest_no_ext_x_start(tmp_path: Path):
-    """Resume manifest lists segments from the anchor with matching MEDIA-SEQUENCE."""
+    """Resume manifest lists segments from the anchor with a sliding EVENT window."""
     svc, _ = _seekable_service(tmp_path, duration=600.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -640,9 +640,11 @@ def test_create_session_resume_manifest_no_ext_x_start(tmp_path: Path):
     manifest_text = Path(session.manifest_path).read_text(encoding="utf-8")
     assert "#EXT-X-MEDIA-SEQUENCE:18" in manifest_text
     assert "#EXT-X-START" not in manifest_text
+    assert "#EXT-X-PLAYLIST-TYPE:EVENT" in manifest_text
     assert "segment_00000.ts" not in manifest_text
     assert "segment_00018.ts" in manifest_text
-    assert "segment_00149.ts" in manifest_text
+    # Sliding window: do not advertise the full episode end while incomplete.
+    assert "segment_00149.ts" not in manifest_text
     assert session.hls_anchor_segment == 18
     assert session.playback_start_seconds == pytest.approx(80.0)
 
@@ -673,8 +675,7 @@ def test_create_session_waits_for_resume_segment(tmp_path: Path):
 
 
 def test_create_session_writes_event_playlist_until_encode_complete(tmp_path: Path):
-    """The manifest lists the full timeline for the seek bar but stays
-    in EVENT mode (no ``#EXT-X-ENDLIST``) until every segment exists."""
+    """Incomplete EVENT manifests use a sliding lookahead window, not the full list."""
     svc, _ = _seekable_service(tmp_path, duration=130.0, segment_seconds=4)
     session = svc.create_session(
         CreatePlaybackSessionCommand(
@@ -694,12 +695,36 @@ def test_create_session_writes_event_playlist_until_encode_complete(tmp_path: Pa
     assert "#EXTM3U" in manifest_text
     assert "#EXT-X-PLAYLIST-TYPE:EVENT" in manifest_text
     assert "#EXT-X-ENDLIST" not in manifest_text
-    # First and last segments are both listed by filename.
     assert "segment_00000.ts" in manifest_text
-    assert "segment_00032.ts" in manifest_text
-    # The final segment carries the leftover duration (130 - 32*4 = 2s)
-    # rather than padding to a full 4-second segment.
-    assert "#EXTINF:2.000," in manifest_text
+    # Seekable fake materialises 8 segments (0-7); lookahead extends past that.
+    assert "segment_00007.ts" in manifest_text or "segment_00015.ts" in manifest_text
+    assert "segment_00032.ts" not in manifest_text
+
+
+def test_speculative_far_segment_on_resume_does_not_restart(tmp_path: Path):
+    svc, transcoder = _seekable_service(tmp_path, duration=1422.0, segment_seconds=4)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=133.0,
+        )
+    )
+    assert transcoder.calls[0]["start_segment_index"] == 31
+    calls_before = len(transcoder.calls)
+
+    with pytest.raises(NotFoundError, match="too far ahead"):
+        svc.resolve_media_path(
+            GetPlaybackSessionQuery(
+                session_id=session.session_id,
+                token=session.token,
+                segment_name="segment_00193.ts",
+            )
+        )
+    assert len(transcoder.calls) == calls_before
+    assert session.transcode_start_segment == 31
 
 
 def test_resolve_manifest_finishes_vod_when_all_segments_exist(tmp_path: Path):
@@ -859,7 +884,8 @@ def test_concurrent_segment_requests_collapse_into_one_restart(tmp_path: Path):
                 GetPlaybackSessionQuery(
                     session_id=session.session_id,
                     token=session.token,
-                    segment_name="segment_00100.ts",
+                    # Within MAX_FORWARD_JUMP_SEGMENTS so seek-ahead is allowed.
+                    segment_name="segment_00050.ts",
                 )
             )
             results.append(path)
@@ -873,11 +899,11 @@ def test_concurrent_segment_requests_collapse_into_one_restart(tmp_path: Path):
         t.join()
 
     assert not errors, errors
-    assert all(p.endswith("segment_00100.ts") for p in results)
+    assert all(p.endswith("segment_00050.ts") for p in results)
     restart_count = sum(
         1
         for call in transcoder.calls[initial_calls:]
-        if call["start_segment_index"] == 100
+        if call["start_segment_index"] == 50
     )
     assert restart_count == 1
 

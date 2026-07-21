@@ -13,6 +13,17 @@ MIN_RESUME_SECONDS = 10.0
 # "finished" unsticks those episodes and matches normal video-app semantics.
 NEAR_END_RESTART_SECONDS = 15.0
 
+# Incomplete EVENT manifests only advertise this many segments past the
+# encode/playhead head. Stops Shaka from probing the fictional live edge
+# of a fully-listed-but-unencoded playlist (which yanked ffmpeg mid-resume).
+EVENT_MANIFEST_LOOKAHEAD = 15
+
+# Refuse seek-on-demand ffmpeg restarts more than this many segments ahead of
+# the session playhead while the playhead encode is still healthy (~6 min).
+# Blocks half-file live-edge probes (e.g. segment 177/193) while still
+# allowing normal scrub-ahead (e.g. segment 50 from a fresh start).
+MAX_FORWARD_JUMP_SEGMENTS = 90
+
 SESSION_TTL_SECONDS = 900
 SESSION_CREATE_WAIT_SECONDS = 25.0
 RESUME_SEGMENT_WAIT_SECONDS = 180.0
@@ -26,6 +37,8 @@ __all__ = [
     "PREFETCH_MARGIN",
     "MIN_RESUME_SECONDS",
     "NEAR_END_RESTART_SECONDS",
+    "EVENT_MANIFEST_LOOKAHEAD",
+    "MAX_FORWARD_JUMP_SEGMENTS",
     "SESSION_TTL_SECONDS",
     "SESSION_CREATE_WAIT_SECONDS",
     "RESUME_SEGMENT_WAIT_SECONDS",
