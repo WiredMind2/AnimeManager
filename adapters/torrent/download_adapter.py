@@ -98,6 +98,24 @@ class DownloadAdapter:
             self._scanner.resolve_anime_folder
         )
 
+    def consolidate_duplicate_anime_folders(self) -> int:
+        """Merge on-disk library folders that share the same anime id."""
+        anime_path = str(getattr(self._scanner, "_anime_path", "") or "").strip()
+        return self._download_manager.consolidate_duplicate_anime_folders(anime_path)
+
+    def apply_max_connections(self, value: int | str | None) -> int | None:
+        """Apply LibTorrent peer connections limit when that client is active."""
+        tm = self._torrent_manager
+        if tm is None or getattr(tm, "name", None) != "LibTorrent":
+            return None
+        setter = getattr(tm, "set_max_connections", None)
+        if not callable(setter):
+            return None
+        try:
+            return int(setter(value))
+        except Exception:
+            return None
+
     def mark_torrents_deleted_for_removed_file(
         self, anime_id: int, deleted_path: str
     ) -> int:
@@ -187,12 +205,14 @@ class DownloadAdapter:
         url: str | None = None,
         hash_value: str | None = None,
         user_id: int | None = None,
+        source: str | None = None,
     ) -> bool:
         queue = self._download_manager.download_file(
             anime_id=anime_id,
             url=url,
             hash_value=hash_value,
             user_id=user_id,
+            source=source,
         )
         return queue is not None
 
@@ -201,26 +221,6 @@ class DownloadAdapter:
 
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_manager.cancel_download(anime_id)
-
-    def consolidate_duplicate_anime_folders(self) -> int:
-        """Merge on-disk library folders that share the same anime id."""
-        anime_path = str(getattr(self._scanner, "_anime_path", "") or "").strip()
-        return self._download_manager.consolidate_duplicate_anime_folders(anime_path)
-
-
-    def apply_max_connections(self, value: int | str | None) -> int | None:
-        """Apply LibTorrent peer connections limit when that client is active."""
-        tm = self._torrent_manager
-        if tm is None or getattr(tm, "name", None) != "LibTorrent":
-            return None
-        setter = getattr(tm, "set_max_connections", None)
-        if not callable(setter):
-            return None
-        try:
-            return int(setter(value))
-        except Exception:
-            return None
-
 
     def pause_torrent(self, hash_value: str) -> bool:
         return self._download_manager.pause_torrent(hash_value)

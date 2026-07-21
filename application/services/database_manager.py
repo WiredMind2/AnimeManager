@@ -493,6 +493,42 @@ class DatabaseManager(BaseComponent):
                 names.add("status")
             except Exception:
                 pass
+        if "source" not in names:
+            try:
+                db.sql(
+                    "ALTER TABLE torrents ADD COLUMN source TEXT DEFAULT 'manual'",
+                    (),
+                    save=True,
+                )
+                names.add("source")
+            except Exception:
+                pass
+
+    def _ensure_user_tags_columns(self, db) -> None:
+        """Add optional ``user_tags`` columns when missing (SQLite / MariaDB)."""
+        names: set[str] = set()
+        try:
+            info = db.sql("PRAGMA table_info(user_tags)")
+            if info:
+                names = {str(row[1]) for row in info if row and len(row) > 1}
+        except Exception:
+            names = set()
+        if not names:
+            try:
+                info = db.sql("SHOW COLUMNS FROM user_tags")
+                if info:
+                    names = {str(row[0]) for row in info if row}
+            except Exception:
+                names = set()
+        if "auto_download" not in names:
+            try:
+                db.sql(
+                    "ALTER TABLE user_tags ADD COLUMN auto_download INTEGER",
+                    (),
+                    save=True,
+                )
+            except Exception:
+                pass
 
     def save_torrent(
         self,
@@ -500,6 +536,7 @@ class DatabaseManager(BaseComponent):
         torrent,
         *,
         save_path: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> None:
         """
         Save torrent data to database.
@@ -508,6 +545,7 @@ class DatabaseManager(BaseComponent):
             anime_id: Anime ID
             torrent: Torrent object
             save_path: Optional on-disk folder for this torrent
+            source: Optional origin marker (``manual`` / ``auto``)
         """
         try:
             with self.get_connection() as db:
@@ -520,6 +558,11 @@ class DatabaseManager(BaseComponent):
                 path_value = save_path
                 if path_value is None:
                     path_value = getattr(torrent, "path", None)
+                source_value = None
+                if source is not None:
+                    clean = str(source).strip().lower()
+                    if clean in ("manual", "auto"):
+                        source_value = clean
                 exists = db.sql(
                     "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)",
                     (anime_id, torrent.hash),
@@ -536,18 +579,45 @@ class DatabaseManager(BaseComponent):
                     (torrent.hash,),
                 )
                 if not exists or not exists[0][0]:
-                    db.sql(
-                        "INSERT INTO torrents(hash, name, trackers, save_path) "
-                        "VALUES(?, ?, ?, ?)",
-                        (torrent.hash, torrent.name, trackers, path_value),
-                        save=True,
-                    )
-                elif path_value:
-                    db.sql(
-                        "UPDATE torrents SET save_path=? WHERE hash=?",
-                        (path_value, torrent.hash),
-                        save=True,
-                    )
+                    if source_value:
+                        db.sql(
+                            "INSERT INTO torrents(hash, name, trackers, save_path, source) "
+                            "VALUES(?, ?, ?, ?, ?)",
+                            (
+                                torrent.hash,
+                                torrent.name,
+                                trackers,
+                                path_value,
+                                source_value,
+                            ),
+                            save=True,
+                        )
+                    else:
+                        db.sql(
+                            "INSERT INTO torrents(hash, name, trackers, save_path) "
+                            "VALUES(?, ?, ?, ?)",
+                            (torrent.hash, torrent.name, trackers, path_value),
+                            save=True,
+                        )
+                else:
+                    if path_value and source_value:
+                        db.sql(
+                            "UPDATE torrents SET save_path=?, source=? WHERE hash=?",
+                            (path_value, source_value, torrent.hash),
+                            save=True,
+                        )
+                    elif path_value:
+                        db.sql(
+                            "UPDATE torrents SET save_path=? WHERE hash=?",
+                            (path_value, torrent.hash),
+                            save=True,
+                        )
+                    elif source_value:
+                        db.sql(
+                            "UPDATE torrents SET source=? WHERE hash=?",
+                            (source_value, torrent.hash),
+                            save=True,
+                        )
         except Exception as e:
             self.log("DB_ERROR", f"Failed to save torrent: {e}")
             raise

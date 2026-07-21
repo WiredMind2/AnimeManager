@@ -37,14 +37,16 @@ class FakeSDK:
     def get_download_progress(self, anime_id: int):
         return {"anime_id": anime_id, "progress": 42}
 
+    def cancel_download(self, anime_id: int):
+        _ = anime_id
+        return True
+
     def pause_torrent(self, hash_value: str):
+        _ = hash_value
         return True
 
     def resume_torrent(self, hash_value: str):
-        return True
-
-    def cancel_download(self, anime_id: int):
-        _ = anime_id
+        _ = hash_value
         return True
 
     def get_active_downloads(self):
@@ -105,6 +107,8 @@ def test_http_adapter_routes_use_shared_sdk(monkeypatch):
     assert client.get("/top/categories").json()["items"][0]["key"] == "all"
     assert client.post("/download/1", params={"url": "magnet:?xt=urn:btih:abc"}).json()["started"] is True
     assert client.post("/download/cancel/1").json()["cancelled"] is True
+    assert client.post("/download/pause/abc123").json()["paused"] is True
+    assert client.post("/download/resume/abc123").json()["resumed"] is True
     assert client.get("/download/active").json()["items"][0]["anime_id"] == 1
     assert client.get("/torrents/search", params={"term": "naruto"}).json()[0]["name"] == "mock"
     assert client.get("/state/1", params={"user_id": 3}).json()["tag"] == "WATCHING"

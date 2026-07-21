@@ -76,6 +76,12 @@ def _kickoff_startup_jobs() -> None:
                     "Embedded facade has no schedule refresh loop; "
                     "daily fetch not scheduled."
                 )
+            auto_loop = sdk.start_auto_download_loop()
+            if auto_loop is None:
+                _LOG.warning(
+                    "Embedded facade has no auto-download loop; "
+                    "auto-download not scheduled."
+                )
     except Exception as exc:  # noqa: BLE001 - best-effort
         _LOG.warning("Startup-jobs pipeline failed to launch: %s", exc)
 

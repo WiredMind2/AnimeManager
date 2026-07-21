@@ -6,6 +6,7 @@ network, never start real torrent clients, and never touch disk.
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -180,6 +181,56 @@ class TestCancelAndStatus:
             assert mgr.get_download_status(7) is None
         finally:
             mgr.close()
+
+
+class TestPauseAndResume:
+    def test_pause_resume_delegate_to_torrent_manager(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("AbCd") is True
+            tm.pause.assert_called_once_with(["AbCd"])
+            assert mgr.resume_torrent("AbCd") is True
+            tm.resume.assert_called_once_with(["AbCd"])
+        finally:
+            mgr.close()
+
+    def test_pause_returns_false_without_manager_or_hash(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        try:
+            assert mgr.pause_torrent("") is False
+            assert mgr.resume_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_pause_returns_false_when_manager_lacks_methods(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock(spec=[])
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("abc") is False
+            assert mgr.resume_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_pause_swallows_torrent_manager_errors(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.pause.side_effect = RuntimeError("boom")
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_pauseddl_buckets_as_active(self, DownloadManager):
+        assert DownloadManager._normalise_category("pausedDL", 0.4) == "active"
+        assert DownloadManager._normalise_category("pausedUP", 1.0) == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +816,74 @@ class TestLifecycle:
         finally:
             mgr.close()
 
+    def test_get_anime_folder_merges_duplicate_id_folders(
+        self, DownloadManager, tmp_path
+    ):
+        data_path = tmp_path / "library"
+        animes_root = data_path / "Animes"
+        old = animes_root / "Old Title - 2210"
+        new = animes_root / "New Title - 2210"
+        old.mkdir(parents=True)
+        new.mkdir(parents=True)
+        (old / "ep01.mkv").write_bytes(b"one")
+        (new / "ep02.mkv").write_bytes(b"two")
+
+        fm = MagicMock()
+        fm.settings = {"dataPath": str(data_path)}
+        fm.list.return_value = ["Old Title - 2210", "New Title - 2210"]
+        fm.isdir.side_effect = lambda path: os.path.isdir(path)
+
+        db = MagicMock()
+        db.get_database.return_value.get.return_value = {
+            "id": 2210,
+            "title": "New Title",
+        }
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "abc", "save_path": str(new)}
+        ]
+        db.list_torrents_for_restore.return_value = [
+            {"hash": "abc", "save_path": str(old)},
+            {"hash": "def", "save_path": str(new)},
+        ]
+
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        mgr.set_file_manager(fm)
+        mgr.set_database_manager(db)
+        try:
+            folder = mgr._get_anime_folder(2210)
+            assert folder == str(new)
+            assert not old.exists()
+            assert (new / "ep01.mkv").read_bytes() == b"one"
+            assert (new / "ep02.mkv").read_bytes() == b"two"
+            db.update_torrent_save_path.assert_called_with("abc", str(new))
+        finally:
+            mgr.close()
+
+    def test_consolidate_duplicate_anime_folders_counts_ids(
+        self, DownloadManager, tmp_path
+    ):
+        data_path = tmp_path / "library"
+        animes_root = data_path / "Animes"
+        (animes_root / "A - 1").mkdir(parents=True)
+        (animes_root / "B - 1").mkdir(parents=True)
+        ((animes_root / "A - 1") / "a.mkv").write_bytes(b"a")
+        ((animes_root / "B - 1") / "b.mkv").write_bytes(b"b")
+
+        fm = MagicMock()
+        fm.settings = {"dataPath": str(data_path)}
+        fm.list.return_value = ["A - 1", "B - 1"]
+
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        mgr.set_file_manager(fm)
+        try:
+            assert mgr.consolidate_duplicate_anime_folders() == 1
+            remaining = [p.name for p in animes_root.iterdir() if p.is_dir()]
+            assert len(remaining) == 1
+        finally:
+            mgr.close()
+
 
 # ---------------------------------------------------------------------------
 # Live progress refresh (covers the bug where the Active Downloads progress
@@ -1259,6 +1378,53 @@ class TestTorrentDeletedStatus:
         finally:
             mgr.close()
 
+    def test_mark_deleted_for_removed_file_falls_back_to_torrent_name(
+        self, DownloadManager, tmp_path
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        folder = tmp_path / "Show - 7"
+        folder.mkdir()
+        deleted_name = (
+            "[SubsPlease] Otaku ni Yasashii Gal wa Inai - 05 (720p) [295FCC2C].mkv"
+        )
+        deleted = folder / deleted_name
+        (folder / "[SubsPlease] Otaku ni Yasashii Gal wa Inai - 04 (720p).mkv").write_bytes(
+            b"y"
+        )
+
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {
+                "hash": "sub505",
+                "name": deleted_name,
+                "save_path": str(folder),
+                "status": "complete",
+            },
+            {
+                "hash": "other",
+                "name": "[SubsPlease] Other Show - 01 (720p).mkv",
+                "save_path": str(folder),
+                "status": "complete",
+            },
+        ]
+        tm = MagicMock()
+        tm.list_files.return_value = []
+
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            count = mgr.mark_torrents_deleted_for_removed_file(
+                7,
+                str(deleted),
+                lambda _aid: str(folder),
+            )
+            assert count == 1
+            db.update_torrent_status.assert_called_once_with("sub505", "deleted")
+            tm.delete.assert_called_once_with("sub505", delete_files=False)
+        finally:
+            mgr.close()
+
     def test_mark_torrents_deleted_for_seen_anime(self, DownloadManager, tmp_path):
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
@@ -1367,58 +1533,3 @@ class TestTorrentDeletedStatus:
             fm.delete.assert_not_called()
         finally:
             mgr.close()
-
-
-class TestPauseAndResume:
-    def test_pause_resume_delegate_to_torrent_manager(self, DownloadManager):
-        mgr = DownloadManager(max_concurrent_downloads=1)
-        mgr.log = _silent_logger
-        tm = MagicMock()
-        mgr.set_torrent_manager(tm)
-        try:
-            assert mgr.pause_torrent("AbCd") is True
-            tm.pause.assert_called_once_with(["AbCd"])
-            assert mgr.resume_torrent("AbCd") is True
-            tm.resume.assert_called_once_with(["AbCd"])
-        finally:
-            mgr.close()
-
-    def test_pause_returns_false_without_manager_or_hash(self, DownloadManager):
-        mgr = DownloadManager(max_concurrent_downloads=1)
-        mgr.log = _silent_logger
-        try:
-            assert mgr.pause_torrent("") is False
-            assert mgr.resume_torrent("abc") is False
-        finally:
-            mgr.close()
-
-    def test_pause_returns_false_when_manager_lacks_methods(self, DownloadManager):
-        mgr = DownloadManager(max_concurrent_downloads=1)
-        mgr.log = _silent_logger
-        tm = MagicMock(spec=[])
-        mgr.set_torrent_manager(tm)
-        try:
-            assert mgr.pause_torrent("abc") is False
-            assert mgr.resume_torrent("abc") is False
-        finally:
-            mgr.close()
-
-    def test_pause_swallows_torrent_manager_errors(self, DownloadManager):
-        mgr = DownloadManager(max_concurrent_downloads=1)
-        mgr.log = _silent_logger
-        tm = MagicMock()
-        tm.pause.side_effect = RuntimeError("boom")
-        mgr.set_torrent_manager(tm)
-        try:
-            assert mgr.pause_torrent("abc") is False
-        finally:
-            mgr.close()
-
-    def test_pauseddl_buckets_as_active(self, DownloadManager):
-        assert DownloadManager._normalise_category("pausedDL", 0.4) == "active"
-        assert DownloadManager._normalise_category("pausedUP", 1.0) == "completed"
-
-
-# ---------------------------------------------------------------------------
-# URL handling: magnet vs http, validation
-# ---------------------------------------------------------------------------

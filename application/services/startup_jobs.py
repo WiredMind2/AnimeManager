@@ -92,6 +92,8 @@ class StartupJobsService:
       files are missing as ``deleted`` (before LibTorrent restore).
     * ``restore_libtorrent_sessions`` -- restore embedded LibTorrent
       torrents after missing-file reconcile.
+    * ``consolidate_duplicate_anime_folders`` -- merge on-disk library
+      folders that share the same trailing anime id (title-change splits).
 
     Heavy backlog work (catalog enrichment, synonym backfill, duplicate
     repair) is intentionally **not** run here; it is handled by post-
@@ -113,6 +115,8 @@ class StartupJobsService:
     # ``scheduleTimeout`` overflows that and raises ``OverflowError``,
     # killing the ``AM-ScheduleRefresh`` thread on every startup.
     _SCHEDULE_SLEEP_MAX_S = 7 * 86_400
+    _AUTO_DOWNLOAD_INTERVAL_S = 30 * 60
+    _AUTO_DOWNLOAD_STARTUP_DELAY_S = 60
 
     def __init__(
         self,
@@ -125,6 +129,7 @@ class StartupJobsService:
         download_adapter: Any = None,
         write_service: Any = None,
         schedule_limit: int = 50,
+        auto_download_service: Any = None,
     ) -> None:
         self._api_coordinator = api_coordinator
         self._database_manager = database_manager
@@ -134,6 +139,7 @@ class StartupJobsService:
         self._download_adapter = download_adapter
         self._write_service = write_service
         self._schedule_limit = max(1, int(schedule_limit))
+        self._auto_download_service = auto_download_service
         self._telemetry = get_telemetry()
         self._lock = threading.Lock()
         self._last_report: Optional[StartupJobReport] = None
@@ -141,6 +147,8 @@ class StartupJobsService:
         self._background_thread: Optional[threading.Thread] = None
         self._schedule_loop_thread: Optional[threading.Thread] = None
         self._schedule_loop_stop = threading.Event()
+        self._auto_download_loop_thread: Optional[threading.Thread] = None
+        self._auto_download_loop_stop = threading.Event()
 
     @property
     def last_report(self) -> Optional[StartupJobReport]:
@@ -282,6 +290,72 @@ class StartupJobsService:
         thread = self._schedule_loop_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+
+    def start_auto_download_loop(self, *, daemon: bool = True) -> threading.Thread | None:
+        """Start a daemon thread that runs auto-download every 30 minutes."""
+        if self._auto_download_service is None:
+            return None
+        with self._lock:
+            if (
+                self._auto_download_loop_thread is not None
+                and self._auto_download_loop_thread.is_alive()
+            ):
+                return self._auto_download_loop_thread
+            self._auto_download_loop_stop.clear()
+
+        thread = threading.Thread(
+            target=self._auto_download_loop_worker,
+            name="AM-AutoDownload",
+            daemon=daemon,
+        )
+        with self._lock:
+            self._auto_download_loop_thread = thread
+        thread.start()
+        return thread
+
+    def stop_auto_download_loop(self) -> None:
+        """Signal the auto-download loop to exit."""
+        self._auto_download_loop_stop.set()
+        thread = self._auto_download_loop_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def run_auto_download(self) -> str:
+        """Execute one auto-download pass (used by the loop and tests)."""
+        service = self._auto_download_service
+        if service is None:
+            return "skipped (no auto-download service)"
+        runner = getattr(service, "run_once", None)
+        if not callable(runner):
+            return "skipped (no run_once)"
+        outcome = runner()
+        downloaded = int(getattr(outcome, "downloaded", 0) or 0)
+        checked = int(getattr(outcome, "checked", 0) or 0)
+        skipped = int(getattr(outcome, "skipped", 0) or 0)
+        errors = int(getattr(outcome, "errors", 0) or 0)
+        return (
+            f"checked={checked} downloaded={downloaded} "
+            f"skipped={skipped} errors={errors}"
+        )
+
+    def _auto_download_loop_worker(self) -> None:
+        # Brief delay so torrent restore / DB migrations settle after startup.
+        if self._auto_download_loop_stop.wait(
+            timeout=self._AUTO_DOWNLOAD_STARTUP_DELAY_S
+        ):
+            return
+        while not self._auto_download_loop_stop.is_set():
+            try:
+                detail = self.run_auto_download()
+                self._log(f"Auto-download pass: {detail}")
+            except Exception as exc:  # noqa: BLE001
+                self._log(
+                    f"Auto-download loop error: {type(exc).__name__}: {exc}"
+                )
+            if self._auto_download_loop_stop.wait(
+                timeout=self._AUTO_DOWNLOAD_INTERVAL_S
+            ):
+                break
 
     def _schedule_loop_worker(self) -> None:
         while not self._schedule_loop_stop.is_set():
@@ -436,6 +510,10 @@ class StartupJobsService:
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
         )
         yield StartupJob("repair_torrent_index", self._job_repair_torrent_index)
+        yield StartupJob(
+            "consolidate_duplicate_anime_folders",
+            self._job_consolidate_duplicate_anime_folders,
+        )
 
     def _job_purge_deleted_torrents(self) -> str:
         adapter = self._download_adapter
@@ -481,6 +559,21 @@ class StartupJobsService:
         if count == 0:
             return "no torrents marked deleted"
         return f"marked {count} torrent(s) deleted"
+
+    def _job_consolidate_duplicate_anime_folders(self) -> str:
+        adapter = self._download_adapter
+        if adapter is None:
+            return "skipped (no download adapter)"
+        consolidate = getattr(adapter, "consolidate_duplicate_anime_folders", None)
+        if not callable(consolidate):
+            return "skipped (no consolidate_duplicate_anime_folders)"
+        try:
+            count = int(consolidate())
+        except Exception as exc:
+            return f"consolidate failed: {exc}"
+        if count == 0:
+            return "no duplicate anime folders merged"
+        return f"merged folders for {count} anime id(s)"
 
     def _job_repair_torrent_index(self) -> str:
         adapter = self._download_adapter

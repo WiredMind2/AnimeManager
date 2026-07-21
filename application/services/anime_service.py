@@ -562,6 +562,7 @@ class AnimeApplicationService:
             url=request.url,
             hash_value=request.hash_value,
             user_id=request.user_id,
+            source=getattr(request, "source", None),
         )
 
     def get_download_progress(self, anime_id: int) -> dict:
@@ -667,6 +668,14 @@ class AnimeApplicationService:
     def set_like(self, anime_id: int, user_id: int, liked: bool = True) -> None:
         self._user_actions_port.set_like(anime_id, liked, user_id)
 
+    def set_auto_download(
+        self, anime_id: int, user_id: int, enabled: bool = True
+    ) -> None:
+        setter = getattr(self._user_actions_port, "set_auto_download", None)
+        if not callable(setter):
+            return
+        setter(anime_id, enabled, user_id)
+
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._user_actions_port.mark_seen(anime_id, file_name, user_id)
         self._remove_torrents_for_seen_anime(anime_id)
@@ -736,6 +745,22 @@ class AnimeApplicationService:
         self._apply_libtorrent_max_connections(updates)
         return result
 
+    def _apply_libtorrent_max_connections(self, updates: dict) -> None:
+        tm_updates = updates.get("torrent_managers")
+        if not isinstance(tm_updates, dict):
+            return
+        lib_updates = tm_updates.get("LibTorrent")
+        if not isinstance(lib_updates, dict) or "max_connections" not in lib_updates:
+            return
+        apply = getattr(self._download_port, "apply_max_connections", None)
+        if not callable(apply):
+            return
+        try:
+            apply(lib_updates.get("max_connections"))
+        except Exception:
+            pass
+
+    @staticmethod
     def _normalize_relation_row(row: dict) -> dict:
         rel_id = row.get("rel_id") or row.get("anime_id")
         relation_name = row.get("relation") or row.get("name")

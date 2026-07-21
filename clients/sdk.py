@@ -300,6 +300,11 @@ class ClientSDK:
     def set_like(self, anime_id: int, user_id: int, liked: bool = True) -> None:
         self._facade.set_like(anime_id, user_id, liked)
 
+    def set_auto_download(
+        self, anime_id: int, user_id: int, enabled: bool = True
+    ) -> None:
+        self._facade.set_auto_download(anime_id, user_id, enabled)
+
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._facade.mark_seen(anime_id, file_name, user_id)
 
@@ -491,6 +496,13 @@ class ClientSDK:
     def start_schedule_loop(self):
         """Start the daily provider schedule refresh loop."""
         starter = getattr(self._facade, "start_schedule_loop", None)
+        if not callable(starter):
+            return None
+        return starter()
+
+    def start_auto_download_loop(self):
+        """Start the periodic auto-download loop."""
+        starter = getattr(self._facade, "start_auto_download_loop", None)
         if not callable(starter):
             return None
         return starter()

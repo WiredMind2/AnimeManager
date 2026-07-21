@@ -11,11 +11,39 @@ from domain.errors import InfrastructureError
 class UserActionsRepository:
     """Implements :class:`ports.interfaces.UserActionsPort`."""
 
-    _ALLOWED_COLUMNS = ("tag", "liked")
+    _ALLOWED_COLUMNS = ("tag", "liked", "auto_download")
     _EPISODE_STATUSES = frozenset({"UNSEEN", "IN_PROGRESS", "SEEN"})
 
     def __init__(self, database: Any) -> None:
         self._database = database
+
+    def _ensure_auto_download_column(self) -> None:
+        db = self._database
+        names: set[str] = set()
+        try:
+            info = db.sql("PRAGMA table_info(user_tags)")
+            if info:
+                names = {str(row[1]) for row in info if row and len(row) > 1}
+        except Exception:
+            names = set()
+        if not names:
+            try:
+                info = db.sql("SHOW COLUMNS FROM user_tags")
+                if info:
+                    names = {str(row[0]) for row in info if row}
+            except Exception:
+                names = set()
+        if "auto_download" in names:
+            return
+        try:
+            with db.get_lock():
+                db.sql(
+                    "ALTER TABLE user_tags ADD COLUMN auto_download INTEGER",
+                    (),
+                    save=True,
+                )
+        except Exception:
+            pass
 
     def _upsert_column(
         self,
@@ -30,6 +58,8 @@ class UserActionsRepository:
             raise InfrastructureError(
                 f"Refusing to write to unsupported column: {column}"
             )
+        if column == "auto_download":
+            self._ensure_auto_download_column()
         db = self._database
         try:
             with db.get_lock():
@@ -60,6 +90,22 @@ class UserActionsRepository:
         self._upsert_column(
             anime_id, user_id, column="tag", value=tag, action_label="tag"
         )
+        if str(tag or "").strip().upper() != "WATCHING":
+            return
+        # Opt-in by default when entering WATCHING; preserve an explicit opt-out.
+        state = self.get_user_state(anime_id, user_id)
+        if state.get("auto_download") is False:
+            return
+        self.set_auto_download(anime_id, True, user_id)
+
+    def set_auto_download(self, anime_id: int, enabled: bool, user_id: int) -> None:
+        self._upsert_column(
+            anime_id,
+            user_id,
+            column="auto_download",
+            value=1 if enabled else 0,
+            action_label="auto_download flag",
+        )
 
     def set_like(self, anime_id: int, liked: bool, user_id: int) -> None:
         self._upsert_column(
@@ -89,30 +135,53 @@ class UserActionsRepository:
             ) from exc
 
     def get_user_state(self, anime_id: int, user_id: int) -> dict:
+        self._ensure_auto_download_column()
         db = self._database
         try:
             rows = db.sql(
-                "SELECT tag, liked FROM user_tags "
+                "SELECT tag, liked, auto_download FROM user_tags "
                 "WHERE anime_id=? AND user_id=?",
                 (anime_id, user_id),
             )
-        except Exception as exc:
-            raise InfrastructureError(
-                f"Failed to load user state: {exc}"
-            ) from exc
+        except Exception:
+            # Older schemas without auto_download: fall back.
+            try:
+                rows = db.sql(
+                    "SELECT tag, liked FROM user_tags "
+                    "WHERE anime_id=? AND user_id=?",
+                    (anime_id, user_id),
+                )
+            except Exception as exc:
+                raise InfrastructureError(
+                    f"Failed to load user state: {exc}"
+                ) from exc
         if not rows:
-            return {"tag": "NONE", "liked": False}
+            return {"tag": "NONE", "liked": False, "auto_download": False}
 
         tag: str | None = None
         liked: int | None = None
+        auto_download: int | None = None
         for row in rows:
             row_tag = row[0] if len(row) > 0 else None
             row_liked = row[1] if len(row) > 1 else None
+            row_auto = row[2] if len(row) > 2 else None
             if row_tag is not None:
                 tag = row_tag
             if row_liked is not None:
                 liked = row_liked
-        return {"tag": tag or "NONE", "liked": bool(liked)}
+            if row_auto is not None:
+                auto_download = row_auto
+        tag_value = tag or "NONE"
+        # Default on for WATCHING when the column is unset (legacy rows).
+        if auto_download is None:
+            auto_enabled = str(tag_value).upper() == "WATCHING"
+        else:
+            auto_enabled = bool(auto_download)
+        return {
+            "tag": tag_value,
+            "liked": bool(liked),
+            "auto_download": auto_enabled,
+        }
 
     def list_anime_ids_with_tag(self, tag: str) -> list[int]:
         """Return distinct anime IDs whose tag equals ``tag`` (any user)."""
@@ -137,6 +206,39 @@ class UserActionsRepository:
             try:
                 anime_id = int(row[0])
             except (TypeError, ValueError, IndexError):
+                continue
+            if anime_id in seen:
+                continue
+            seen.add(anime_id)
+            out.append(anime_id)
+        return out
+
+    def list_auto_download_eligible(self, user_id: int = 1) -> list[int]:
+        """Return WATCHING anime with auto-download enabled for ``user_id``."""
+        self._ensure_auto_download_column()
+        db = self._database
+        try:
+            rows = db.sql(
+                "SELECT anime_id, auto_download FROM user_tags "
+                "WHERE user_id=? AND UPPER(tag)=?",
+                (user_id, "WATCHING"),
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to list auto-download eligible anime: {exc}"
+            ) from exc
+        out: list[int] = []
+        seen: set[int] = set()
+        for row in rows or []:
+            if not row:
+                continue
+            try:
+                anime_id = int(row[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            auto_raw = row[1] if len(row) > 1 else None
+            # NULL (legacy) or 1 → eligible; explicit 0 → skip.
+            if auto_raw is not None and not bool(auto_raw):
                 continue
             if anime_id in seen:
                 continue

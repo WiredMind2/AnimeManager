@@ -18,11 +18,13 @@ from adapters.metadata.anime_hydration_adapter import AnimeHydrationAdapter
 from adapters.metadata.api_coordinator_adapter import ApiCoordinatorAdapter
 from adapters.persistence.anime_repository import AnimeRepositoryAdapter
 from adapters.persistence.user_actions_repository import UserActionsRepository
+from adapters.search.title_parser import parse_title
 from adapters.torrent.download_adapter import DownloadAdapter
 from application.playback import PlaybackService
 from application.services.anime_hydration import AnimeHydrationService
 from application.services.anime_service import AnimeApplicationService
 from application.services.anime_write_service import AnimeWriteService
+from application.services.auto_download_service import AutoDownloadService
 from application.services.startup_jobs import StartupJobsService
 from composition.bootstrap import bootstrap_embedded_deps
 from composition.facade import EmbeddedClientFacade
@@ -100,6 +102,14 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         schedule_limit = int(anime_cfg.get("maxTrendingAnime", 50))
     except (TypeError, ValueError):
         schedule_limit = 50
+    auto_download = AutoDownloadService(
+        user_actions=user_actions,
+        anime_repository=repository,
+        download_port=download,
+        media_library=media_library,
+        parse_title=parse_title,
+        log_fn=lambda msg: deps.logger.log("AUTO_DOWNLOAD", msg),
+    )
     startup_jobs = StartupJobsService(
         api_coordinator=metadata.api_coordinator,
         database_manager=deps.db_manager,
@@ -109,6 +119,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         download_adapter=download,
         write_service=anime_write,
         schedule_limit=max(1, schedule_limit),
+        auto_download_service=auto_download,
     )
 
     return EmbeddedClientFacade(service, startup_jobs=startup_jobs, hydration=hydration)

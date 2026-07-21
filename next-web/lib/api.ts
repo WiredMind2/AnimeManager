@@ -163,6 +163,7 @@ export type AnimeCharacterDetail = AnimeCharacter & {
 export type UserState = {
   tag?: string;
   liked?: boolean;
+  auto_download?: boolean;
   seen?: string[];
 };
 
@@ -266,6 +267,7 @@ export type AnimeLibraryTorrent = {
   state?: string;
   path?: string;
   downloaded?: number;
+  source?: "manual" | "auto" | string;
 };
 
 export type ParsedTorrentMeta = {
@@ -433,6 +435,11 @@ export const api = {
   setLike: (animeId: number, userId: number, liked: boolean) =>
     request<{ ok: boolean }>(
       `/like/${animeId}?user_id=${userId}&liked=${liked ? "true" : "false"}`,
+      { method: "POST" },
+    ),
+  setAutoDownload: (animeId: number, userId: number, enabled: boolean) =>
+    request<{ ok: boolean }>(
+      `/auto-download/${animeId}?user_id=${userId}&enabled=${enabled ? "true" : "false"}`,
       { method: "POST" },
     ),
   markSeen: (animeId: number, fileName: string, userId: number) =>

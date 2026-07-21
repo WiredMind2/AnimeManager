@@ -138,6 +138,13 @@ def _warm_embedded_backend() -> None:
         except Exception as exc:  # noqa: BLE001
             _LOG.debug("schedule loop start skipped: %s", exc)
 
+    auto_download = getattr(sdk, "start_auto_download_loop", None)
+    if callable(auto_download):
+        try:
+            auto_download()
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("auto-download loop start skipped: %s", exc)
+
 
 @asynccontextmanager
 async def _http_lifespan(app: FastAPI):
@@ -318,6 +325,12 @@ def set_tag(anime_id: int, tag: str, user_id: int):
 @app.post("/like/{anime_id}")
 def set_like(anime_id: int, user_id: int, liked: bool = True):
     get_sdk().set_like(anime_id, user_id=user_id, liked=liked)
+    return {"ok": True}
+
+
+@app.post("/auto-download/{anime_id}")
+def set_auto_download(anime_id: int, user_id: int, enabled: bool = True):
+    get_sdk().set_auto_download(anime_id, user_id=user_id, enabled=enabled)
     return {"ok": True}
 
 

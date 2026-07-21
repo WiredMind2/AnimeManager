@@ -35,21 +35,23 @@ class FakeFacade:
     def get_download_progress(self, anime_id: int):
         return {"anime_id": anime_id, "progress": 42}
 
+    def cancel_download(self, anime_id: int):
+        _ = anime_id
+        return True
+
     def pause_torrent(self, hash_value: str):
+        _ = hash_value
         return True
 
     def resume_torrent(self, hash_value: str):
-        return True
-
-    def cancel_download(self, anime_id: int):
-        _ = anime_id
+        _ = hash_value
         return True
 
     def get_active_downloads(self):
         return [{"anime_id": 1}]
 
-    def search_torrents(self, terms, profile="interactive", limit=200):
-        _ = (profile, limit)
+    def search_torrents(self, terms, profile="interactive", limit=200, allow_nsfw=False):
+        _ = (profile, limit, allow_nsfw)
         return [{"name": "t", "terms": terms}]
 
     def set_tag(self, anime_id: int, tag: str, user_id: int):
@@ -58,12 +60,17 @@ class FakeFacade:
     def set_like(self, anime_id: int, user_id: int, liked: bool = True):
         _ = (anime_id, user_id, liked)
 
+    def set_auto_download(
+        self, anime_id: int, user_id: int, enabled: bool = True
+    ):
+        _ = (anime_id, user_id, enabled)
+
     def mark_seen(self, anime_id: int, file_name: str, user_id: int):
         _ = (anime_id, file_name, user_id)
 
     def get_user_state(self, anime_id: int, user_id: int):
         _ = (anime_id, user_id)
-        return {"tag": "WATCHING", "liked": True}
+        return {"tag": "WATCHING", "liked": True, "auto_download": True}
 
     def get_search_terms(self, anime_id: int):
         _ = anime_id
@@ -93,9 +100,9 @@ def test_sdk_extended_contract(monkeypatch):
     monkeypatch.setattr(sdk_module, "_facade", lambda: FakeFacade())
     sdk = sdk_module.ClientSDK()
 
+    assert sdk.cancel_download(1) is True
     assert sdk.pause_torrent("abc") is True
     assert sdk.resume_torrent("abc") is True
-    assert sdk.cancel_download(1) is True
     assert sdk.get_active_downloads()[0]["anime_id"] == 1
     assert sdk.search_torrents(["naruto"])[0]["name"] == "t"
     assert sdk.get_user_state(1, 7)["tag"] == "WATCHING"

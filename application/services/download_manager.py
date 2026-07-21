@@ -109,7 +109,8 @@ class DownloadManager(BaseComponent):
         self._watching_tag_callback = callback
 
     def download_file(self, anime_id: int, url: Optional[str] = None,
-                     hash_value: Optional[str] = None, user_id: Optional[int] = None) -> Optional[queue.Queue]:
+                     hash_value: Optional[str] = None, user_id: Optional[int] = None,
+                     source: Optional[str] = None) -> Optional[queue.Queue]:
         """
         Download a file or torrent.
 
@@ -118,6 +119,7 @@ class DownloadManager(BaseComponent):
             url: URL to download from
             hash_value: Torrent hash for existing torrent
             user_id: User ID for tagging
+            source: Optional origin marker (``manual`` / ``auto``)
 
         Returns:
             Queue for download status updates
@@ -128,7 +130,7 @@ class DownloadManager(BaseComponent):
 
         self._clear_deleted_status_for_redownload(hash_value)
 
-        task = DownloadTask(anime_id, url, hash_value, user_id)
+        task = DownloadTask(anime_id, url, hash_value, user_id, source=source)
         with self._telemetry.time("download.enqueue_ms"):
             self._download_queue.put(task)
         self._sync_queue_gauge()
@@ -861,7 +863,12 @@ class DownloadManager(BaseComponent):
                 continue
             save_path = row.get("save_path") or anime_folder
             owned = False
-            for listed in self._list_files_for_torrent(hash_val):
+            listed_files = self._list_files_for_torrent(hash_val)
+            if not listed_files:
+                torrent_name = str(row.get("name") or "").strip()
+                if torrent_name:
+                    listed_files = [torrent_name]
+            for listed in listed_files:
                 if deleted_path_matches_torrent_file(
                     deleted_path,
                     listed,
@@ -1127,7 +1134,12 @@ class DownloadManager(BaseComponent):
                     task.size = int(size_hint)
 
             folder_path = self._get_anime_folder(task.anime_id)
-            self._save_torrent(task.anime_id, torrent, save_path=folder_path)
+            self._save_torrent(
+                task.anime_id,
+                torrent,
+                save_path=folder_path,
+                source=getattr(task, "source", None),
+            )
 
             if task.user_id:
                 self._set_user_tag(task.anime_id, task.user_id)
@@ -1220,13 +1232,16 @@ class DownloadManager(BaseComponent):
         torrent: Torrent,
         *,
         save_path: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> None:
         """Persist torrent metadata through the injected DatabaseManager."""
         db_manager = self._database_manager
         if db_manager is None:
             return
         try:
-            db_manager.save_torrent(anime_id, torrent, save_path=save_path)
+            db_manager.save_torrent(
+                anime_id, torrent, save_path=save_path, source=source
+            )
         except Exception as exc:
             self.log("DOWNLOAD_MANAGER", f"Error saving torrent: {exc}")
 
@@ -1325,10 +1340,100 @@ class DownloadManager(BaseComponent):
             return f"./anime_{anime_id}"
         return folder
 
+    def consolidate_duplicate_anime_folders(
+        self, animes_root: Optional[str] = None
+    ) -> int:
+        """Merge every anime id that has more than one library folder.
+
+        Returns the number of anime ids consolidated.
+        """
+        root = (animes_root or "").strip()
+        if not root:
+            fm = self._file_manager
+            if fm is not None:
+                settings = getattr(fm, "settings", None)
+                if isinstance(settings, dict):
+                    data_path = str(settings.get("dataPath") or "").strip()
+                    if data_path:
+                        root = os.path.join(data_path, "Animes")
+        if not root:
+            return 0
+
+        from application.services.anime_folder_consolidation import (
+            consolidate_all_duplicate_anime_folders,
+        )
+
+        results = consolidate_all_duplicate_anime_folders(
+            root,
+            list_entries=lambda: self._list_anime_folder_entries(root),
+            preferred_paths_for=self._known_save_paths_for_anime,
+            redirect_save_paths=self._redirect_save_paths,
+            log=lambda msg: self.log("DOWNLOAD_MANAGER", msg),
+        )
+        return len(results)
+
+    def _redirect_save_paths(self, old_path: str, new_path: str) -> None:
+        """Point DB + torrent-client rows that used ``old_path`` at ``new_path``."""
+        db_manager = self._database_manager
+        if db_manager is None or not old_path or not new_path:
+            return
+
+        hashes: list[str] = []
+        rows: list[Any] = []
+        get_all = getattr(db_manager, "list_torrents_for_restore", None)
+        if callable(get_all):
+            try:
+                rows = list(get_all() or [])
+            except Exception:
+                rows = []
+
+        old_norm = self._normalize_path(old_path)
+        for row in rows:
+            if isinstance(row, dict):
+                save_path = row.get("save_path")
+                hash_value = row.get("hash")
+            else:
+                save_path = getattr(row, "save_path", None)
+                hash_value = getattr(row, "hash", None)
+            if not hash_value or not save_path:
+                continue
+            save_norm = self._normalize_path(str(save_path))
+            if save_norm != old_norm and not save_norm.startswith(old_norm + os.sep):
+                continue
+            hashes.append(str(hash_value))
+            try:
+                db_manager.update_torrent_save_path(str(hash_value), new_path)
+            except Exception as exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Could not update save_path for {hash_value}: {exc}",
+                )
+
+        if hashes and self._torrent_manager is not None:
+            try:
+                self._torrent_manager.move(path=new_path, hashes=hashes)
+            except Exception as exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Could not move torrents to {new_path!r}: {exc}",
+                )
+
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        try:
+            return os.path.normcase(os.path.normpath(os.path.realpath(path)))
+        except OSError:
+            return os.path.normcase(os.path.normpath(path))
+
     def _find_existing_anime_folder(
         self, animes_root: str, anime_id: int
     ) -> Optional[str]:
-        """Reuse an on-disk folder for ``anime_id`` when one already exists."""
+        """Reuse an on-disk folder for ``anime_id`` when one already exists.
+
+        When multiple folders share the same trailing id (typically after a
+        catalogue title change), merge their contents into one canonical
+        folder before returning the path.
+        """
         entries = self._list_anime_folder_entries(animes_root)
         matches = match_anime_folder_names(entries, anime_id)
         if not matches:
@@ -1341,6 +1446,22 @@ class DownloadManager(BaseComponent):
                 valid_names.append(name)
         if not valid_names:
             return None
+
+        if len(valid_names) > 1:
+            from application.services.anime_folder_consolidation import (
+                consolidate_duplicate_folders_for_anime,
+            )
+
+            merged = consolidate_duplicate_folders_for_anime(
+                animes_root,
+                anime_id,
+                entries=entries,
+                preferred_paths=self._known_save_paths_for_anime(anime_id),
+                redirect_save_paths=self._redirect_save_paths,
+                log=lambda msg: self.log("DOWNLOAD_MANAGER", msg),
+            )
+            if merged is not None:
+                return merged.canonical_path
 
         from application.services.torrent_file_presence import folder_has_video_files
 
@@ -1493,11 +1614,14 @@ class DownloadTask:
     """
 
     def __init__(self, anime_id: int, url: Optional[str] = None,
-                 hash_value: Optional[str] = None, user_id: Optional[int] = None):
+                 hash_value: Optional[str] = None, user_id: Optional[int] = None,
+                 source: Optional[str] = None):
         self.anime_id = anime_id
         self.url = url
         self.hash_value = hash_value
         self.user_id = user_id
+        clean_source = str(source or "").strip().lower()
+        self.source = clean_source if clean_source in ("manual", "auto") else None
         self.status_queue = queue.Queue()
         self.cancelled = False
         self.start_time = time.time()
@@ -1542,4 +1666,5 @@ class DownloadTask:
             "dl_speed": self.dl_speed,
             "eta": self.eta,
             "path": self.path,
+            "source": self.source or "manual",
         }

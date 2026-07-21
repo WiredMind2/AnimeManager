@@ -321,7 +321,7 @@ class AnimeRepositoryAdapter:
         try:
             rows = db.sql(
                 (
-                    "SELECT t.hash, t.name, t.trackers, t.save_path, t.status "
+                    "SELECT t.hash, t.name, t.trackers, t.save_path, t.status, t.source "
                     "FROM torrents AS t "
                     "JOIN torrentsIndex AS i ON LOWER(i.value) = LOWER(t.hash) "
                     "WHERE i.id=?"
@@ -329,7 +329,18 @@ class AnimeRepositoryAdapter:
                 (anime_id,),
             )
         except Exception:
-            return []
+            try:
+                rows = db.sql(
+                    (
+                        "SELECT t.hash, t.name, t.trackers, t.save_path, t.status "
+                        "FROM torrents AS t "
+                        "JOIN torrentsIndex AS i ON LOWER(i.value) = LOWER(t.hash) "
+                        "WHERE i.id=?"
+                    ),
+                    (anime_id,),
+                )
+            except Exception:
+                return []
         out: list[dict] = []
         for row in rows or []:
             if not row:
@@ -340,6 +351,7 @@ class AnimeRepositoryAdapter:
                 trackers_raw = row[2] if len(row) > 2 else None
                 save_path = row[3] if len(row) > 3 else None
                 status = row[4] if len(row) > 4 else None
+                source = row[5] if len(row) > 5 else None
             except (TypeError, IndexError):
                 continue
             entry: dict = {"hash": hash_, "name": name}
@@ -348,6 +360,10 @@ class AnimeRepositoryAdapter:
                 entry["save_path"] = save_path
             if status is not None:
                 entry["status"] = str(status).strip().lower()
+            if source is not None and str(source).strip():
+                entry["source"] = str(source).strip().lower()
+            else:
+                entry["source"] = "manual"
             if isinstance(trackers_raw, str) and trackers_raw:
                 try:
                     entry["trackers"] = json.loads(trackers_raw)
