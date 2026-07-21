@@ -381,8 +381,8 @@ Order:
 2. `repair_duplicate_anime`
 3. `fetch_latest_anime`
 4. `update_status`
-5. `restore_libtorrent_sessions` — `LibTorrent.ensure_restored()` when active
-6. `reconcile_deleted_torrents` — via `LegacyDownloadAdapter.reconcile_deleted_torrents()`
+5. `reconcile_deleted_torrents` — via download adapter (before LibTorrent restore)
+6. `restore_libtorrent_sessions` — `LibTorrent.ensure_restored()` when active
 
 ### Download API
 

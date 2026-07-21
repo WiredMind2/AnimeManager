@@ -264,9 +264,13 @@ def test_connect_applies_active_checking_and_defers_dht(
     assert any(s.get("active_checking") == 1 for s in applied)
     first_with_dht = next(s for s in applied if "enable_dht" in s)
     assert first_with_dht["enable_dht"] is False
+    assert manager._restored is False
+    assert manager._session_ready.is_set()
+
+    manager.ensure_restored()
+
     assert any(s.get("enable_dht") is True for s in applied)
     assert manager._restored is True
-    assert manager._session_ready.is_set()
 
 
 def test_connect_waits_for_callbacks_before_restore(
@@ -316,8 +320,13 @@ def test_connect_waits_for_callbacks_before_restore(
     monkeypatch.setattr(manager, "_run_session_restore", restore)
 
     manager.connect(thread=False)
+    assert order == ["wait"]
+    assert manager._session_ready.is_set()
+    assert manager._restored is False
 
+    manager.ensure_restored()
     assert order == ["wait", "restore"]
+    assert manager._restored is True
 
 
 def test_late_restore_callback_reruns_db_fallback(libtorrent_manager, tmp_path):
@@ -651,3 +660,29 @@ def test_resolve_max_connections_clamps(
     manager.settings = settings
 
     assert manager._resolve_max_connections() == expected
+
+
+def test_set_max_connections_applies_to_live_session(
+    lt_module, mock_lt, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(lt_module, "lt", mock_lt)
+    monkeypatch.setattr(lt_module, "LIBTORRENT_AVAILABLE", True)
+
+    data_path = str(tmp_path / "data")
+    os.makedirs(data_path, exist_ok=True)
+    settings = {
+        "dataPath": data_path,
+        "download_path": os.path.join(data_path, "Downloads"),
+        "max_connections": 200,
+    }
+    with patch.object(lt_module.LibTorrent, "initialize", lambda self: None):
+        manager = lt_module.LibTorrent(settings)
+    manager.settings = settings
+    manager.session = MagicMock()
+
+    resolved = manager.set_max_connections(42)
+
+    assert resolved == 42
+    assert manager.max_connections == 42
+    assert manager.settings["max_connections"] == 42
+    manager.session.apply_settings.assert_called_with({"connections_limit": 42})

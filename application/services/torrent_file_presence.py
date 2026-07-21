@@ -171,6 +171,91 @@ def episodes_in_range_present(
     return any(episode_start <= episode <= episode_end for episode in present)
 
 
+def _episode_range_token(torrent_name: Optional[str]) -> Optional[str]:
+    """Return a normalized ``(start-end)`` token from a batch release name."""
+    text = str(torrent_name or "").strip()
+    if not text:
+        return None
+    for pattern in (_RE_EP_RANGE_PAREN, _RE_EP_RANGE_PLAIN):
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            start = int(match.group(1))
+            end = int(match.group(2))
+        except (TypeError, ValueError):
+            continue
+        if start <= 0 or end <= 0:
+            continue
+        if start > end:
+            start, end = end, start
+        return f"({start}-{end})"
+    return None
+
+
+def _dirname_has_range_token(dirname: str, range_token: str) -> bool:
+    """True when ``dirname`` contains the same episode range as ``range_token``."""
+    token_match = _RE_EP_RANGE_PAREN.search(range_token)
+    if not token_match:
+        return False
+    try:
+        start = int(token_match.group(1))
+        end = int(token_match.group(2))
+    except (TypeError, ValueError):
+        return False
+    for pattern in (_RE_EP_RANGE_PAREN, _RE_EP_RANGE_PLAIN):
+        match = pattern.search(dirname)
+        if not match:
+            continue
+        try:
+            found_start = int(match.group(1))
+            found_end = int(match.group(2))
+        except (TypeError, ValueError):
+            continue
+        if found_start > found_end:
+            found_start, found_end = found_end, found_start
+        if found_start == start and found_end == end:
+            return True
+    return False
+
+
+def batch_payload_present(
+    folder: Optional[str],
+    torrent_name: Optional[str],
+) -> bool:
+    """Return True when a batch-specific directory payload still exists.
+
+    Weekly single-episode files in the anime root do **not** count as the
+    batch still being present — only a directory whose name carries the
+    same ``(start-end)`` range token (and contains video) does.
+    """
+    range_token = _episode_range_token(torrent_name)
+    if not range_token:
+        return False
+    if not folder or not str(folder).strip():
+        return False
+    root_path = str(folder).strip()
+    if not os.path.isdir(root_path):
+        return False
+
+    candidates = [root_path]
+    try:
+        for entry in os.listdir(root_path):
+            child = os.path.join(root_path, entry)
+            if os.path.isdir(child):
+                candidates.append(child)
+    except OSError:
+        return False
+
+    for candidate in candidates:
+        basename = os.path.basename(candidate.rstrip("\\/"))
+        if not _dirname_has_range_token(basename, range_token):
+            continue
+        if folder_has_video_files(candidate):
+            return True
+    return False
+
+
 def _normalise_live_state(live_state: Optional[str]) -> str:
     return str(live_state or "").strip().lower().replace(" ", "_")
 
@@ -204,21 +289,27 @@ def should_reconcile_torrent(
         return TorrentReconcileAction.REMOVE_FROM_CLIENT
 
     state_token = _normalise_live_state(live_state)
-    if state_token in _ACTIVE_DOWNLOAD_STATES:
-        return TorrentReconcileAction.SKIP
+    is_active = state_token in _ACTIVE_DOWNLOAD_STATES
+    # Protect in-progress first downloads; previously-complete torrents that
+    # are re-downloading missing payloads must still be marked deleted.
+    protect_active = is_active and status_token != "complete"
 
     folder = anime_folder or save_path
     episode_range = parse_episode_range_from_name(torrent_name)
     if episode_range is not None:
-        start, end = episode_range
-        if not episodes_in_range_present(folder, start, end):
-            return TorrentReconcileAction.MARK_DELETED
+        if not batch_payload_present(folder, torrent_name):
+            if not protect_active:
+                return TorrentReconcileAction.MARK_DELETED
 
     single_episode = parse_single_episode_from_name(torrent_name)
     if single_episode is not None and not episodes_in_range_present(
         folder, single_episode, single_episode
     ):
-        return TorrentReconcileAction.MARK_DELETED
+        if not protect_active:
+            return TorrentReconcileAction.MARK_DELETED
+
+    if protect_active:
+        return TorrentReconcileAction.SKIP
 
     if status_token == "complete" and not paths_have_video_files(save_path, anime_folder):
         return TorrentReconcileAction.MARK_DELETED

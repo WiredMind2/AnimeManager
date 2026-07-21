@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from application.services.torrent_file_presence import (
     TorrentReconcileAction,
+    batch_payload_present,
     deleted_path_matches_torrent_file,
     episodes_in_range_present,
     folder_has_video_files,
@@ -60,11 +61,50 @@ def test_should_reconcile_batch_deleted_when_range_files_missing(tmp_path):
     assert action == TorrentReconcileAction.MARK_DELETED
 
 
-def test_should_reconcile_batch_kept_when_range_files_present(tmp_path):
+def test_should_reconcile_batch_deleted_when_only_weekly_singles_present(tmp_path):
+    show = tmp_path / "Frieren - 1"
+    show.mkdir()
+    (show / "[SubsPlease] Sousou no Frieren - 05 (1080p).mkv").write_bytes(b"x")
+    batch_name = "[SubsPlease] Sousou no Frieren (01-28) (1080p) [Batch]"
+    assert batch_payload_present(str(show), batch_name) is False
+    action = should_reconcile_torrent(
+        status="complete",
+        save_path=str(show),
+        anime_folder=str(show),
+        torrent_name=batch_name,
+    )
+    assert action == TorrentReconcileAction.MARK_DELETED
+
+
+def test_should_reconcile_batch_deleted_for_mini_batch_with_singles(tmp_path):
+    show = tmp_path / "Yani Suu - 2"
+    show.mkdir()
+    (
+        show / "[SubsPlease] Super no Ura de Yani Suu Futari Mini - 03 (720p).mkv"
+    ).write_bytes(b"x")
+    batch_name = (
+        "[SubsPlease] Super no Ura de Yani Suu Futari Mini (01-12) (720p) [Batch]"
+    )
+    action = should_reconcile_torrent(
+        status="complete",
+        save_path=str(show),
+        anime_folder=str(show),
+        torrent_name=batch_name,
+        live_state="downloading",
+        live_progress=0.4,
+    )
+    assert action == TorrentReconcileAction.MARK_DELETED
+
+
+def test_should_reconcile_batch_kept_when_batch_subdir_present(tmp_path):
     show = tmp_path / "Show - 1"
     show.mkdir()
     (show / "Show - 03.mkv").write_bytes(b"x")
+    batch_dir = show / "[SubsPlease] Example (01-13) (720p) [Batch]"
+    batch_dir.mkdir()
+    (batch_dir / "Example - 01.mkv").write_bytes(b"y")
     batch_name = "[SubsPlease] Example (01-13) (720p) [Batch]"
+    assert batch_payload_present(str(show), batch_name) is True
     action = should_reconcile_torrent(
         status="complete",
         save_path=str(show),
@@ -72,6 +112,14 @@ def test_should_reconcile_batch_kept_when_range_files_present(tmp_path):
         torrent_name=batch_name,
     )
     assert action == TorrentReconcileAction.SKIP
+
+
+def test_batch_payload_present_when_save_path_is_batch_folder(tmp_path):
+    batch_dir = tmp_path / "[SubsPlease] Example (01-13) (720p) [Batch]"
+    batch_dir.mkdir()
+    (batch_dir / "Example - 02.mkv").write_bytes(b"y")
+    batch_name = "[SubsPlease] Example (01-13) (720p) [Batch]"
+    assert batch_payload_present(str(batch_dir), batch_name) is True
 
 
 def test_should_reconcile_error_state_without_files(tmp_path):
@@ -97,6 +145,25 @@ def test_should_reconcile_skips_active_download_without_files(tmp_path):
         live_progress=0.1,
     )
     assert action == TorrentReconcileAction.SKIP
+
+
+def test_should_reconcile_complete_active_missing_episode_marked_deleted(tmp_path):
+    show = tmp_path / "Show - 1"
+    show.mkdir()
+    (show / "[SubsPlease] Otaku ni Yasashii Gal wa Inai - 04 (720p).mkv").write_bytes(
+        b"x"
+    )
+    action = should_reconcile_torrent(
+        status="complete",
+        save_path=str(show),
+        anime_folder=str(show),
+        torrent_name=(
+            "[SubsPlease] Otaku ni Yasashii Gal wa Inai - 05 (720p) [295FCC2C].mkv"
+        ),
+        live_state="downloading",
+        live_progress=0.2,
+    )
+    assert action == TorrentReconcileAction.MARK_DELETED
 
 
 def test_should_reconcile_deleted_removes_from_client():
