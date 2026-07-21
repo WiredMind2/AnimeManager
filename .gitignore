@@ -164,3 +164,11 @@ next-web/.env.local
 next-web/tsconfig.tsbuildinfo
 
 .worktrees/
+
+# Local tooling / personal leftovers (not product)
+.cursor/
+transcripts/
+*.bak
+debug-seek-output.json
+fallback.json
+.repair_catalog_identities.cursor
