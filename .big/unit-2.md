@@ -6,8 +6,8 @@
 **Branch**: `big/media-player-audit`
 **Ownership**: write `.big/findings/unit-2-ffmpeg-adapter.md` only; read `adapters/media/**`, composition root playback wiring, settings playback.video_encoder
 **Criteria** (subset):
-- [ ] Findings file documenting encoder selection + restart/purge/session limits
+- [x] Findings file documenting encoder selection + restart/purge/session limits
 **Open / blurry**: (none)
-**Last commit**: none
-**Agent ids**: …
-**Iterations**: 0 / 5
+**Last commit**: pending
+**Agent ids**: unit-2-worker
+**Iterations**: 1 / 5
