@@ -8,6 +8,6 @@
 **Criteria** (subset):
 - [x] Load FSM, session-guard, stale recovery documented with evidence
 **Open / blurry**: (none)
-**Last commit**: pending
+**Last commit**: `912da25` feat(big): audit unit 4 nextjs player findings
 **Agent ids**: worker unit-4
 **Iterations**: 1 / 5
