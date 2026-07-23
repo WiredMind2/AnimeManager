@@ -28,15 +28,15 @@
 | 1 | Constants + contracts | serial | big/media-player-fix | hub | pass |
 | 2 | SegmentResolver + scrub fix | serial | big/media-player-fix | hub | pass |
 | 3 | FFmpeg sidecar honesty + session policy | serial | big/media-player-fix | hub | pass |
-| 4 | HTTP/proxy ACL | parallel shard | big/media-player-fix--u4 | shard | pending |
-| 5 | Next.js load/recovery | parallel shard | big/media-player-fix--u5 | shard | pending |
-| 6 | Progress / legacy HTMX | parallel shard | big/media-player-fix--u6 | shard | pending |
-| 7 | Docs | parallel shard | big/media-player-fix--u7 | shard | pending |
+| 4 | HTTP/proxy ACL | parallel shard | big/media-player-fix--u4 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u4` | running |
+| 5 | Next.js load/recovery | parallel shard | big/media-player-fix--u5 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u5` | running |
+| 6 | Progress / legacy HTMX | parallel shard | big/media-player-fix--u6 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u6` | running |
+| 7 | Docs | parallel shard | big/media-player-fix--u7 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u7` | running |
 | 8 | Hub integration | serial | big/media-player-fix | hub | pending |
 
 ## Open items
 
-- U4–U7 shard worktrees not created (Phase 1 scope)
+- Shard wave u4-u7 created; parallel work in progress
 - Token still outlives session record by design (TOKEN_MIN_TTL floor); session cleanup remains primary gate
 - Segment token optional on segment URLs deferred to U4
 

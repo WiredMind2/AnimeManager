@@ -1,9 +1,11 @@
 # Unit 7 — Docs (shard)
 
 **GOAL ref**: GOAL §frozen
-**Mode**: parallel shard (not started in Phase 1)
+**Hub**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix`
+**Worktree**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u7`
 **Branch**: `big/media-player-fix--u7`
-**Ownership**: `docs/features/media_playback.rst`, brief AGENTS.md note if needed
-**Status**: pending
+**Mode**: parallel shard
+**Ownership**: docs/features/media_playback.rst, brief AGENTS.md note if needed
+**Status**: running
 **Last commit**: none
 **Iterations**: 0 / 5
