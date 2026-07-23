@@ -22,7 +22,7 @@
 | # | Title | Mode | Branch | Worktree | Ownership | Status |
 |---|-------|------|--------|----------|-----------|--------|
 | 1 | Backend playback core | serial | big/media-player-audit | hub | .big/findings/unit-1-backend-playback.md, read pplication/playback/** | pass |
-| 2 | FFmpeg transcoder & encoder | serial | big/media-player-audit | hub | .big/findings/unit-2-ffmpeg-adapter.md, read dapters/media/** | pending |
+| 2 | FFmpeg transcoder & encoder | serial | big/media-player-audit | hub | .big/findings/unit-2-ffmpeg-adapter.md, read dapters/media/** | pass |
 | 3 | HTTP/SDK/proxy & access control | serial | big/media-player-audit | hub | .big/findings/unit-3-http-sdk-proxy.md, read clients/http/web.py, clients/sdk.py, proxy | pending |
 | 4 | Next.js Shaka player lifecycle | serial | big/media-player-audit | hub | .big/findings/unit-4-nextjs-player.md, read 
 ext-web/lib/playback/**, 
