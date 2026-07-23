@@ -21,6 +21,7 @@ import {
 import {
   createSession,
   resolveBackendUrl,
+  resolveSessionLogUrl,
   startHeartbeat,
   stopSessionUrl,
 } from "@/lib/playback/session-api";
@@ -307,6 +308,7 @@ export function usePlayback(
       stopUrlRef.current = "";
       sessionIdRef.current = "";
       sessionGenerationRef.current = null;
+      playerLoggerRef.current?.setLogUrl("");
       playerLoggerRef.current?.setSessionId("");
     },
     [destroyPlayer],
@@ -437,6 +439,7 @@ export function usePlayback(
       const loadStartTime = loadStartTimeFromPayload(payload) ?? 0;
       sessionIdRef.current = payload.session_id || "";
       sessionGenerationRef.current = generation;
+      playerLoggerRef.current?.setLogUrl(resolveSessionLogUrl(payload));
       playerLoggerRef.current?.setSessionId(sessionIdRef.current);
       playerLoggerRef.current?.log("info", "session_create_ok", {
         session_id: sessionIdRef.current,

@@ -6,6 +6,7 @@ export type PlaybackSessionPayload = {
   manifest_url: string;
   heartbeat_url: string;
   stop_url: string;
+  log_url?: string;
   expires_at?: number;
   file_title?: string;
   subtitle_requested?: number | null;
