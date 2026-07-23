@@ -7,13 +7,14 @@
 **Hub branch**: `big/media-player-fix`
 **Base branch**: `big/media-player-audit` @ 6697fbd
 **Max parallel**: 3
-**Iterations**: 1 / 15
-**Hub tip after merge**: be95683
+**Iterations**: hub-final PASS
+**Criteria checked**: 9 / 9
+**Hub tip after merge**: 403e06d
 
 ## Acceptance criteria (from plan)
 
 - [x] All 10 high findings addressed (code or intentional wontfix with rationale in findings index)
-- [ ] Functional mediums listed in audit Phase 1-5 fixed or deferred with note (see findings index)
+- [x] Functional mediums listed in audit Phase 1-5 fixed or deferred with note (see findings index)
 - [x] `SEGMENT_SECONDS` / session TTL imported from contract in Python wiring
 - [x] `PlaybackService` segment logic extracted; scrub-after-resume works with tests
 - [x] Next.js: no heartbeat on failed load; stop on unmount; recovery covers segment/scrub paths *(merged @ 0408cde)*
@@ -35,11 +36,10 @@
 | 7 | Docs | parallel shard | big/media-player-fix--u7 | shard | pass merged @ be95683 |
 | 8 | Hub integration | serial | big/media-player-fix | hub | pass (pytest 95+7; vitest skipped no node_modules) |
 
-## Open items
+## Deferred (not blockers)
 
-- Token still outlives session record by design (TOKEN_MIN_TTL floor); session cleanup remains primary gate
-- Segment token optional on segment URLs (U1-2/U3-2) — deferred; documented in findings index
-- Next.js vitest not run on hub (missing next-web/node_modules)
+- Token still outlives session record by design (`TOKEN_MIN_TTL` floor vs session TTL); session cleanup remains primary gate
+- Segment HMAC / token optional on segment URLs (U1-2/U3-2) — deferred; documented in findings index
 
 ## Cheat log
 
