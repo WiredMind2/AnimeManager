@@ -8,6 +8,6 @@
 **Criteria** (subset):
 - [x] Route table + auth matrix + proxy timeout alignment documented as findings
 **Open / blurry**: `player_allow_public` documented as config-dependent (settings.web, default false, not in template)
-**Last commit**: pending
+**Last commit**: `3213d9a` feat(big): audit unit 3 http sdk proxy findings
 **Agent ids**: worker unit-3
 **Iterations**: 1 / 5
