@@ -51,7 +51,6 @@ export default async function AnimeWatchPage({ params, searchParams }: PageProps
         animeId={animeId}
         episodeFiles={watchData.episode_files}
         trackMap={watchData.track_map}
-        episodeResumeMap={watchData.episode_resume_map}
         selectedFileId={watchData.selected_file_id}
         selectedFileTitle={watchData.selected_file_title}
         selectedAudioTracks={toTrackOptions(watchData.selected_audio_tracks)}
