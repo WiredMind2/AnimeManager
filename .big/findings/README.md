@@ -6,6 +6,12 @@ Full audit of media player features (units 1–6). Findings are sorted by **seve
 **Hub branch:** `big/media-player-audit`
 
 ---
+---
+
+## Fix branch status (ig/media-player-fix)
+
+Hub integration merge @ `be95683`. **Highs (10):** U1-1 fixed (segment resolver); U2-1/U5-1 **wontfix** (sidecar-only; burn-in param documented/honest); U3-1 fixed (XFF + trusted proxy + LAN gate); U4-1/U4-2 fixed (load pipeline + recovery); U5-4/U5-5/U5-9 fixed (legacy + repository); U6-1 fixed (media_playback.rst). **Deferred mediums:** optional segment HMAC (U1-2/U3-2), token/session TTL decoupling (U1-4), unwired proxy.ts middleware (U6-6), several client telemetry/recovery edge cases — see unit docs.
+
 
 ## Summary by unit
 
