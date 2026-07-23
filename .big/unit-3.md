@@ -1,13 +1,13 @@
-# Unit 3 — HTTP/SDK/proxy & access control
+# Unit 3 — FFmpeg adapter: sidecar honesty + session policy
 
 **GOAL ref**: GOAL §frozen
-**Hub**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-audit`
-**Worktree**: hub
-**Branch**: `big/media-player-audit`
-**Ownership**: write `.big/findings/unit-3-http-sdk-proxy.md`; read clients/http/web.py playback routes, sdk, facade, next-web proxy/config
+**Hub**: same
+**Branch**: `big/media-player-fix`
+**Ownership**: `adapters/media/ffmpeg_transcoder.py`, `adapters/media/ffmpeg_encoder.py`, ports/DTO/`web.py` response fields as needed
 **Criteria** (subset):
-- [x] Route table + auth matrix + proxy timeout alignment documented as findings
-**Open / blurry**: `player_allow_public` documented as config-dependent (settings.web, default false, not in template)
-**Last commit**: `3213d9a` feat(big): audit unit 3 http sdk proxy findings
-**Agent ids**: worker unit-3
-**Iterations**: 1 / 5
+- [ ] Remove/clarify dead burn-in param; keep `materialize_subtitle_tracks`
+- [ ] Surface PGS/image-sub failures; forced-IDR for `h264_mf`; eviction notify + prefer idle
+**Open / blurry**: (none)
+**Last commit**: none
+**Agent ids**: worker phase-1
+**Iterations**: 0 / 5

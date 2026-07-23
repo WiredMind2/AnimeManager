@@ -1,13 +1,14 @@
-# Unit 2 — FFmpeg transcoder & encoder
+# Unit 2 — Backend resume/scrub + SegmentResolver extract
 
 **GOAL ref**: GOAL §frozen
-**Hub**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-audit`
-**Worktree**: hub
-**Branch**: `big/media-player-audit`
-**Ownership**: write `.big/findings/unit-2-ffmpeg-adapter.md` only; read `adapters/media/**`, composition root playback wiring, settings playback.video_encoder
+**Hub**: same
+**Branch**: `big/media-player-fix`
+**Ownership**: `application/playback/service.py`, new `application/playback/segment_resolver.py`, related tests
 **Criteria** (subset):
-- [x] Findings file documenting encoder selection + restart/purge/session limits
+- [ ] Fix U1-1: speculative gate uses current playhead, not frozen create-time seconds
+- [ ] Pure extract of segment ensure / speculative / restart lock
+- [ ] Tests in `tests/unit/playback/` + `tests/unit/components/test_media_streaming_service.py`
 **Open / blurry**: (none)
-**Last commit**: `102797b` feat(big): audit unit 2 ffmpeg adapter findings
-**Agent ids**: unit-2-worker
-**Iterations**: 1 / 5
+**Last commit**: none
+**Agent ids**: worker phase-1
+**Iterations**: 0 / 5

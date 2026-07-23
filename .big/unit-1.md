@@ -1,14 +1,13 @@
-# Unit 1 — Backend playback core
+# Unit 1 — Constants + contracts
 
-**GOAL ref**: GOAL §frozen
-**Hub**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-audit`
-**Worktree**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-audit` (hub)
-**Branch**: `big/media-player-audit`
-**Ownership**: write `.big/findings/unit-1-backend-playback.md` only; read `application/playback/**`, related anime_service playback methods, ports MediaLibrary/MediaTranscoder
+**GOAL ref**: GOAL §frozen (media player fix plan)
+**Hub**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix`
+**Branch**: `big/media-player-fix`
+**Ownership**: `application/playback/contract.py`, `composition/root.py`, `clients/http/web.py` TTL aliases, facade/commands/`anime_service` defaults
 **Criteria** (subset):
-- [x] Findings file with severity/evidence/repro format
-- [x] Contract constants audited vs composition/HTTP wiring
-**Open / blurry**: Frozen playhead scrub limit may be intentional anti-Shaka tradeoff — verifier/manager to confirm product intent (resolver: manager)
-**Last commit**: pending
-**Agent ids**: worker unit-1
-**Iterations**: 1 / 5
+- [ ] Import `SEGMENT_SECONDS` / `SESSION_TTL_SECONDS` everywhere; add `TOKEN_MIN_TTL_SECONDS`
+- [ ] Align heartbeat to session TTL; document token floor vs session expiry
+**Open / blurry**: (none)
+**Last commit**: none
+**Agent ids**: worker phase-1
+**Iterations**: 0 / 5

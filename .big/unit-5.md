@@ -1,13 +1,9 @@
-# Unit 5 — Subtitles, resume & progress
+# Unit 5 — Next.js load/recovery (shard)
 
 **GOAL ref**: GOAL §frozen
-**Hub**: hub
-**Worktree**: hub
-**Branch**: `big/media-player-audit`
-**Ownership**: write `.big/findings/unit-5-subtitles-resume-progress.md`; read resume.py, progress.ts, subtitles.ts, SubtitleBridge, episode-progress routes
-**Criteria** (subset):
-- [x] E2E resume/progress trace + localStorage/server divergence + subtitle burn-in vs sidecar
-**Open / blurry**: (none) — subtitle burn-in vs sidecar resolved: sidecar-only, burn-in not implemented
-**Last commit**: `7f028e5` feat(big): audit unit 5 subtitles resume progress findings
-**Agent ids**: worker-unit-5
-**Iterations**: 1 / 5
+**Mode**: parallel shard (not started in Phase 1)
+**Branch**: `big/media-player-fix--u5`
+**Ownership**: `next-web/lib/playback/use-playback.ts`, new `load-pipeline.ts` + `recovery.ts`, `session-guard.ts`
+**Status**: pending
+**Last commit**: none
+**Iterations**: 0 / 5
