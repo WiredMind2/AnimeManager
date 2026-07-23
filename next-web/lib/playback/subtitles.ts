@@ -1,9 +1,48 @@
 import {
   AmPlaybackSubtitles,
 } from "@/components/player/SubtitleBridge";
+import { toAbsoluteSourceSeconds } from "@/lib/playback/progress";
 import { resolveAbsoluteBackendUrl, resolveBackendUrl } from "@/lib/playback/session-api";
 import type { PlaybackSessionPayload } from "@/lib/playback/types";
 import type { SubtitleTrackRef } from "@/types/player";
+
+export type SubtitleAnchorOpts = {
+  hlsAnchorSegment?: number;
+  segmentSeconds?: number;
+  maxSeconds?: number | null;
+};
+
+type LibassSyncInstance = {
+  setCurrentTime?: (t: number) => void;
+  __amSyncCleanup?: () => void;
+};
+
+/** Replace default libass sync (raw ``video.currentTime``) with absolute source seconds. */
+export function installLibassAbsoluteTimeSync(
+  inst: LibassSyncInstance,
+  video: HTMLVideoElement,
+  anchorOpts: SubtitleAnchorOpts,
+): void {
+  inst.__amSyncCleanup?.();
+  const syncTime = () => {
+    try {
+      const absolute = toAbsoluteSourceSeconds(Number(video.currentTime || 0), anchorOpts);
+      inst.setCurrentTime?.(absolute);
+    } catch {
+      /* ignore */
+    }
+  };
+  const onPlaying = () => syncTime();
+  video.addEventListener("timeupdate", syncTime);
+  video.addEventListener("seeked", syncTime);
+  video.addEventListener("playing", onPlaying);
+  inst.__amSyncCleanup = () => {
+    video.removeEventListener("timeupdate", syncTime);
+    video.removeEventListener("seeked", syncTime);
+    video.removeEventListener("playing", onPlaying);
+  };
+  syncTime();
+}
 
 export type SubtitleState = {
   trackRefs: Record<string, SubtitleTrackRef>;
@@ -59,10 +98,12 @@ export async function applySubtitleSelection(opts: {
   panel: HTMLElement | null;
   subtitleTrackId: string;
   state: SubtitleState;
+  anchorOpts?: SubtitleAnchorOpts;
   onError: (message: string) => void;
   onClearError: () => void;
 }): Promise<void> {
-  const { shakaPlayer, video, panel, subtitleTrackId, state, onError, onClearError } = opts;
+  const { shakaPlayer, video, panel, subtitleTrackId, state, anchorOpts, onError, onClearError } =
+    opts;
   const chosen = subtitleTrackId;
   const bridge = (video as HTMLVideoElement & {
     __amShakaTextBridge?: {
@@ -112,6 +153,9 @@ export async function applySubtitleSelection(opts: {
     });
     if (inst) {
       state.libassInst = inst;
+      if (anchorOpts) {
+        installLibassAbsoluteTimeSync(inst, video, anchorOpts);
+      }
       if (panel) {
         (panel as HTMLElement & { __amLibassOctopus?: unknown }).__amLibassOctopus = inst;
       }

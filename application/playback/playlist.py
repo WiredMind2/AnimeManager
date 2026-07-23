@@ -46,8 +46,8 @@ def event_manifest_end_index(
     fictional end as the live edge and request far-ahead segments that yank
     ffmpeg away from the playhead.
     """
-    playhead = 0
-    if session.duration_seconds > 0 and session.segment_seconds > 0:
+    playhead = max(0, int(getattr(session, "live_playhead_segment", 0) or 0))
+    if playhead <= 0 and session.duration_seconds > 0 and session.segment_seconds > 0:
         playhead = resume_segment_index(
             session.playback_start_seconds,
             total_segments=total,

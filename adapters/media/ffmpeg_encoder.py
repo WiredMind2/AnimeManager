@@ -149,7 +149,16 @@ def build_video_encode_args(encoder: str, *, keyframe_expr: str) -> list[str]:
             ]
         )
     elif resolved == "h264_mf":
-        args.extend(["-rate_control", "quality", "-quality", "50"])
+        args.extend(
+            [
+                "-rate_control",
+                "quality",
+                "-quality",
+                "50",
+                "-forced_idr",
+                "1",
+            ]
+        )
 
     args.extend(["-force_key_frames", keyframe_expr])
     return args

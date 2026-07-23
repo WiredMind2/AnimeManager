@@ -57,6 +57,19 @@ export async function stopSessionUrl(stopUrl: string): Promise<void> {
   await fetch(resolveBackendUrl(stopUrl), { method: "POST", credentials: "include" });
 }
 
+/** Tokenized log ingest URL from play payload, with fallback when ``log_url`` is omitted. */
+export function resolveSessionLogUrl(
+  payload: Pick<PlaybackSessionPayload, "log_url" | "session_id" | "token">,
+): string {
+  if (payload.log_url) return payload.log_url;
+  const sid = String(payload.session_id || "").trim();
+  const token = String(payload.token || "").trim();
+  if (sid && token) {
+    return `/ui/stream/${encodeURIComponent(sid)}/log?token=${encodeURIComponent(token)}`;
+  }
+  return sid ? `/ui/stream/${encodeURIComponent(sid)}/log` : "";
+}
+
 export type HeartbeatOptions = {
   /** Invoked when the server reports the playback session is gone (HTTP 404). */
   onSessionLost?: (reason: "heartbeat_404") => void;

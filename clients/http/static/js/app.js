@@ -201,13 +201,6 @@
     } catch (_) {
       trackMap = {};
     }
-    let serverResumeMap = {};
-    try {
-      const rawSrv = panel.getAttribute("data-episode-resume-map") || "{}";
-      serverResumeMap = JSON.parse(rawSrv);
-    } catch (_) {
-      serverResumeMap = {};
-    }
     const episodeProgressUrl =
       panel.getAttribute("data-episode-progress-url") || "";
     if (!endpoint || !video) return;
@@ -224,6 +217,10 @@
     let replayQueued = false;
     let subtitleTrackRefs = {};
     let subtitleAssById = {};
+    let hlsAnchorSegment = 0;
+    let segmentSeconds = 4;
+    let streamDurationSeconds = 0;
+    let playbackStartSeconds = 0;
 
     const setStatus = (text) => {
       if (status) status.textContent = text;
@@ -451,16 +448,50 @@
       stopUrl = "";
       heartbeatUrl = "";
       sessionId = "";
+      hlsAnchorSegment = 0;
+      segmentSeconds = 4;
+      streamDurationSeconds = 0;
+      playbackStartSeconds = 0;
     };
 
     const positionKey = (fileId) =>
       animeId && fileId ? `animePlayer:${animeId}:${fileId}` : "";
 
+    const clampPlaybackSeconds = (seconds, maxSeconds) => {
+      if (!Number.isFinite(seconds) || seconds < 0) return 0;
+      if (maxSeconds != null && Number.isFinite(maxSeconds) && maxSeconds > 0) {
+        return Math.min(seconds, maxSeconds * 1.1);
+      }
+      return seconds;
+    };
+
+    /** Map video.currentTime to absolute source seconds for anchored HLS windows. */
+    const toAbsoluteSourceSeconds = (videoSeconds, opts) => {
+      const anchor = Math.max(0, Number(opts.hlsAnchorSegment ?? 0));
+      const segSecs = Math.max(1, Number(opts.segmentSeconds ?? 4));
+      const t = Number(videoSeconds || 0);
+      if (!Number.isFinite(t) || t < 0) return 0;
+      if (anchor <= 0) {
+        return clampPlaybackSeconds(t, opts.maxSeconds);
+      }
+      const anchorSource = anchor * segSecs;
+      const absolute = t >= anchorSource - 1 ? t : anchorSource + t;
+      return clampPlaybackSeconds(absolute, opts.maxSeconds);
+    };
+
+    const videoTimeToSourceSeconds = (videoSeconds) =>
+      toAbsoluteSourceSeconds(videoSeconds, {
+        hlsAnchorSegment,
+        segmentSeconds,
+        maxSeconds: streamDurationSeconds > 0 ? streamDurationSeconds : null,
+      });
+
     const savePosition = () => {
       const key = positionKey(currentFileId);
-      if (!key || !video.currentTime) return;
+      const absolute = videoTimeToSourceSeconds(Number(video.currentTime || 0));
+      if (!key || absolute <= 0) return;
       try {
-        window.localStorage.setItem(key, String(video.currentTime));
+        window.localStorage.setItem(key, String(absolute));
       } catch (_) {
         /* ignore */
       }
@@ -489,41 +520,10 @@
       if (!episodeProgressUrl || !currentFileId || video.paused) return;
       const now = Date.now();
       if (now - lastServerProgressAt < 20000) return;
-      const t = Number(video.currentTime || 0);
+      const t = videoTimeToSourceSeconds(Number(video.currentTime || 0));
       if (!Number.isFinite(t) || t < 5) return;
       lastServerProgressAt = now;
       postEpisodeProgress("IN_PROGRESS", t);
-    };
-
-    // Read the saved resume offset *before* asking the server for a
-    // session. The server can then start ffmpeg encoding from that
-    // offset, so the very first segment the player requests already
-    // exists on disk and we don't need a seek-on-demand restart at
-    // page load.
-    const readResumeSeconds = (fileId) => {
-      const key = positionKey(fileId);
-      let localSecs = 0;
-      if (key) {
-        let value = null;
-        try {
-          value = window.localStorage.getItem(key);
-        } catch (_) {
-          value = null;
-        }
-        if (value) {
-          const secs = Number(value);
-          if (Number.isFinite(secs) && secs >= 10) localSecs = secs;
-        }
-      }
-      let serverSecs = 0;
-      const srv = serverResumeMap[fileId];
-      if (srv != null) {
-        const n = Number(srv);
-        if (Number.isFinite(n) && n >= 10) serverSecs = n;
-      }
-      const merged = Math.max(localSecs, serverSecs);
-      if (!Number.isFinite(merged) || merged < 10) return 0;
-      return merged;
     };
 
     const updateTrackSelectors = (fileId) => {
@@ -684,17 +684,10 @@
       emitAnalytics("playback_requested", { file_title: fileTitle || "" });
       await stopSession();
 
-      const resumeSeconds = readResumeSeconds(fileId);
       const form = new FormData();
       form.set("file_id", fileId || "");
       if (audioSelect && audioSelect.value !== "") {
         form.set("audio_track", audioSelect.value);
-      }
-      if (resumeSeconds > 0) {
-        // Pad a couple of seconds of headroom so the user can scrub
-        // backwards a tiny bit without forcing a seek-on-demand
-        // restart on the very first segment.
-        form.set("start_time", String(Math.max(0, resumeSeconds - 2)));
       }
       let payload;
       try {
@@ -761,6 +754,16 @@
       const subtitleTracks = Array.isArray(payload && payload.subtitle_tracks)
         ? payload.subtitle_tracks
         : [];
+      playbackStartSeconds = Number(payload.playback_start_seconds ?? 0);
+      hlsAnchorSegment = Math.max(0, Number(payload.hls_anchor_segment ?? 0));
+      segmentSeconds = Math.max(1, Number(payload.segment_seconds ?? 4));
+      const knownDuration = Number(payload.duration_seconds ?? 0);
+      streamDurationSeconds =
+        Number.isFinite(knownDuration) && knownDuration > 0 ? knownDuration : 0;
+      const loadStartTime =
+        Number.isFinite(playbackStartSeconds) && playbackStartSeconds > 0
+          ? playbackStartSeconds
+          : 0;
 
       try {
         const shaka = await loadShakaScript();
@@ -869,11 +872,9 @@
           });
         });
 
-        // The server-side encoder already started at our requested
-        // offset, so the very first segment is the one near the
-        // resume point. Tell Shaka to start there too. ``startTime``
-        // is honoured by ``Player.load`` for both DASH and HLS.
-        await shakaPlayer.load(manifestUrl, resumeSeconds || null);
+        // Server-side ffmpeg already anchored at playback_start_seconds; align
+        // Shaka load to the same absolute source offset (not client resume hints).
+        await shakaPlayer.load(manifestUrl, loadStartTime);
         subtitleTrackRefs = {};
         subtitleAssById = {};
         for (const track of subtitleTracks) {
@@ -907,12 +908,12 @@
         }
         emitAnalytics("manifest_loaded", {
           manifest_url: manifestUrl,
-          resume_seconds: resumeSeconds,
+          resume_seconds: playbackStartSeconds,
         });
         setStatus("Ready · press play");
         postEpisodeProgress(
           "IN_PROGRESS",
-          resumeSeconds > 0 ? resumeSeconds : null,
+          playbackStartSeconds > 0 ? playbackStartSeconds : null,
         );
       } catch (err) {
         const message = err && err.message ? err.message : "Playback failed to start.";
@@ -923,7 +924,7 @@
           name: err && err.name,
           stack: err && err.stack,
           manifest_url: manifestUrl || "",
-          resume_seconds: resumeSeconds,
+          resume_seconds: playbackStartSeconds,
           subtitle_track_count: subtitleTracks.length,
         });
         emitAnalytics("playback_error", {
@@ -1015,12 +1016,15 @@
     });
     video.addEventListener("ended", () => {
       savePosition();
-      postEpisodeProgress("SEEN", Number(video.currentTime || 0));
+      postEpisodeProgress(
+        "SEEN",
+        videoTimeToSourceSeconds(Number(video.currentTime || 0)),
+      );
       emitAnalytics("playback_completed", {});
     });
     video.addEventListener("pause", () => {
       savePosition();
-      const t = Number(video.currentTime || 0);
+      const t = videoTimeToSourceSeconds(Number(video.currentTime || 0));
       if (t > 5) {
         postEpisodeProgress("IN_PROGRESS", t);
       }

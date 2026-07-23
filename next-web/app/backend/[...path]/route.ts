@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getInternalBackendUrl } from "@/lib/config";
 import { REQUEST_ID_HEADER } from "@/lib/api";
+import { applyProxyClientIdentityHeaders } from "@/proxy";
 
 /** Resume playback can block on ffmpeg segment materialization for up to ~3 minutes. */
 const PROXY_TIMEOUT_MS = 240_000;
@@ -18,6 +19,7 @@ async function proxyRequest(request: NextRequest, context: RouteContext): Promis
   headers.delete("host");
   headers.delete("connection");
   headers.delete("content-length");
+  applyProxyClientIdentityHeaders(request, headers);
   const requestId = headers.get(REQUEST_ID_HEADER) ?? crypto.randomUUID();
   headers.set(REQUEST_ID_HEADER, requestId);
 
