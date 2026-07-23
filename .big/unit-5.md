@@ -8,6 +8,6 @@
 **Criteria** (subset):
 - [x] E2E resume/progress trace + localStorage/server divergence + subtitle burn-in vs sidecar
 **Open / blurry**: (none) — subtitle burn-in vs sidecar resolved: sidecar-only, burn-in not implemented
-**Last commit**: pending
+**Last commit**: `7f028e5` feat(big): audit unit 5 subtitles resume progress findings
 **Agent ids**: worker-unit-5
 **Iterations**: 1 / 5
