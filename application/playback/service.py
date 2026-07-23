@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import math
 import os
-import re
 import shutil
 import threading
 import time
@@ -19,17 +18,13 @@ from application.commands import (
 )
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.playback.contract import (
-    FORWARD_WAIT_SECONDS,
-    MAX_FORWARD_JUMP_SEGMENTS,
-    PREFETCH_MARGIN,
-    RESERVED_INTERNAL_NAMES,
     RESUME_SEGMENT_WAIT_SECONDS,
     SEGMENT_SECONDS,
-    SEGMENT_WAIT_SECONDS,
     SESSION_CREATE_WAIT_SECONDS,
+    SESSION_TTL_SECONDS,
+    TOKEN_MIN_TTL_SECONDS,
 )
 from application.playback.playlist import (
-    latest_existing_segment,
     write_initial_playlist,
     write_manifest_file,
 )
@@ -39,6 +34,7 @@ from application.playback.resume import (
     resume_segment_index,
     wait_for_file,
 )
+from application.playback.segment_resolver import SegmentResolver
 from application.playback.session_store import SessionTokenStore
 from application.playback.transcode_session import TranscodeSession
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
@@ -48,8 +44,6 @@ from ports.interfaces import MediaLibraryPort, MediaTranscoderPort
 from shared.telemetry import get_telemetry
 
 _LOG = logging.getLogger(__name__)
-
-_SEGMENT_NAME_RE = re.compile(r"^segment_(\d+)\.ts$")
 
 
 def _safe_int(value: object) -> int | None:
@@ -82,7 +76,7 @@ class PlaybackService:
         media_library: MediaLibraryPort,
         transcoder: MediaTranscoderPort,
         token_secret: str | bytes | None = None,
-        default_ttl_seconds: int = 900,
+        default_ttl_seconds: int = SESSION_TTL_SECONDS,
         segment_seconds: int = SEGMENT_SECONDS,
     ) -> None:
         self._media_library = media_library
@@ -95,6 +89,11 @@ class PlaybackService:
         self._restart_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
         self._telemetry = get_telemetry()
+        self._segments = SegmentResolver(
+            transcode=self._transcode,
+            restart_at=self._restart_at,
+            restart_lock=self._restart_lock,
+        )
 
     def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
         out: list[EpisodeFileDTO] = []
@@ -227,7 +226,7 @@ class PlaybackService:
 
         token = self._tokens.build(
             session_id=session_id,
-            expires_at=now + max(ttl_seconds, 12 * 3600),
+            expires_at=now + max(ttl_seconds, TOKEN_MIN_TTL_SECONDS),
         )
         dto = PlaybackSessionDTO(
             session_id=session_id,
@@ -250,6 +249,8 @@ class PlaybackService:
             hls_anchor_segment=start_segment,
             transcode_start_segment=start_segment,
             playback_start_seconds=playback_start,
+            live_playhead_segment=resume_seg if resume_seg > 0 else start_segment,
+            ttl_seconds=ttl_seconds,
         )
         with self._lock:
             self._sessions[session_id] = dto
@@ -301,7 +302,29 @@ class PlaybackService:
                 raise NotFoundError("Playback session not found.")
             now = time.time()
             session.last_seen_at = now
-            session.expires_at = now + self._default_ttl_seconds
+            ttl = max(60, int(session.ttl_seconds or self._default_ttl_seconds))
+            session.expires_at = now + ttl
+            if (
+                command.position_seconds is not None
+                and session.total_segments > 0
+                and session.segment_seconds > 0
+            ):
+                max_duration = (
+                    session.duration_seconds if session.duration_seconds > 0 else None
+                )
+                playhead_seconds = clamp_resume_seconds(
+                    command.position_seconds,
+                    max_duration=max_duration,
+                )
+                playhead_seg = resume_segment_index(
+                    playhead_seconds,
+                    total_segments=session.total_segments,
+                    segment_seconds=session.segment_seconds,
+                )
+                session.live_playhead_segment = max(
+                    session.live_playhead_segment,
+                    playhead_seg,
+                )
             return session
 
     def stop_session(self, command: StopPlaybackSessionCommand) -> None:
@@ -330,7 +353,7 @@ class PlaybackService:
             target = (Path(session.output_dir) / segment_name).resolve()
             if not _is_within_dir(target, Path(session.output_dir).resolve()):
                 raise ValidationError("Segment path escapes stream directory.")
-            self._ensure_segment(session, segment_name, target)
+            self._segments.ensure_segment(session, segment_name, target)
             target_path = str(target)
             self._telemetry.record_ms(
                 "playback.segment_resolve_ms",
@@ -368,143 +391,33 @@ class PlaybackService:
                 session.anime_id,
             )
 
-    def _ensure_segment(
-        self,
-        session: PlaybackSessionDTO,
-        segment_name: str,
-        target: Path,
-    ) -> None:
-        if segment_name in RESERVED_INTERNAL_NAMES:
-            raise NotFoundError("Internal stream artifact is not exposed.")
-        if target.is_file():
+    def transcode_activity_timestamp(self, session_id: str) -> float:
+        """Return last viewer activity for ffmpeg eviction ranking."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+        if session is None:
+            return 0.0
+        return float(session.last_seen_at)
+
+    def handle_transcode_evicted(self, session_id: str) -> None:
+        """Called when the ffmpeg adapter evicts this session's encode process."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+        if session is None:
             return
-
-        match = _SEGMENT_NAME_RE.match(segment_name)
-        if match is None:
-            wait_for_file(target, FORWARD_WAIT_SECONDS)
-            return
-
-        segment_index = int(match.group(1))
-        if session.total_segments <= 0 or session.segment_seconds <= 0:
-            wait_for_file(target, FORWARD_WAIT_SECONDS)
-            return
-        if segment_index >= session.total_segments:
-            raise NotFoundError("Requested segment is past the end of the stream.")
-
-        if segment_index < session.hls_anchor_segment:
-            if target.is_file():
-                return
-            player_session_log.append(
-                session.output_dir,
-                source="server",
-                event="segment_before_anchor",
-                level="warn",
-                session_id=session.session_id,
-                segment=segment_name,
-                segment_index=segment_index,
-                hls_anchor_segment=session.hls_anchor_segment,
-            )
-            raise NotFoundError("Requested segment is before the stream anchor.")
-
-        wait_secs = self._segment_wait_seconds(session, segment_index)
-        latest = latest_existing_segment(session.output_dir)
-        in_prefetch = segment_index <= latest + 3
-
-        if in_prefetch:
-            if not self._transcode.is_running(session.session_id):
-                # Restart at the requested segment, not the anchor: the
-                # output dir may already contain later segments from a
-                # previous seek-on-demand run (e.g. a Shaka probe at 110
-                # fills 110-217), so ``latest`` can be far ahead of the
-                # requested segment. Restarting at ``latest+1`` would
-                # skip the requested segment entirely; restarting at the
-                # anchor re-encodes existing segments and underruns the
-                # buffer. Seeking to ``segment_index`` emits the missing
-                # segment in ~2s and fills forward from there.
-                self._restart_at(session, segment_index)
-            if wait_for_file(target, wait_secs):
-                return
-
-        if self._is_speculative_far_request(session, segment_index):
-            player_session_log.append(
-                session.output_dir,
-                source="server",
-                event="segment_speculative_rejected",
-                level="warn",
-                session_id=session.session_id,
-                segment=segment_name,
-                segment_index=segment_index,
-                playhead_segment=resume_segment_index(
-                    session.playback_start_seconds,
-                    total_segments=session.total_segments,
-                    segment_seconds=session.segment_seconds,
-                ),
-                transcode_start_segment=session.transcode_start_segment,
-                latest_segment=latest,
-            )
-            raise NotFoundError("Requested segment is too far ahead of the playhead.")
-
-        lock = self._restart_lock(session.session_id)
-        with lock:
-            if target.is_file():
-                return
-            if self._is_speculative_far_request(session, segment_index):
-                raise NotFoundError(
-                    "Requested segment is too far ahead of the playhead."
-                )
-            self._restart_at(session, segment_index)
-            if not wait_for_file(target, wait_secs):
-                _LOG.warning(
-                    "media_segment_unavailable session=%s seg=%s latest=%s",
-                    session.session_id,
-                    segment_index,
-                    latest_existing_segment(session.output_dir),
-                )
-                raise NotFoundError("Requested media artifact is not available.")
-
-    def _is_speculative_far_request(
-        self,
-        session: PlaybackSessionDTO,
-        segment_index: int,
-    ) -> bool:
-        """True when a far-ahead probe would yank a healthy playhead encode.
-
-        Shaka probes near the live edge of incomplete EVENT playlists during
-        load. Restarting ffmpeg there corrupts the MSE timeline (playhead
-        jumps, UINT32-scale duration). Intentional scrub-ahead within
-        ``MAX_FORWARD_JUMP_SEGMENTS`` still restarts as before.
-        """
-        if not self._transcode.is_running(session.session_id):
-            return False
-        playhead = resume_segment_index(
-            session.playback_start_seconds,
-            total_segments=session.total_segments,
-            segment_seconds=session.segment_seconds,
+        player_session_log.append(
+            session.output_dir,
+            source="server",
+            event="transcode_evicted",
+            level="warn",
+            session_id=session_id,
+            anime_id=session.anime_id,
         )
-        encode_near_playhead = (
-            session.transcode_start_segment <= playhead + PREFETCH_MARGIN
+        _LOG.warning(
+            "media_transcode_evicted session=%s anime_id=%s",
+            session_id,
+            session.anime_id,
         )
-        too_far = segment_index > playhead + MAX_FORWARD_JUMP_SEGMENTS
-        return encode_near_playhead and too_far
-
-    def _segment_wait_seconds(
-        self,
-        session: PlaybackSessionDTO,
-        segment_index: int,
-    ) -> float:
-        if session.playback_start_seconds <= 0:
-            return SEGMENT_WAIT_SECONDS
-        playhead = resume_segment_index(
-            session.playback_start_seconds,
-            total_segments=session.total_segments,
-            segment_seconds=session.segment_seconds,
-        )
-        if (
-            segment_index == playhead
-            or session.hls_anchor_segment <= segment_index <= playhead
-        ):
-            return RESUME_SEGMENT_WAIT_SECONDS
-        return SEGMENT_WAIT_SECONDS
 
     def _restart_at(self, session: PlaybackSessionDTO, segment_index: int) -> None:
         _LOG.info(
@@ -528,6 +441,10 @@ class PlaybackService:
                 live = self._sessions.get(session.session_id)
                 if live is not None:
                     live.transcode_start_segment = segment_index
+                    live.live_playhead_segment = max(
+                        live.live_playhead_segment,
+                        segment_index,
+                    )
         except Exception as exc:  # noqa: BLE001
             _LOG.warning(
                 "media_segment_restart_failed session=%s seg=%s err=%s",
@@ -584,6 +501,9 @@ class PlaybackService:
             ass_fn = str(row.get("ass_filename") or "").strip()
             if ass_fn:
                 entry["ass_filename"] = ass_fn
+            error = str(row.get("error") or "").strip()
+            if error:
+                entry["error"] = error
             out.append(entry)
         return out
 

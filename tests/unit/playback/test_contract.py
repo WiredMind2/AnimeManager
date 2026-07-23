@@ -263,3 +263,87 @@ def test_speculative_far_segment_rejected_without_restart(tmp_path: Path):
             )
         )
     assert len(transcoder.calls) == calls_before
+
+
+def test_heartbeat_advances_live_playhead_segment(tmp_path: Path):
+    """Client heartbeats must advance live_playhead_segment for seek gating."""
+    from application.commands import HeartbeatPlaybackSessionCommand
+
+    svc, _ = _service(tmp_path, duration=1422.0)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=133.0,
+        )
+    )
+    before = session.live_playhead_segment
+    expected = resume_segment_index(
+        400.0,
+        total_segments=session.total_segments,
+        segment_seconds=session.segment_seconds,
+    )
+    updated = svc.heartbeat(
+        HeartbeatPlaybackSessionCommand(
+            session_id=session.session_id,
+            position_seconds=400.0,
+        )
+    )
+    assert updated.live_playhead_segment == expected
+    assert updated.live_playhead_segment > before
+
+
+def test_heartbeat_extends_session_by_original_ttl(tmp_path: Path):
+    from application.commands import HeartbeatPlaybackSessionCommand
+
+    svc, _ = _service(tmp_path)
+    custom_ttl = 3600
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=custom_ttl,
+        )
+    )
+    before_expires = session.expires_at
+    updated = svc.heartbeat(
+        HeartbeatPlaybackSessionCommand(session_id=session.session_id)
+    )
+    assert updated.ttl_seconds == custom_ttl
+    assert updated.expires_at > before_expires
+    assert updated.expires_at - time.time() == pytest.approx(custom_ttl, rel=0.05)
+
+
+def test_intentional_scrub_after_playhead_advance_restarts(tmp_path: Path):
+    """After the client playhead moves forward, scrub-ahead near it must restart."""
+    from application.commands import HeartbeatPlaybackSessionCommand
+
+    svc, transcoder = _service(tmp_path, duration=1422.0)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=133.0,
+        )
+    )
+    calls_before = len(transcoder.calls)
+    svc.heartbeat(
+        HeartbeatPlaybackSessionCommand(
+            session_id=session.session_id,
+            position_seconds=400.0,
+        )
+    )
+    _session, seg_path = svc.resolve_media_path(
+        GetPlaybackSessionQuery(
+            session_id=session.session_id,
+            token=session.token,
+            segment_name="segment_00100.ts",
+        )
+    )
+    assert Path(seg_path).is_file()
+    assert len(transcoder.calls) > calls_before
