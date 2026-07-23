@@ -27,7 +27,7 @@
 | 4 | Next.js Shaka player lifecycle | serial | big/media-player-audit | hub | .big/findings/unit-4-nextjs-player.md, read 
 ext-web/lib/playback/**, 
 ext-web/components/player/** | pass |
-| 5 | Subtitles, resume & progress | serial | big/media-player-audit | hub | .big/findings/unit-5-subtitles-resume-progress.md | pending |
+| 5 | Subtitles, resume & progress | serial | big/media-player-audit | hub | .big/findings/unit-5-subtitles-resume-progress.md | pass |
 | 6 | Tests, legacy spot-check, docs | serial | big/media-player-audit | hub | .big/findings/unit-6-tests-legacy-docs.md, .big/findings/README.md | pending |
 
 ## Open items
