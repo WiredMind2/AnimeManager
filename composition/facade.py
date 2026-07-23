@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from application.playback.contract import SESSION_TTL_SECONDS
 from application.services.anime_service import AnimeApplicationService
 from application.services.startup_jobs import (
     StartupJobReport,
@@ -358,7 +359,7 @@ class EmbeddedClientFacade:
         file_id: str,
         *,
         client_host: str = "",
-        ttl_seconds: int = 900,
+        ttl_seconds: int = SESSION_TTL_SECONDS,
         audio_track: int | None = None,
         subtitle_track: int | None = None,
         start_time_seconds: float | None = None,

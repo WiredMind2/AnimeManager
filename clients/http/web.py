@@ -55,11 +55,13 @@ try:  # pragma: no cover - import path differs depending on launch mode
         ValidationError,
     )
     from ..sdk import ClientSDK
+    from application.playback.contract import SESSION_TTL_SECONDS
     from application.services import player_session_log
     from . import log_buffer, settings_form
     from .errors import map_error_to_status
     from .telemetry_events import ingest_client_events
 except ImportError:  # pragma: no cover
+    from application.playback.contract import SESSION_TTL_SECONDS  # type: ignore
     from application.services import player_session_log  # type: ignore
     from clients.sdk import ClientSDK
     from clients.http import log_buffer, settings_form  # type: ignore  # noqa: F401
@@ -98,7 +100,7 @@ router = APIRouter(default_response_class=HTMLResponse)
 # ---------------------------------------------------------------------------
 PAGE_SIZE = 24
 DEFAULT_USER_ID = 1
-PLAYBACK_SESSION_TTL_SECONDS = 900
+PLAYBACK_SESSION_TTL_SECONDS = SESSION_TTL_SECONDS
 
 # Maps to the historical Tk filter list (settings.json filter parity).
 FILTER_OPTIONS: list[dict[str, Any]] = [

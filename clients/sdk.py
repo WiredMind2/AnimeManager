@@ -8,9 +8,11 @@ from typing import Any
 
 try:
     from ..composition.root import build_embedded_facade
+    from ..application.playback.contract import SESSION_TTL_SECONDS
     from ..domain.errors import AnimeManagerError
 except ImportError:
     from composition.root import build_embedded_facade
+    from application.playback.contract import SESSION_TTL_SECONDS
     from domain.errors import AnimeManagerError
 
 
@@ -414,7 +416,7 @@ class ClientSDK:
         file_id: str,
         *,
         client_host: str = "",
-        ttl_seconds: int = 900,
+        ttl_seconds: int = SESSION_TTL_SECONDS,
         audio_track: int | None = None,
         subtitle_track: int | None = None,
         start_time_seconds: float | None = None,

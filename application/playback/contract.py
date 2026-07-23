@@ -25,6 +25,12 @@ EVENT_MANIFEST_LOOKAHEAD = 15
 MAX_FORWARD_JUMP_SEGMENTS = 90
 
 SESSION_TTL_SECONDS = 900
+# HMAC playback tokens must outlive a single browser tab's idle gaps but
+# still track session cleanup. ``PlaybackService`` uses
+# ``max(session.ttl_seconds, TOKEN_MIN_TTL_SECONDS)`` when minting tokens
+# while ``session.expires_at`` uses the per-session TTL only (heartbeat
+# extends by ``session.ttl_seconds``).
+TOKEN_MIN_TTL_SECONDS = 12 * 3600
 SESSION_CREATE_WAIT_SECONDS = 25.0
 RESUME_SEGMENT_WAIT_SECONDS = 180.0
 SEGMENT_WAIT_SECONDS = 20.0
@@ -40,6 +46,7 @@ __all__ = [
     "EVENT_MANIFEST_LOOKAHEAD",
     "MAX_FORWARD_JUMP_SEGMENTS",
     "SESSION_TTL_SECONDS",
+    "TOKEN_MIN_TTL_SECONDS",
     "SESSION_CREATE_WAIT_SECONDS",
     "RESUME_SEGMENT_WAIT_SECONDS",
     "SEGMENT_WAIT_SECONDS",
