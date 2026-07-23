@@ -8,6 +8,6 @@
 **Criteria** (subset):
 - [x] Findings file documenting encoder selection + restart/purge/session limits
 **Open / blurry**: (none)
-**Last commit**: pending
+**Last commit**: `102797b` feat(big): audit unit 2 ffmpeg adapter findings
 **Agent ids**: unit-2-worker
 **Iterations**: 1 / 5
