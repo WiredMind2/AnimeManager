@@ -1,3 +1,8 @@
 # Media player audit findings
 
-Findings pending — units 1–6 will populate `unit-N-*.md` files and this index (sorted by severity with cross-links).
+| Unit | File | Findings | High | Medium | Low | Info |
+|------|------|----------|------|--------|-----|------|
+| 1 | [unit-1-backend-playback.md](unit-1-backend-playback.md) | 16 | 1 | 5 | 7 | 3 |
+| 3 | [unit-3-http-sdk-proxy.md](unit-3-http-sdk-proxy.md) | 15 | 1 | 6 | 5 | 3 |
+
+Units 2, 4–6 pending.
