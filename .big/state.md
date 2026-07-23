@@ -30,7 +30,7 @@
 | 3 | FFmpeg sidecar honesty + session policy | serial | big/media-player-fix | hub | pass |
 | 4 | HTTP/proxy ACL | parallel shard | big/media-player-fix--u4 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u4` | running |
 | 5 | Next.js load/recovery | parallel shard | big/media-player-fix--u5 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u5` | running |
-| 6 | Progress / legacy HTMX | parallel shard | big/media-player-fix--u6 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u6` | running |
+| 6 | Progress / legacy HTMX | parallel shard | big/media-player-fix--u6 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u6` | pass (75d23f4) |
 | 7 | Docs | parallel shard | big/media-player-fix--u7 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u7` | pass (7235ae1) |
 | 8 | Hub integration | serial | big/media-player-fix | hub | pending |
 
