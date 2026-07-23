@@ -18,7 +18,7 @@
 - [ ] Next.js: no heartbeat on failed load; stop on unmount; recovery covers segment/scrub paths *(U5 shard)*
 - [ ] Proxy forwards client IP; LAN gate meaningful in web mode *(U4 shard)*
 - [ ] Status change preserves position; legacy progress/resume corrected *(U6 shard)*
-- [ ] Docs match HLS architecture *(U7 shard)*
+- [x] Docs match HLS architecture *(U7 shard @ 7235ae1)*
 - [x] Features preserved: seek-on-demand HLS, sidecar subs, audio track select, resume, max 2 sessions, hardware encoder auto
 
 ## Work units
@@ -31,12 +31,12 @@
 | 4 | HTTP/proxy ACL | parallel shard | big/media-player-fix--u4 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u4` | running |
 | 5 | Next.js load/recovery | parallel shard | big/media-player-fix--u5 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u5` | running |
 | 6 | Progress / legacy HTMX | parallel shard | big/media-player-fix--u6 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u6` | running |
-| 7 | Docs | parallel shard | big/media-player-fix--u7 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u7` | running |
+| 7 | Docs | parallel shard | big/media-player-fix--u7 | `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u7` | pass (7235ae1) |
 | 8 | Hub integration | serial | big/media-player-fix | hub | pending |
 
 ## Open items
 
-- Shard wave u4-u7 created; parallel work in progress
+- Shard wave u4-u6 still in progress; u7 pass @ shard 7235ae1 (not merged)
 - Token still outlives session record by design (TOKEN_MIN_TTL floor); session cleanup remains primary gate
 - Segment token optional on segment URLs deferred to U4
 
