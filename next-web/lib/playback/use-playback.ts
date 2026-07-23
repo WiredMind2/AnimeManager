@@ -10,7 +10,6 @@ import {
   createPlayerLogger,
   mediaErrorCodeName,
   playerFaultFields,
-  shakaErrorToPlain,
   type PlayerLogger,
 } from "@/lib/player-log";
 import {
@@ -27,13 +26,18 @@ import {
 } from "@/lib/playback/session-api";
 import { shouldStopSession } from "@/lib/playback/session-guard";
 import {
-  buildShakaConfig,
-  createShakaPlayer,
-  loadStartTimeFromPayload,
-} from "@/lib/playback/shaka";
+  performTimelineSanitySeek,
+  runShakaLoadPipeline,
+  shouldStartHeartbeatAfterLoad,
+} from "@/lib/playback/load-pipeline";
+import {
+  createSessionRecovery,
+  type RecoveryReason,
+  type SessionRecoveryController,
+} from "@/lib/playback/recovery";
+import { loadStartTimeFromPayload } from "@/lib/playback/shaka";
 import {
   applySubtitleSelection,
-  attachSubtitleTracks,
   type SubtitleState,
 } from "@/lib/playback/subtitles";
 import type { PlaybackTrackOption } from "@/lib/playback/types";
@@ -41,9 +45,6 @@ import type { PlaybackSessionPayload } from "@/types/player";
 
 /** Survives remounts so in-flight loads can be invalidated. */
 let playbackLoadEpoch = 0;
-
-const MAX_SESSION_RECOVERY_ATTEMPTS = 3;
-const STALE_SESSION_RECOVERY_DELAY_MS = 250;
 
 export type UsePlaybackOptions = {
   animeId: number;
@@ -99,9 +100,7 @@ export function usePlayback(
   const replayInFlightRef = useRef(false);
   const replayQueuedRef = useRef(false);
   const queueReplayCurrentRef = useRef<() => void>(() => {});
-  const scheduleStaleSessionRecoveryRef = useRef<(reason: string) => void>(() => {});
-  const sessionRecoveryAttemptsRef = useRef(0);
-  const staleRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionRecoveryRef = useRef<SessionRecoveryController | null>(null);
   const subtitleStateRef = useRef<SubtitleState>({
     trackRefs: {},
     assById: {},
@@ -346,6 +345,11 @@ export function usePlayback(
       panel: panelRef.current,
       subtitleTrackId,
       state: subtitleStateRef.current,
+      anchorOpts: {
+        hlsAnchorSegment: hlsAnchorSegmentRef.current,
+        segmentSeconds: segmentSecondsRef.current,
+        maxSeconds: streamDurationRef.current,
+      },
       onError: setError,
       onClearError: () => setError(""),
     });
@@ -457,212 +461,73 @@ export function usePlayback(
       userSeekingRef.current = false;
       timelineRecoveringRef.current = false;
 
-      try {
-        const { player, shaka } = await createShakaPlayer(panelRef.current);
-        markLoadPhase("shaka_script_loaded", { generation });
-        if (abortIfStale("after_shaka_script")) return;
+      const resumePlayback = loadStartTime > 0;
+      const anchorOpts = {
+        hlsAnchorSegment,
+        segmentSeconds,
+        maxSeconds: knownDuration > 0 ? knownDuration : streamDurationRef.current,
+      };
 
-        const resumePlayback = loadStartTime !== undefined && loadStartTime > 0;
-        markLoadPhase("shaka_configuring", { generation });
-        const shakaConfig = buildShakaConfig(resumePlayback) as Record<string, unknown>;
-        player.configure(shakaConfig);
-        markLoadPhase("shaka_configured", { generation });
+      const loadResult = await runShakaLoadPipeline({
+        generation,
+        video,
+        panel: panelRef.current,
+        manifestUrl,
+        payload,
+        loadStartTime,
+        knownDuration,
+        resumePlayback,
+        subtitleTrackId,
+        subtitleState: subtitleStateRef.current,
+        anchorOpts,
+        abortIfStale,
+        callbacks: {
+          markPhase: markLoadPhase,
+          logger: {
+            log: (level, event, data) => playerLoggerRef.current?.log(level, event, data),
+          },
+          onScheduleRecovery: (reason: RecoveryReason) => {
+            sessionRecoveryRef.current?.schedule(reason);
+          },
+          onExplicitError: (error) => {
+            explicitPlaybackErrorRef.current = error;
+          },
+          setStatus,
+          setError,
+          clearError: () => setError(""),
+          onSubtitleTrackId: setSubtitleTrackId,
+          applySubtitles: () => applySubtitles(),
+          onAttachProgress: (inProgress) => {
+            shakaAttachInProgressRef.current = inProgress;
+          },
+        },
+      });
 
-        try {
-          const net = player.getNetworkingEngine?.();
-          if (net && typeof net.registerResponseFilter === "function") {
-            net.registerResponseFilter(
-              (_type: unknown, response: { uri?: string; code?: number; data?: ArrayBuffer }) => {
-                if (!response?.uri?.includes("/ui/stream/")) return;
-                if ((response.code ?? 0) >= 400) {
-                  const logPayload: Record<string, unknown> = {
-                    uri: String(response.uri),
-                    status: response.code,
-                  };
-                  if (response.code === 404 && response.data) {
-                    try {
-                      logPayload.response_body = new TextDecoder().decode(response.data).slice(0, 500);
-                    } catch {
-                      /* ignore decode errors */
-                    }
-                  }
-                  playerLoggerRef.current?.log("warn", "stream_http_error", logPayload);
-                  if (
-                    response.code === 404 &&
-                    String(response.uri || "").includes("index.m3u8")
-                  ) {
-                    scheduleStaleSessionRecoveryRef.current("manifest_404");
-                  }
-                }
-              },
-            );
-          }
-        } catch {
-          /* optional */
-        }
-
-        markLoadPhase("shaka_attach_start", { generation });
-        shakaAttachInProgressRef.current = true;
-        try {
-          await player.attach(video);
-        } finally {
-          shakaAttachInProgressRef.current = false;
-        }
-        playerLoggerRef.current?.log("info", "shaka_attached");
-        markLoadPhase("shaka_attached", { generation });
-        if (typeof AmPlaybackSubtitles.installAssTextBridge === "function") {
-          try {
-            AmPlaybackSubtitles.installAssTextBridge(video);
-          } catch {
-            /* libass bridge is optional; plain VTT still works */
-          }
-        }
-        if (abortIfStale("after_attach")) return;
-
-        player.addEventListener("buffering", (evt: unknown) => {
-          const buffering = (evt as { buffering?: boolean }).buffering;
-          playerLoggerRef.current?.log("info", "shaka_buffering", {
-            buffering: buffering ?? null,
-          });
+      if (loadResult.ok) {
+        sessionRecoveryRef.current?.resetAttempts();
+        performTimelineSanitySeek(video, {
+          expectedStart: loadStartTime,
+          knownDuration,
+          logger: {
+            log: (level, event, data) => playerLoggerRef.current?.log(level, event, data),
+          },
+          lastSaneRef: lastSaneCurrentTimeRef,
         });
-        player.addEventListener("error", (evt: unknown) => {
-          const event = evt as Event & {
-            detail?: {
-              code?: number;
-              category?: number;
-              getMessage?: () => string;
-              data?: unknown;
-            };
-          };
-          event.preventDefault?.();
-          const detail = event.detail;
-          const plain = shakaErrorToPlain(shaka, detail);
-          const errData = Array.isArray(detail?.data) ? detail.data : [];
-          playerLoggerRef.current?.log("error", "shaka_player_error", {
-            ...plain,
-            ...playerFaultFields("playback_runtime_error", "shaka_error_event", false),
-            segment_uri: errData[2] != null ? String(errData[2]) : null,
-          });
-          const code = detail?.code != null ? String(detail.code) : "unknown";
-          const hint = detail?.getMessage?.() || "";
-          explicitPlaybackErrorRef.current = {
-            kind: "shaka_error",
-            message: hint || `Shaka code ${code}`,
-            code,
-          };
-          markLoadPhase("shaka_error_event", { generation, code });
-          setError(
-            hint ? `Playback error (${code}): ${hint}` : `Playback error (code ${code}). Please retry.`,
-          );
-          setStatus("Playback error.");
-        });
-
-        await player.load(manifestUrl, loadStartTime);
-        markLoadPhase("manifest_loaded", { generation, load_start_time: loadStartTime ?? null });
-        sessionRecoveryAttemptsRef.current = 0;
-        if (abortIfStale("after_manifest_load")) return;
-
-        const expectedStart = loadStartTime ?? 0;
-        if (knownDuration > 0) {
-          const dur = video.duration;
-          const t = video.currentTime;
-          const durationAbsurd =
-            Number.isFinite(dur) && dur > knownDuration * 1.2;
-          const timeAbsurd =
-            Number.isFinite(t) && t > knownDuration * 1.2;
-          const wrongEndWhenStartingFromZero =
-            expectedStart <= 0.05 &&
-            Number.isFinite(t) &&
-            t > knownDuration * 0.85;
-          if (durationAbsurd || timeAbsurd || wrongEndWhenStartingFromZero) {
-            video.currentTime = expectedStart;
-            lastSaneCurrentTimeRef.current = expectedStart;
-            playerLoggerRef.current?.log("warn", "timeline_sanity_seek", {
-              reported_duration: dur,
-              reported_current_time: t,
-              expected_start: expectedStart,
-              known_duration: knownDuration,
-              wrong_end: wrongEndWhenStartingFromZero,
-            });
-          } else if (Number.isFinite(t)) {
-            lastSaneCurrentTimeRef.current = t;
-          }
-        }
-
-        shakaPlayerRef.current = player;
-        playerLoggerRef.current?.log("info", "manifest_loaded", { manifest_url: manifestUrl });
-
-        const { trackRefs, assById } = await attachSubtitleTracks(player, payload);
-        subtitleStateRef.current = {
-          trackRefs,
-          assById,
-          libassInst: subtitleStateRef.current.libassInst,
-        };
-        const payloadSubs = payload.subtitle_tracks ?? [];
-        const activeSubId =
-          subtitleTrackId ||
-          (payloadSubs[0]?.id != null ? String(payloadSubs[0].id) : "");
-        if (activeSubId && activeSubId !== subtitleTrackId) {
-          setSubtitleTrackId(activeSubId);
-        }
-        if (activeSubId && shakaPlayerRef.current && video) {
-          void applySubtitleSelection({
-            shakaPlayer: player,
-            video,
-            panel: panelRef.current,
-            subtitleTrackId: activeSubId,
-            state: subtitleStateRef.current,
-            onError: setError,
-            onClearError: () => setError(""),
-          });
-        } else {
-          applySubtitles();
-        }
-        markLoadPhase("startup_ready", { generation });
-        setStatus("Ready · press play");
+        shakaPlayerRef.current = loadResult.player;
+        subtitleStateRef.current = loadResult.subtitleState;
         if (playbackStartSeconds > 0) {
           postEpisodeProgress("IN_PROGRESS", playbackStartSeconds);
         }
-      } catch (err) {
-        const errObj = err as { code?: number; message?: string; name?: string };
-        const errMessage =
-          err instanceof Error
-            ? err.message
-            : typeof errObj?.message === "string"
-              ? errObj.message
-              : String(err ?? "unknown");
-        if (abortIfStale("load_error")) return;
-
-        const shakaPlain =
-          window.shaka && errObj?.code != null
-            ? shakaErrorToPlain(window.shaka, {
-                code: errObj.code,
-                message: errMessage,
-              })
-            : null;
-        const message =
-          shakaPlain?.message ||
-          errMessage ||
-          (shakaPlain?.codeName ? `Playback error (${shakaPlain.codeName})` : "Playback failed to start.");
-        explicitPlaybackErrorRef.current = {
-          kind: "startup_exception",
-          message,
-          code: shakaPlain?.codeName ?? errObj?.code ?? "UNKNOWN",
-        };
-        markLoadPhase("startup_failed", { generation, error_message: message });
-        playerLoggerRef.current?.log("error", "load_or_play_failed", {
-          ...playerFaultFields("playback_runtime_error", "startup_failed", false),
-          error: message,
-          load_generation: generation,
-        });
-        setError(`Startup error: ${message}`);
-        setStatus("Playback unavailable.");
+      } else if (loadResult.shouldStopSession) {
+        await stopSession();
       }
 
       if (abortIfStale("before_heartbeat")) return;
-      heartbeatStopRef.current = startHeartbeat(payload.heartbeat_url || "", {
-        onSessionLost: () => scheduleStaleSessionRecoveryRef.current("heartbeat_404"),
-      });
+      if (shouldStartHeartbeatAfterLoad(loadResult)) {
+        heartbeatStopRef.current = startHeartbeat(payload.heartbeat_url || "", {
+          onSessionLost: () => sessionRecoveryRef.current?.schedule("heartbeat_404"),
+        });
+      }
       } finally {
         if (activeLoadGenerationRef.current === generation) {
           activeLoadGenerationRef.current = null;
@@ -705,38 +570,31 @@ export function usePlayback(
         if (replayQueuedRef.current) {
           replayQueuedRef.current = false;
           queueReplayCurrent();
+          return;
         }
+        sessionRecoveryRef.current?.flushQueued();
       });
     }, 120);
   }, [initialFileId, initialFileTitle, loadPlayback, title]);
 
   queueReplayCurrentRef.current = queueReplayCurrent;
 
-  const scheduleStaleSessionRecovery = useCallback(
-    (reason: string) => {
-      if (replayInFlightRef.current) {
-        return;
-      }
-      if (sessionRecoveryAttemptsRef.current >= MAX_SESSION_RECOVERY_ATTEMPTS) {
+  useEffect(() => {
+    sessionRecoveryRef.current = createSessionRecovery({
+      onReplay: () => queueReplayCurrentRef.current(),
+      onExhausted: () => {
         setError("Playback session expired. Press play again or reload the page.");
         setStatus("Playback unavailable.");
-        return;
-      }
-      if (staleRecoveryTimerRef.current) return;
-      staleRecoveryTimerRef.current = setTimeout(() => {
-        staleRecoveryTimerRef.current = null;
-        sessionRecoveryAttemptsRef.current += 1;
-        playerLoggerRef.current?.log("warn", "session_stale_recovery", {
-          reason,
-          attempt: sessionRecoveryAttemptsRef.current,
-        });
-        queueReplayCurrentRef.current();
-      }, STALE_SESSION_RECOVERY_DELAY_MS);
-    },
-    [setStatus],
-  );
-
-  scheduleStaleSessionRecoveryRef.current = scheduleStaleSessionRecovery;
+      },
+      onLog: (event, data) => playerLoggerRef.current?.log("warn", event, data),
+      isReplayInFlight: () => replayInFlightRef.current,
+      queueReplayAfterCurrent: () => {},
+    });
+    return () => {
+      sessionRecoveryRef.current?.dispose();
+      sessionRecoveryRef.current = null;
+    };
+  }, [setStatus]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -879,13 +737,6 @@ export function usePlayback(
   useEffect(() => {
     return () => {
       savePosition();
-      if (activeLoadGenerationRef.current !== null) {
-        playerLoggerRef.current?.log("info", "session_stop_skipped", {
-          reason: "unmount_during_active_load",
-          active_load_generation: activeLoadGenerationRef.current,
-        });
-        return;
-      }
       void stopSession({ isUnmount: true });
     };
   }, [savePosition, stopSession]);
