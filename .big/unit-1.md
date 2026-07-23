@@ -6,9 +6,9 @@
 **Branch**: `big/media-player-audit`
 **Ownership**: write `.big/findings/unit-1-backend-playback.md` only; read `application/playback/**`, related anime_service playback methods, ports MediaLibrary/MediaTranscoder
 **Criteria** (subset):
-- [ ] Findings file with severity/evidence/repro format
-- [ ] Contract constants audited vs composition/HTTP wiring
-**Open / blurry**: (none for this unit)
-**Last commit**: none
-**Agent ids**: …
-**Iterations**: 0 / 5
+- [x] Findings file with severity/evidence/repro format
+- [x] Contract constants audited vs composition/HTTP wiring
+**Open / blurry**: Frozen playhead scrub limit may be intentional anti-Shaka tradeoff — verifier/manager to confirm product intent (resolver: manager)
+**Last commit**: pending
+**Agent ids**: worker unit-1
+**Iterations**: 1 / 5
