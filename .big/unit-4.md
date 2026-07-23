@@ -1,9 +1,18 @@
 # Unit 4 — HTTP/proxy ACL (shard)
 
 **GOAL ref**: GOAL §frozen
-**Mode**: parallel shard (not started in Phase 1)
+**Hub**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix`
+**Worktree**: `C:\Users\willi\Documents\Python\AnimeManager\.worktrees\media-player-fix--u4`
 **Branch**: `big/media-player-fix--u4`
-**Ownership**: `next-web/app/backend/[...path]/route.ts`, `next-web/proxy.ts`, `clients/http/web.py` `_client_host` / allowlist
-**Status**: pending
-**Last commit**: none
-**Iterations**: 0 / 5
+**Mode**: parallel shard
+**Ownership**: next-web/app/backend/[...path]/route.ts, next-web/proxy.ts, clients/http/web.py _client_host / allowlist
+**Status**: done
+**Last commit**: 7079d02 fix(big): forward client IP and tighten playback ACL
+**Iterations**: 1 / 5
+**Agent ids**: worker-u4
+
+## Open / blurry
+
+- `next-web/lib/player-log.ts` still POSTs `/log` without `?token=` — U5 must wire `log_url` from play response or append token query param.
+- `proxy.ts` middleware helper is improved but still unwired (no `middleware.ts`); route handler is the active injection point.
+- `test_watch_page_renders_player_view` fails with pre-existing Jinja `TemplateResponse` cache error (unrelated to ACL edits).
