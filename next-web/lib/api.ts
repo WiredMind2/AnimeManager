@@ -543,10 +543,11 @@ export const api = {
     request<{ cancelled: boolean }>(`/download/cancel/${animeId}`, { method: "POST" }),
   /** Remove one torrent from the client; keep files on disk. */
   cancelDownloadByHash: (hash: string) =>
-    request<{ cancelled: boolean }>(`/download/cancel/${encodeURIComponent(hash)}`, {
-      method: "POST",
-    }),
-  /** Remove one torrent from the client and delete its files. */
+    request<{ cancelled: boolean }>(
+      `/download/cancel/hash/${encodeURIComponent(hash)}`,
+      { method: "POST" },
+    ),
+  /** Remove one torrent from the client and delete its files (global downloads page). */
   deleteDownloadByHash: (hash: string) =>
     request<{ deleted: boolean }>(`/download/delete/${encodeURIComponent(hash)}`, {
       method: "POST",
