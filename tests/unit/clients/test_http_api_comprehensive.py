@@ -73,11 +73,11 @@ class RecordingSDK:
             default=lambda: {"items": [], "has_next": False},
         )
 
-    def search_anime(self, query: str, limit: int = 50):
+    def search_anime(self, query: str, limit: int = 50, offset: int = 0):
         return self._invoke(
             "search_anime",
-            (query, limit),
-            {},
+            (),
+            {"query": query, "limit": limit, "offset": offset},
             default=lambda: [],
         )
 
@@ -265,7 +265,9 @@ def sdk():
 @pytest.fixture
 def client(monkeypatch, sdk):
     monkeypatch.setattr(http_app, "get_sdk", lambda: sdk)
-    return TestClient(http_app.app, follow_redirects=False)
+    return TestClient(
+        http_app.app, follow_redirects=False, raise_server_exceptions=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +302,7 @@ class TestAnimeEndpoint:
         [
             (NotFoundError("nope"), 404),
             (ValidationError("bad"), 400),
-            (InfrastructureError("db"), 500),
+            (InfrastructureError("db"), 502),
             (RuntimeError("boom"), 500),
         ],
     )
@@ -386,9 +388,17 @@ class TestSearchEndpoint:
 
     def test_limit_default_and_override(self, client, sdk):
         client.get("/search", params={"query": "bleach"})
-        assert sdk.last_call("search_anime") == ("search_anime", ("bleach", 50), {})
+        assert sdk.last_call("search_anime") == (
+            "search_anime",
+            (),
+            {"query": "bleach", "limit": 50, "offset": 0},
+        )
         client.get("/search", params={"query": "naruto", "limit": 7})
-        assert sdk.last_call("search_anime") == ("search_anime", ("naruto", 7), {})
+        assert sdk.last_call("search_anime") == (
+            "search_anime",
+            (),
+            {"query": "naruto", "limit": 7, "offset": 0},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -559,12 +569,10 @@ class TestUserActions:
         }
 
     def test_unauthorized_does_not_leak_500(self, client, sdk):
-        """UnauthorizedError currently maps to 500 by design (no 401
-        branch in _map_error). Pin the behavior so a future change is
-        intentional rather than accidental."""
+        """UnauthorizedError maps to 401 via map_error_to_status / ADR 0004."""
         sdk.overrides["set_tag"] = UnauthorizedError("nope")
         resp = client.post("/tag/5", params={"tag": "X", "user_id": 1})
-        assert resp.status_code == 500
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
