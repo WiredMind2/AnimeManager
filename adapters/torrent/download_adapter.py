@@ -72,6 +72,48 @@ class DownloadAdapter:
 
             status_setter(_status)
 
+        assoc_setter = getattr(tm, "set_association_callback", None)
+        if callable(assoc_setter):
+
+            def _associate(
+                hash_value: str,
+                save_path: str | None,
+                name: str | None,
+            ) -> int | None:
+                getter = getattr(db_manager, "get_anime_ids_by_hashes", None)
+                if callable(getter):
+                    try:
+                        mapping = getter([hash_value]) or {}
+                    except Exception:
+                        mapping = {}
+                    for key, anime_id in mapping.items():
+                        if str(key).strip().lower() == str(hash_value).strip().lower():
+                            try:
+                                return int(anime_id)
+                            except (TypeError, ValueError):
+                                break
+                anime_id = None
+                parse = getattr(tm, "_anime_id_from_save_path", None)
+                if callable(parse):
+                    anime_id = parse(save_path)
+                if anime_id is None:
+                    return None
+                ensure = getattr(db_manager, "ensure_torrent_index", None)
+                if not callable(ensure):
+                    return None
+                try:
+                    ensure(
+                        int(anime_id),
+                        hash_value,
+                        name=name,
+                        save_path=save_path,
+                    )
+                except Exception:
+                    return None
+                return int(anime_id)
+
+            assoc_setter(_associate)
+
         purge = getattr(tm, "purge_deleted_torrents", None)
         if callable(purge):
             try:

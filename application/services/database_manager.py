@@ -548,6 +548,15 @@ class DatabaseManager(BaseComponent):
             source: Optional origin marker (``manual`` / ``auto``)
         """
         try:
+            from adapters.persistence.models import canonicalize_infohash
+
+            hash_value = canonicalize_infohash(getattr(torrent, "hash", None))
+            if not hash_value:
+                raise ValueError("torrent hash is required")
+            try:
+                torrent.hash = hash_value
+            except Exception:
+                pass
             with self.get_connection() as db:
                 self._ensure_torrent_columns(db)
                 trackers = torrent.trackers
@@ -564,19 +573,19 @@ class DatabaseManager(BaseComponent):
                     if clean in ("manual", "auto"):
                         source_value = clean
                 exists = db.sql(
-                    "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)",
-                    (anime_id, torrent.hash),
+                    "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))",
+                    (anime_id, hash_value),
                 )
                 if not exists or not exists[0][0]:
                     db.sql(
                         "INSERT INTO torrentsIndex(id, value) VALUES(?, ?)",
-                        (anime_id, torrent.hash),
+                        (anime_id, hash_value),
                         save=True,
                     )
 
                 exists = db.sql(
-                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)",
-                    (torrent.hash,),
+                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))",
+                    (hash_value,),
                 )
                 if not exists or not exists[0][0]:
                     if source_value:
@@ -584,7 +593,7 @@ class DatabaseManager(BaseComponent):
                             "INSERT INTO torrents(hash, name, trackers, save_path, source) "
                             "VALUES(?, ?, ?, ?, ?)",
                             (
-                                torrent.hash,
+                                hash_value,
                                 torrent.name,
                                 trackers,
                                 path_value,
@@ -596,26 +605,26 @@ class DatabaseManager(BaseComponent):
                         db.sql(
                             "INSERT INTO torrents(hash, name, trackers, save_path) "
                             "VALUES(?, ?, ?, ?)",
-                            (torrent.hash, torrent.name, trackers, path_value),
+                            (hash_value, torrent.name, trackers, path_value),
                             save=True,
                         )
                 else:
                     if path_value and source_value:
                         db.sql(
-                            "UPDATE torrents SET save_path=?, source=? WHERE hash=?",
-                            (path_value, source_value, torrent.hash),
+                            "UPDATE torrents SET save_path=?, source=? WHERE LOWER(hash)=LOWER(?)",
+                            (path_value, source_value, hash_value),
                             save=True,
                         )
                     elif path_value:
                         db.sql(
-                            "UPDATE torrents SET save_path=? WHERE hash=?",
-                            (path_value, torrent.hash),
+                            "UPDATE torrents SET save_path=? WHERE LOWER(hash)=LOWER(?)",
+                            (path_value, hash_value),
                             save=True,
                         )
                     elif source_value:
                         db.sql(
-                            "UPDATE torrents SET source=? WHERE hash=?",
-                            (source_value, torrent.hash),
+                            "UPDATE torrents SET source=? WHERE LOWER(hash)=LOWER(?)",
+                            (source_value, hash_value),
                             save=True,
                         )
         except Exception as e:
@@ -623,27 +632,25 @@ class DatabaseManager(BaseComponent):
             raise
 
     def update_torrent_save_path(self, hash_value: str, save_path: str) -> None:
-        """Persist the folder where a torrent's payload is stored."""
+        """Persist the folder where a torrent's payload is stored.
+
+        Updates an existing ``torrents`` row only. Does not insert a lone
+        row without a ``torrentsIndex`` association — callers must create
+        the indexed torrent via :meth:`save_torrent` / :meth:`ensure_torrent_index`.
+        """
         if not hash_value or not save_path:
             return
         try:
             with self.get_connection() as db:
                 self._ensure_torrent_columns(db)
                 exists = db.sql(
-                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)",
+                    "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))",
                     (hash_value,),
                 )
                 if exists and exists[0][0]:
                     db.sql(
-                        "UPDATE torrents SET save_path=? WHERE hash=?",
+                        "UPDATE torrents SET save_path=? WHERE LOWER(hash)=LOWER(?)",
                         (save_path, hash_value),
-                        save=True,
-                    )
-                else:
-                    db.sql(
-                        "INSERT INTO torrents(hash, name, trackers, save_path) "
-                        "VALUES(?, ?, ?, ?)",
-                        (hash_value, None, json.dumps([]), save_path),
                         save=True,
                     )
         except Exception as e:
@@ -969,7 +976,12 @@ class DatabaseManager(BaseComponent):
         Concurrent callers (e.g. overlapping startup repair) may race on
         PRIMARY KEY inserts; duplicate-key errors are treated as success.
         """
-        hash_val = str(hash_value or "").strip()
+        try:
+            from adapters.persistence.models import canonicalize_infohash
+
+            hash_val = canonicalize_infohash(hash_value)
+        except Exception:
+            hash_val = str(hash_value or "").strip().lower() or None
         if not hash_val:
             return False
         try:

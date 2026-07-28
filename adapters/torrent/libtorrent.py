@@ -41,6 +41,7 @@ except ImportError:  # pragma: no cover - headless / Docker HTTP mode
 
 _RESUME_DIR_NAME = ".libtorrent_resume"
 _INFOHASH_RE = re.compile(r"xt=urn:btih:([A-Za-z0-9]+)", re.IGNORECASE)
+_ANIME_FOLDER_ID_RE = re.compile(r" - (\d+)$")
 _RESUME_SUFFIX = ".resume"
 # Fastresume produced by write_resume_data_buf is typically multi-kB; older
 # builds mistakenly stored a tiny bencoded dict (~50 bytes) which cannot reload.
@@ -83,6 +84,10 @@ class LibTorrent(BaseTorrentManager):
         self._last_handle_save: Dict[str, float] = {}
         self._restore_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None
         self._torrent_status_callback: Optional[Callable[[str], Optional[str]]] = None
+        # (info_hash, save_path, name) -> anime_id when indexed or repaired.
+        self._association_callback: Optional[
+            Callable[[str, Optional[str], Optional[str]], Optional[int]]
+        ] = None
         self._restored = False
         self._restore_lock = threading.Lock()
         try:
@@ -108,6 +113,20 @@ class LibTorrent(BaseTorrentManager):
         """Optional lookup of persisted torrent status by hash."""
         self._torrent_status_callback = callback
 
+    def set_association_callback(
+        self,
+        callback: Optional[
+            Callable[[str, Optional[str], Optional[str]], Optional[int]]
+        ],
+    ) -> None:
+        """Resolve or repair anime association for a hash before resume restore.
+
+        Callback signature: ``(info_hash, save_path, name) -> anime_id | None``.
+        Resume files with no association are skipped so the client never
+        resurrects torrents that AnimeManager cannot map to an anime.
+        """
+        self._association_callback = callback
+
     def _torrent_status(self, info_hash: str) -> Optional[str]:
         callback = self._torrent_status_callback
         if callback is None:
@@ -116,6 +135,68 @@ class LibTorrent(BaseTorrentManager):
             return callback(info_hash)
         except Exception:
             return None
+
+    def _resolve_association(
+        self,
+        info_hash: str,
+        *,
+        save_path: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> Optional[int]:
+        callback = self._association_callback
+        if callback is None:
+            # Without wiring we cannot prove association — skip resume restore.
+            return None
+        try:
+            return callback(info_hash, save_path, name)
+        except Exception as exc:
+            self.log(
+                "LIBTORRENT",
+                f"Association callback failed for {info_hash}: {exc}",
+            )
+            return None
+
+    @classmethod
+    def _anime_id_from_save_path(cls, path: Optional[str]) -> Optional[int]:
+        if not path:
+            return None
+        folder = os.path.basename(os.path.normpath(str(path).strip()))
+        match = _ANIME_FOLDER_ID_RE.search(folder)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _save_path_from_params(params: Any) -> Optional[str]:
+        if params is None:
+            return None
+        if isinstance(params, dict):
+            value = params.get("save_path")
+            return str(value) if value else None
+        value = getattr(params, "save_path", None)
+        return str(value) if value else None
+
+    @staticmethod
+    def _name_from_params(params: Any) -> Optional[str]:
+        if params is None:
+            return None
+        if isinstance(params, dict):
+            value = params.get("name")
+            return str(value) if value else None
+        value = getattr(params, "name", None)
+        if value:
+            return str(value)
+        try:
+            ti = getattr(params, "ti", None)
+            if ti is not None and hasattr(ti, "name"):
+                name = ti.name()
+                return str(name) if name else None
+        except Exception:
+            pass
+        return None
 
     def ensure_restored(self) -> None:
         """Wait for the session, then restore torrents (after disk reconcile)."""
@@ -451,6 +532,7 @@ class LibTorrent(BaseTorrentManager):
             if (
                 self._restore_callback is not None
                 and self._torrent_status_callback is not None
+                and self._association_callback is not None
             ):
                 return
             time.sleep(0.05)
@@ -554,6 +636,16 @@ class LibTorrent(BaseTorrentManager):
                         pass
                     continue
                 params = lt.read_resume_data(data)
+                save_path = self._save_path_from_params(params)
+                name = self._name_from_params(params)
+                if self._resolve_association(
+                    info_hash, save_path=save_path, name=name
+                ) is None:
+                    self.log(
+                        "LIBTORRENT",
+                        f"Skipping unassociated resume file {basename}",
+                    )
+                    continue
                 params = self._apply_seed_mode_if_complete(params, info_hash)
                 handle = self.session.add_torrent(params)
                 info_hash = self._normalise_hash(handle.info_hash())

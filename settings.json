@@ -68,7 +68,10 @@
     "Transmission": {},
     "LibTorrent": {
       "listen_port": 6881,
-      "max_connections": 200
+      "max_connections": 200,
+      "active_downloads": 15,
+      "active_seeds": 15,
+      "active_limit": 30
     }
   },
   "UI": {

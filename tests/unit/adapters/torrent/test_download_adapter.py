@@ -36,6 +36,7 @@ def test_libtorrent_restore_callbacks_wired():
     tm.name = "LibTorrent"
     restore_rows = []
     status_calls = []
+    assoc_calls = []
     purge_calls = []
 
     def _set_restore(cb):
@@ -44,13 +45,20 @@ def test_libtorrent_restore_callbacks_wired():
     def _set_status(cb):
         status_calls.append(cb("abc"))
 
+    def _set_assoc(cb):
+        assoc_calls.append(cb("abc", r"C:\Animes\Show - 7", "ep.mkv"))
+
     tm.set_restore_callback = _set_restore
     tm.set_torrent_status_callback = _set_status
+    tm.set_association_callback = _set_assoc
+    tm._anime_id_from_save_path = lambda path: 7 if path else None
     tm.purge_deleted_torrents = lambda: purge_calls.append(True) or 1
 
     db = MagicMock()
     db.list_torrents_for_restore.return_value = [{"hash": "abc"}]
     db.get_torrent_status.return_value = "complete"
+    db.get_anime_ids_by_hashes.return_value = {}
+    db.ensure_torrent_index.return_value = True
 
     with patch("adapters.torrent.download_adapter.DownloadManager"):
         DownloadAdapter(
@@ -63,6 +71,8 @@ def test_libtorrent_restore_callbacks_wired():
 
     assert restore_rows == [[{"hash": "abc"}]]
     assert status_calls == ["complete"]
+    assert assoc_calls == [7]
+    db.ensure_torrent_index.assert_called_once()
     assert purge_calls == [True]
 
 

@@ -49,10 +49,12 @@ def _build_mock_lt():
     mock.torrent_removed_alert = TorrentRemovedAlert
     mock.torrent_error_alert = TorrentErrorAlert
     mock.options_t = types.SimpleNamespace(delete_files=1)
-    # Bit flags used by seed_mode restore path.
+    # Bit flags used by seed_mode / pause / auto-manage paths.
     mock.torrent_flags = types.SimpleNamespace(
         seed_mode=1,
         default_flags=2,
+        auto_managed=4,
+        paused=8,
     )
     mock.read_resume_data = lambda data: {"resume": data}
     mock.write_resume_data_buf = lambda params: b"serialized-resume"
@@ -139,6 +141,7 @@ def test_restore_from_resume_files(libtorrent_manager):
     handle = MagicMock()
     handle.info_hash.return_value = b"\xaa" * 20
     libtorrent_manager.session.add_torrent.return_value = handle
+    libtorrent_manager.set_association_callback(lambda *_a: 1)
 
     libtorrent_manager._restore_from_resume_files()
 
@@ -164,6 +167,7 @@ def test_restore_from_resume_applies_seed_mode_when_complete(
     libtorrent_manager._torrent_status_callback = (
         lambda h: "complete" if h == info_hash else None
     )
+    libtorrent_manager.set_association_callback(lambda *_a: 1)
 
     libtorrent_manager._restore_from_resume_files()
 
@@ -185,11 +189,30 @@ def test_restore_from_resume_skips_seed_mode_when_not_complete(libtorrent_manage
     handle.info_hash.return_value = bytes.fromhex(info_hash)
     libtorrent_manager.session.add_torrent.return_value = handle
     libtorrent_manager._torrent_status_callback = lambda _h: None
+    libtorrent_manager.set_association_callback(lambda *_a: 1)
 
     libtorrent_manager._restore_from_resume_files()
 
     params = libtorrent_manager.session.add_torrent.call_args[0][0]
     assert "flags" not in params
+
+
+def test_restore_from_resume_skips_unassociated(libtorrent_manager):
+    data_path = libtorrent_manager._resolve_data_path()
+    resume_dir = os.path.join(data_path, ".libtorrent_resume")
+    os.makedirs(resume_dir, exist_ok=True)
+    info_hash = "a" * 40
+    resume_path = os.path.join(resume_dir, f"{info_hash}.resume")
+    with open(resume_path, "wb") as fh:
+        fh.write(b"x" * 250)
+
+    libtorrent_manager.session.add_torrent.return_value = MagicMock()
+    libtorrent_manager.set_association_callback(lambda *_a: None)
+
+    libtorrent_manager._restore_from_resume_files()
+
+    libtorrent_manager.session.add_torrent.assert_not_called()
+    assert info_hash not in libtorrent_manager.handles
 
 
 def test_db_fallback_applies_seed_mode_when_complete(
@@ -258,6 +281,7 @@ def test_connect_applies_active_checking_and_defers_dht(
     # Wire callbacks before connect so wait returns immediately.
     manager.set_restore_callback(lambda: [])
     manager.set_torrent_status_callback(lambda _h: None)
+    manager.set_association_callback(lambda *_a: 1)
 
     manager.connect(thread=False)
 
@@ -307,6 +331,7 @@ def test_connect_waits_for_callbacks_before_restore(
         order.append("wait")
         manager.set_restore_callback(lambda: [])
         manager.set_torrent_status_callback(lambda _h: None)
+        manager.set_association_callback(lambda *_a: 1)
         return original_wait()
 
     def restore():
@@ -434,7 +459,36 @@ def test_update_torrent_save_path():
         dm.update_torrent_save_path("deadbeef", "/data/Animes/Show - 1")
 
     updates = [c for c in fake.calls if "UPDATE" in c[0].upper()]
+    inserts = [c for c in fake.calls if "INSERT INTO TORRENTS" in c[0].upper()]
     assert updates
+    assert not inserts
+
+
+def test_update_torrent_save_path_skips_missing_hash():
+    from application.services.database_manager import DatabaseManager
+
+    class _MissingHashDb(_FakeDb):
+        def sql(self, query, params=(), save=False, **kwargs):
+            self.calls.append((query.strip(), params, save))
+            q = query.strip().upper()
+            if "PRAGMA TABLE_INFO" in q:
+                return [(0, "save_path", "TEXT", 0, None, 0)]
+            if "EXISTS" in q:
+                return [(0,)]
+            return []
+
+    dm = DatabaseManager()
+    fake = _MissingHashDb()
+
+    with patch.object(dm, "get_connection") as gc:
+        gc.return_value.__enter__ = lambda s: fake
+        gc.return_value.__exit__ = lambda s, *a: None
+        dm.update_torrent_save_path("deadbeef", "/data/Animes/Show - 1")
+
+    inserts = [c for c in fake.calls if "INSERT INTO TORRENTS" in c[0].upper()]
+    updates = [c for c in fake.calls if "UPDATE" in c[0].upper()]
+    assert not inserts
+    assert not updates
 
 
 def test_restore_from_resume_skips_deleted_status(libtorrent_manager, tmp_path, monkeypatch):
@@ -686,3 +740,134 @@ def test_set_max_connections_applies_to_live_session(
     assert manager.max_connections == 42
     assert manager.settings["max_connections"] == 42
     manager.session.apply_settings.assert_called_with({"connections_limit": 42})
+
+
+def test_add_short_circuits_when_hash_already_in_handles(libtorrent_manager):
+    info_hash = "0964cdac47ab68f039c9b3d8ad66ee933a0370af"
+    handle = MagicMock()
+    handle.status.return_value = types.SimpleNamespace(name="Tenkosaki - 04")
+    libtorrent_manager.handles[info_hash] = handle
+
+    magnet = f"magnet:?xt=urn:btih:{info_hash}&dn=Tenkosaki"
+    added = libtorrent_manager.add([magnet], path=libtorrent_manager.download_path)
+
+    assert len(added) == 1
+    assert added[0]["hash"] == info_hash
+    assert added[0]["name"] == "Tenkosaki - 04"
+    libtorrent_manager.session.add_torrent.assert_not_called()
+
+
+def test_add_skips_when_magnet_already_tracked(libtorrent_manager):
+    """Second add of the same magnet must not call session.add_torrent."""
+    info_hash = "a" * 40
+    handle = MagicMock()
+    handle.info_hash.return_value = bytes.fromhex(info_hash)
+    handle.status.return_value = types.SimpleNamespace(name="existing")
+    libtorrent_manager.handles[info_hash] = handle
+    magnet = f"magnet:?xt=urn:btih:{info_hash}"
+    first = libtorrent_manager.add(magnet)
+    assert first[0]["hash"] == info_hash
+    libtorrent_manager.session.add_torrent.assert_not_called()
+
+
+def test_get_torrent_state_maps_auto_managed_pause_to_queued(
+    libtorrent_manager, mock_lt
+):
+    status = types.SimpleNamespace(
+        paused=True,
+        auto_managed=True,
+        progress=0.4,
+        state=mock_lt.torrent_status.downloading,
+        flags=mock_lt.torrent_flags.auto_managed,
+    )
+    assert libtorrent_manager._get_torrent_state(status) == "queuedDL"
+
+    status.progress = 1.0
+    assert libtorrent_manager._get_torrent_state(status) == "queuedUP"
+
+
+def test_get_torrent_state_maps_manual_pause_to_paused(libtorrent_manager, mock_lt):
+    status = types.SimpleNamespace(
+        paused=True,
+        auto_managed=False,
+        progress=0.2,
+        state=mock_lt.torrent_status.downloading,
+        flags=0,
+    )
+    assert libtorrent_manager._get_torrent_state(status) == "pausedDL"
+
+
+def test_pause_unsets_auto_managed_and_returns_false_when_missing(
+    libtorrent_manager, mock_lt
+):
+    assert libtorrent_manager.pause(["deadbeef"]) is False
+
+    handle = MagicMock()
+    handle.is_valid.return_value = True
+    info_hash = "b" * 40
+    libtorrent_manager.handles[info_hash] = handle
+
+    assert libtorrent_manager.pause([info_hash]) is True
+    handle.unset_flags.assert_called_with(mock_lt.torrent_flags.auto_managed)
+    handle.pause.assert_called_once()
+
+
+def test_resume_re_enables_auto_managed(libtorrent_manager, mock_lt):
+    handle = MagicMock()
+    handle.is_valid.return_value = True
+    info_hash = "c" * 40
+    libtorrent_manager.handles[info_hash] = handle
+
+    assert libtorrent_manager.resume([info_hash]) is True
+    handle.resume.assert_called_once()
+    handle.unset_flags.assert_called_with(mock_lt.torrent_flags.paused)
+    handle.set_flags.assert_called_with(mock_lt.torrent_flags.auto_managed)
+
+
+def test_prioritize_moves_queue_position_top(libtorrent_manager, mock_lt):
+    handle = MagicMock()
+    handle.is_valid.return_value = True
+    info_hash = "d" * 40
+    libtorrent_manager.handles[info_hash] = handle
+
+    assert libtorrent_manager.prioritize([info_hash]) is True
+    handle.resume.assert_called_once()
+    handle.unset_flags.assert_called_with(mock_lt.torrent_flags.paused)
+    handle.set_flags.assert_called_with(mock_lt.torrent_flags.auto_managed)
+    handle.queue_position_top.assert_called_once()
+
+
+def test_connect_applies_active_queue_limits(lt_module, mock_lt, monkeypatch, tmp_path):
+    monkeypatch.setattr(lt_module, "lt", mock_lt)
+    monkeypatch.setattr(lt_module, "LIBTORRENT_AVAILABLE", True)
+
+    session = MagicMock()
+    mock_lt.session = MagicMock(return_value=session)
+
+    data_path = str(tmp_path / "data")
+    settings = {
+        "dataPath": data_path,
+        "download_path": os.path.join(data_path, "Downloads"),
+        "listen_port": 6889,
+        "active_downloads": 12,
+        "active_seeds": 8,
+        "active_limit": 20,
+        "active_checking": 2,
+        "max_connections": 100,
+    }
+    with patch.object(lt_module.LibTorrent, "initialize", lambda self: None):
+        manager = lt_module.LibTorrent(settings)
+    manager.settings = settings
+    manager.listen_port = 6889
+    manager.max_connections = 100
+    manager._wait_for_restore_callbacks = lambda: None
+
+    manager.connect(thread=False)
+
+    applied = session.apply_settings.call_args_list[0][0][0]
+    assert applied["active_downloads"] == 12
+    assert applied["active_seeds"] == 8
+    assert applied["active_limit"] == 20
+    assert applied["active_checking"] == 2
+    manager._running = False
+    manager.session = None
