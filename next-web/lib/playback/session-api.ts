@@ -73,19 +73,52 @@ export function resolveSessionLogUrl(
 export type HeartbeatOptions = {
   /** Invoked when the server reports the playback session is gone (HTTP 404). */
   onSessionLost?: (reason: "heartbeat_404") => void;
+  /** Called when heartbeat returns a refreshed session token. */
+  onTokenRefresh?: (token: string) => void;
 };
+
+/** Replace or append ``token=`` on a playback URL. */
+export function withPlaybackToken(url: string, token: string): string {
+  if (!url || !token) return url;
+  try {
+    const absolute =
+      url.startsWith("http://") || url.startsWith("https://")
+        ? new URL(url)
+        : new URL(url, "http://local.invalid");
+    absolute.searchParams.set("token", token);
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      return absolute.toString();
+    }
+    return `${absolute.pathname}${absolute.search}${absolute.hash}`;
+  } catch {
+    return url;
+  }
+}
 
 export function startHeartbeat(
   heartbeatUrl: string,
   options: HeartbeatOptions = {},
 ): () => void {
   if (!heartbeatUrl) return () => {};
-  const { onSessionLost } = options;
+  const { onSessionLost, onTokenRefresh } = options;
+  let currentUrl = heartbeatUrl;
   const id = setInterval(() => {
-    fetch(resolveBackendUrl(heartbeatUrl), { method: "POST", credentials: "include" })
-      .then((response) => {
+    fetch(resolveBackendUrl(currentUrl), { method: "POST", credentials: "include" })
+      .then(async (response) => {
         if (response.status === 404) {
           onSessionLost?.("heartbeat_404");
+          return;
+        }
+        if (!response.ok) return;
+        try {
+          const body = (await response.json()) as { token?: string };
+          const nextToken = String(body?.token || "").trim();
+          if (nextToken) {
+            currentUrl = withPlaybackToken(currentUrl, nextToken);
+            onTokenRefresh?.(nextToken);
+          }
+        } catch {
+          /* ignore non-JSON */
         }
       })
       .catch(() => {});

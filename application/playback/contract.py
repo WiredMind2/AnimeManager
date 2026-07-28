@@ -25,12 +25,10 @@ EVENT_MANIFEST_LOOKAHEAD = 15
 MAX_FORWARD_JUMP_SEGMENTS = 90
 
 SESSION_TTL_SECONDS = 900
-# HMAC playback tokens must outlive a single browser tab's idle gaps but
-# still track session cleanup. ``PlaybackService`` uses
-# ``max(session.ttl_seconds, TOKEN_MIN_TTL_SECONDS)`` when minting tokens
-# while ``session.expires_at`` uses the per-session TTL only (heartbeat
-# extends by ``session.ttl_seconds``).
-TOKEN_MIN_TTL_SECONDS = 12 * 3600
+# Tokens are minted/refreshed with the same expiry as ``session.expires_at``.
+# Heartbeat extends both the session TTL and the HMAC token so long watches
+# keep working without a 12h token floor that outlives dead sessions.
+TOKEN_MIN_TTL_SECONDS = SESSION_TTL_SECONDS
 SESSION_CREATE_WAIT_SECONDS = 25.0
 RESUME_SEGMENT_WAIT_SECONDS = 180.0
 SEGMENT_WAIT_SECONDS = 20.0

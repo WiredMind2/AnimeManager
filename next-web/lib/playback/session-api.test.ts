@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionLogUrl } from "./session-api";
+import { resolveSessionLogUrl, withPlaybackToken } from "./session-api";
 
 describe("resolveSessionLogUrl", () => {
   it("prefers tokenized log_url from play payload", () => {
@@ -20,5 +20,19 @@ describe("resolveSessionLogUrl", () => {
 
   it("returns empty when session id is missing", () => {
     expect(resolveSessionLogUrl({ session_id: "", token: "t" })).toBe("");
+  });
+});
+
+describe("withPlaybackToken", () => {
+  it("sets token on relative playback urls", () => {
+    expect(withPlaybackToken("/ui/stream/s/heartbeat?token=old", "new")).toBe(
+      "/ui/stream/s/heartbeat?token=new",
+    );
+  });
+
+  it("appends token when query missing", () => {
+    expect(withPlaybackToken("/ui/stream/s/segment_00001.ts", "tok")).toBe(
+      "/ui/stream/s/segment_00001.ts?token=tok",
+    );
   });
 });

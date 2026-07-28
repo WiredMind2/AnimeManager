@@ -83,9 +83,12 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         segment_seconds=_SEGMENT_SECONDS,
         video_encoder=str(playback_cfg.get("video_encoder", "auto")),
     )
+    from application.playback.token_secret import load_or_create_playback_token_secret
+
     media_streaming = PlaybackService(
         media_library=media_library,
         transcoder=media_transcoder,
+        token_secret=load_or_create_playback_token_secret(deps.constants.getAppdata()),
         default_ttl_seconds=SESSION_TTL_SECONDS,
         segment_seconds=_SEGMENT_SECONDS,
     )

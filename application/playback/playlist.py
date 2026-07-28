@@ -58,10 +58,16 @@ def event_manifest_end_index(
     return min(total - 1, head + EVENT_MANIFEST_LOOKAHEAD)
 
 
-def render_manifest(session: PlaybackSessionDTO) -> str:
+def render_manifest(session: PlaybackSessionDTO, *, token: str | None = None) -> str:
     total = max(1, session.total_segments)
     seg_secs = max(1, session.segment_seconds)
     duration = max(0.0, session.duration_seconds)
+    token_q = ""
+    cleaned_token = str(token or "").strip()
+    if cleaned_token:
+        from urllib.parse import quote
+
+        token_q = f"?token={quote(cleaned_token, safe='')}"
     # Only advertise segments from the transcode anchor onward. Segments
     # before ``hls_anchor_segment`` are never generated for a resume
     # session, so listing them makes Shaka request non-existent files
@@ -99,14 +105,14 @@ def render_manifest(session: PlaybackSessionDTO) -> str:
     for index in range(anchor, end_index + 1):
         seg_dur = last_seg_seconds if index == total - 1 else float(seg_secs)
         lines.append(f"#EXTINF:{seg_dur:.3f},")
-        lines.append(f"segment_{index:05d}.ts")
+        lines.append(f"segment_{index:05d}.ts{token_q}")
     if complete:
         lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"
 
 
-def write_manifest_file(session: PlaybackSessionDTO) -> None:
-    text = render_manifest(session)
+def write_manifest_file(session: PlaybackSessionDTO, *, token: str | None = None) -> None:
+    text = render_manifest(session, token=token)
     tmp_path = session.manifest_path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
