@@ -287,6 +287,26 @@ class UserActionsPort(Protocol):
         """Return WATCHING anime IDs with auto-download enabled for ``user_id``."""
         ...
 
+    def get_download_preferences(self, anime_id: int, user_id: int) -> dict:
+        """Return per-anime auto-download preferences (may be empty)."""
+        ...
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict
+    ) -> dict:
+        """Upsert per-anime auto-download preferences and return stored values."""
+        ...
+
+    def list_rss_feed_seen_keys(
+        self, feed_ids: list[str] | None = None
+    ) -> set[tuple[str, str]]:
+        """Return ``(feed_id, item_key)`` pairs already seen from RSS feeds."""
+        ...
+
+    def mark_rss_feed_seen(self, feed_id: str, item_key: str) -> None:
+        """Record that an RSS item was consumed."""
+        ...
+
     def get_episode_progress_map(self, anime_id: int, user_id: int) -> dict[str, dict[str, Any]]:
         """Return ``file_id`` → ``{"status", "position_seconds"}`` for one anime."""
         ...

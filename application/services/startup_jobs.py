@@ -338,6 +338,15 @@ class StartupJobsService:
             f"skipped={skipped} errors={errors}"
         )
 
+    def _auto_download_interval_s(self) -> float:
+        try:
+            settings = getattr(self._config, "settings", None) or {}
+            auto_cfg = settings.get("auto_download") or {}
+            minutes = float(auto_cfg.get("interval_minutes", 30))
+            return max(60.0, minutes * 60.0)
+        except (TypeError, ValueError, AttributeError):
+            return float(self._AUTO_DOWNLOAD_INTERVAL_S)
+
     def _auto_download_loop_worker(self) -> None:
         # Brief delay so torrent restore / DB migrations settle after startup.
         if self._auto_download_loop_stop.wait(
@@ -353,7 +362,7 @@ class StartupJobsService:
                     f"Auto-download loop error: {type(exc).__name__}: {exc}"
                 )
             if self._auto_download_loop_stop.wait(
-                timeout=self._AUTO_DOWNLOAD_INTERVAL_S
+                timeout=self._auto_download_interval_s()
             ):
                 break
 
@@ -921,7 +930,10 @@ class StartupJobsService:
                 f"{result.failed_providers} records=0"
             )
 
-        if records and persisted <= 0:
+        # Never stamp ``lastSchedule`` unless something landed in the DB.
+        # Empty results (all filtered / unresolved) used to mark success and
+        # suppress retries for a full day.
+        if persisted <= 0:
             return (
                 f"providers={result.total_providers} failed="
                 f"{result.failed_providers} records={len(records)} "

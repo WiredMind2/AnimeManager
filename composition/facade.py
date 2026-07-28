@@ -274,6 +274,14 @@ class EmbeddedClientFacade:
     ) -> None:
         self._service.set_auto_download(anime_id, user_id, enabled)
 
+    def get_download_preferences(self, anime_id: int, user_id: int) -> dict:
+        return self._service.get_download_preferences(anime_id, user_id)
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict
+    ) -> dict:
+        return self._service.set_download_preferences(anime_id, user_id, prefs)
+
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._service.mark_seen(anime_id, file_name, user_id)
 

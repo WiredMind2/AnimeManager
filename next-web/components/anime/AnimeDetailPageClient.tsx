@@ -22,6 +22,7 @@ export type AnimeDetailTabId =
   | "torrents"
   | "player"
   | "downloads"
+  | "auto-download"
   | "pictures"
   | "characters"
   | "related";

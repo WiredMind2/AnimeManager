@@ -307,7 +307,7 @@ export default function TorrentResultsTable({
                 >
                   Leech
                 </th>
-                <th />
+                <th className="col--actions" />
               </tr>
             </thead>
             <tbody data-stream-rows={streamMode ? "" : undefined} data-paginate>

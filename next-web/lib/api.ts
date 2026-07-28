@@ -167,6 +167,25 @@ export type UserState = {
   seen?: string[];
 };
 
+export type RssFeedConfig = {
+  id: string;
+  label: string;
+  url: string;
+  enabled: boolean;
+  builtin?: boolean;
+};
+
+export type DownloadPreferences = {
+  source_mode: "search" | "rss";
+  publisher?: string | null;
+  resolution?: string | null;
+  feed_ids?: string[];
+  use_inferred?: boolean;
+  inferred?: { publisher: string; resolution: string } | null;
+  effective?: { publisher: string; resolution: string } | null;
+  available_feeds?: RssFeedConfig[];
+};
+
 export type ParsedTitle = {
   publisher?: string;
   publisher_display?: string;
@@ -450,6 +469,46 @@ export const api = {
     request<{ ok: boolean }>(
       `/seen/${animeId}?file_name=${encodeURIComponent(fileName)}&user_id=${userId}`,
       { method: "POST" },
+    ),
+  getCharacters: (animeId: number) =>
+    request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters`),
+  refreshAnimeCharacters: (animeId: number) =>
+    request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters/refresh`, {
+      method: "POST",
+    }),
+  getCharacter: (characterId: number) =>
+    request<AnimeCharacterDetail>(`/characters/${characterId}`),
+  refreshCharacter: (characterId: number) =>
+    request<AnimeCharacterDetail>(`/characters/${characterId}/refresh`, {
+      method: "POST",
+    }),
+  getAnimePictures: (animeId: number) =>
+    request<{ items: AnimePicture[] }>(`/anime/${animeId}/pictures`),
+  getSearchTerms: (animeId: number) =>
+    request<{ items: string[] }>(`/search-terms/${animeId}`),
+  getRelations: (animeId: number) =>
+    request<{ items: AnimeRelation[] }>(`/anime/${animeId}/relations`),
+  getEpisodeFiles: (animeId: number, userId: number) =>
+    request<{ items: EpisodeFile[] }>(
+      `/anime/${animeId}/episode-files?user_id=${userId}`,
+    ),
+  /** Mirrors ``web_anime_watch`` (``sdk.list_episode_files`` + track/resume maps). */
+  getWatchPageData: (animeId: number, fileId = "") => {
+    const qs = fileId ? `?file_id=${encodeURIComponent(fileId)}` : "";
+    return request<WatchPageData>(`/ui/anime/${animeId}/watch.json${qs}`);
+  },
+getDownloadPreferences: (animeId: number, userId: number) =>
+    request<DownloadPreferences>(
+      `/anime/${animeId}/download-preferences?user_id=${userId}`,
+    ),
+  setDownloadPreferences: (
+    animeId: number,
+    userId: number,
+    prefs: Partial<DownloadPreferences>,
+  ) =>
+    request<DownloadPreferences>(
+      `/anime/${animeId}/download-preferences?user_id=${userId}`,
+      { method: "PATCH", json: prefs },
     ),
   getCharacters: (animeId: number) =>
     request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters`),

@@ -553,6 +553,23 @@ def test_fetch_does_not_mark_schedule_when_persistence_fails():
     assert service._config._saved_settings.get("anime", {}).get("lastSchedule") is None
 
 
+def test_fetch_does_not_mark_schedule_when_records_empty():
+    """Empty schedule results must not stamp lastSchedule (retry next boot)."""
+    api = _FakeAPI([_FakeProvider("A", [])])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    try:
+        detail = service._job_fetch_latest()
+    finally:
+        service._api_coordinator.close()
+
+    assert "records=0" in detail
+    assert "persisted=0" in detail
+    assert "will retry" in detail
+    assert service._config._saved_settings.get("anime", {}).get("lastSchedule") is None
+    assert db.upserts == []
+
+
 def test_fetch_waits_for_api_init_thread():
     api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
     gate = threading.Event()

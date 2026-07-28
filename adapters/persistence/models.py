@@ -1,7 +1,10 @@
+import base64
+import codecs
 import hashlib
 import json
 import queue
 import re
+import string
 import threading
 import time
 import traceback
@@ -11,6 +14,22 @@ from urllib.parse import parse_qs, urlencode
 
 import bencoding
 import requests
+
+
+def canonicalize_infohash(value: Optional[str]) -> Optional[str]:
+    """Return a lowercase hex infohash, converting base32 magnets when needed."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if all(c in string.hexdigits for c in text):
+        return text
+    try:
+        raw = base64.b32decode(text.encode("ascii"), casefold=True)
+    except Exception:
+        return text
+    if not raw:
+        return text
+    return codecs.encode(raw, "hex").decode("ascii")
 
 # ``log`` is resolved lazily so this module can be imported during the
 # composition-root chain without triggering the
@@ -357,7 +376,8 @@ class Torrent(Item):
         magnet = magnet[len(prefix) :]
 
         data = parse_qs(magnet)
-        hash = data["xt"][0][len("urn:btih:") :]
+        raw_hash = data["xt"][0][len("urn:btih:") :]
+        hash = canonicalize_infohash(raw_hash) or str(raw_hash).strip().lower()
         name = data.get("dn", [""])[0] or None
         trackers = data.get("tr", "")
         size = int(data.get("xl", ["0"])[0]) or None

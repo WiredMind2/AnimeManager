@@ -110,6 +110,32 @@ Restart the app after installing. See [`tools/ffmpeg/README.md`](tools/ffmpeg/RE
 
 ---
 
+### Auto-download (weekly / WATCHING)
+
+Background loop (`AM-AutoDownload` in [`StartupJobsService`](application/services/startup_jobs.py)) polls every N minutes (default 30) and queues the next episode for **WATCHING** anime with `user_tags.auto_download` enabled.
+
+| Piece | Path |
+|-------|------|
+| Orchestrator | [`application/services/auto_download_service.py`](application/services/auto_download_service.py) |
+| Matching / cold start | [`application/services/auto_download_matching.py`](application/services/auto_download_matching.py) (`next_episode` → `1` when empty) |
+| Prefs resolution | [`application/services/auto_download_prefs.py`](application/services/auto_download_prefs.py) |
+| RSS fetch/parse | [`adapters/feeds/rss_feed_adapter.py`](adapters/feeds/rss_feed_adapter.py) |
+| RSS match | [`adapters/feeds/rss_match.py`](adapters/feeds/rss_match.py) |
+| Per-anime prefs + seen items | [`adapters/persistence/user_actions_repository.py`](adapters/persistence/user_actions_repository.py) (`anime_download_preferences`, `rss_feed_seen`) |
+| Detail UI | [`next-web/components/anime/AutoDownloadPanel.tsx`](next-web/components/anime/AutoDownloadPanel.tsx) |
+| Global feeds UI | [`next-web/components/settings/AutoDownloadSettingsPanel.tsx`](next-web/components/settings/AutoDownloadSettingsPanel.tsx) |
+
+**Source modes (per anime):** `search` (Nova3) or `rss` (configured feeds). Preferences: publisher, resolution, feed ids, `use_inferred`. Global config in `settings.json` → `auto_download` (kill switch, interval, builtin SubsPlease feeds, custom feeds).
+
+| Method | Path |
+|--------|------|
+| POST | `/auto-download/{anime_id}` |
+| GET/PATCH | `/anime/{anime_id}/download-preferences` |
+
+Eligibility still requires the WATCHING tag; the detail panel toggle can be set anytime and shows a note when not Watching.
+
+---
+
 ## Running the application
 
 ### Commands

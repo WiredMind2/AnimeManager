@@ -307,6 +307,16 @@ class ClientSDK:
     ) -> None:
         self._facade.set_auto_download(anime_id, user_id, enabled)
 
+    def get_download_preferences(
+        self, anime_id: int, user_id: int
+    ) -> dict[str, Any]:
+        return self._facade.get_download_preferences(anime_id, user_id)
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._facade.set_download_preferences(anime_id, user_id, prefs)
+
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._facade.mark_seen(anime_id, file_name, user_id)
 

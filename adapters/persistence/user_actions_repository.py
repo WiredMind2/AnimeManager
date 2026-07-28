@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -377,4 +378,217 @@ class UserActionsRepository:
         except Exception as exc:
             raise InfrastructureError(
                 f"Failed to delete episode progress: {exc}"
+            ) from exc
+
+    def _ensure_download_preferences_table(self) -> None:
+        db = self._database
+        ddl = (
+            "CREATE TABLE IF NOT EXISTS anime_download_preferences ("
+            "anime_id INTEGER NOT NULL, "
+            "user_id INTEGER NOT NULL, "
+            "source_mode TEXT NOT NULL DEFAULT 'search', "
+            "publisher TEXT, "
+            "resolution TEXT, "
+            "feed_ids TEXT, "
+            "use_inferred INTEGER NOT NULL DEFAULT 1, "
+            "PRIMARY KEY (anime_id, user_id))"
+        )
+        try:
+            with db.get_lock():
+                db.sql(ddl, (), save=True)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to ensure anime_download_preferences schema: {exc}"
+            ) from exc
+
+    def _ensure_rss_feed_seen_table(self) -> None:
+        db = self._database
+        ddl = (
+            "CREATE TABLE IF NOT EXISTS rss_feed_seen ("
+            "feed_id TEXT NOT NULL, "
+            "item_key TEXT NOT NULL, "
+            "seen_at INTEGER NOT NULL, "
+            "PRIMARY KEY (feed_id, item_key))"
+        )
+        try:
+            with db.get_lock():
+                db.sql(ddl, (), save=True)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to ensure rss_feed_seen schema: {exc}"
+            ) from exc
+
+    def get_download_preferences(self, anime_id: int, user_id: int) -> dict[str, Any]:
+        """Return stored download preferences, or empty dict when unset."""
+        self._ensure_download_preferences_table()
+        db = self._database
+        try:
+            rows = db.sql(
+                "SELECT source_mode, publisher, resolution, feed_ids, use_inferred "
+                "FROM anime_download_preferences WHERE anime_id=? AND user_id=?",
+                (anime_id, user_id),
+            )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load download preferences: {exc}"
+            ) from exc
+        if not rows:
+            return {}
+        row = rows[0]
+        feed_raw = row[3] if len(row) > 3 else None
+        feed_ids: list[str] = []
+        if isinstance(feed_raw, str) and feed_raw.strip():
+            try:
+                parsed = json.loads(feed_raw)
+                if isinstance(parsed, list):
+                    feed_ids = [str(x).strip() for x in parsed if str(x).strip()]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                feed_ids = []
+        use_inferred = row[4] if len(row) > 4 else 1
+        return {
+            "source_mode": str(row[0] or "search"),
+            "publisher": row[1],
+            "resolution": row[2],
+            "feed_ids": feed_ids,
+            "use_inferred": bool(use_inferred) if use_inferred is not None else True,
+        }
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Upsert download preferences and return the stored row."""
+        self._ensure_download_preferences_table()
+        current = self.get_download_preferences(anime_id, user_id)
+        source_mode = str(
+            prefs.get("source_mode", current.get("source_mode") or "search")
+        ).strip().lower()
+        if source_mode not in ("search", "rss"):
+            source_mode = "search"
+        publisher = prefs.get("publisher", current.get("publisher"))
+        if publisher is not None:
+            publisher = str(publisher).strip() or None
+        resolution = prefs.get("resolution", current.get("resolution"))
+        if resolution is not None:
+            resolution = str(resolution).strip() or None
+        if "feed_ids" in prefs:
+            feed_ids = prefs.get("feed_ids") or []
+            if not isinstance(feed_ids, list):
+                feed_ids = []
+            feed_ids = [str(x).strip() for x in feed_ids if str(x).strip()]
+        else:
+            feed_ids = list(current.get("feed_ids") or [])
+        if "use_inferred" in prefs:
+            use_inferred = 1 if bool(prefs.get("use_inferred")) else 0
+        else:
+            use_inferred = 1 if current.get("use_inferred", True) else 0
+        feed_json = json.dumps(feed_ids)
+        db = self._database
+        try:
+            with db.get_lock():
+                existing = db.sql(
+                    "SELECT 1 FROM anime_download_preferences "
+                    "WHERE anime_id=? AND user_id=? LIMIT 1",
+                    (anime_id, user_id),
+                )
+                if existing:
+                    db.sql(
+                        "UPDATE anime_download_preferences SET source_mode=?, publisher=?, "
+                        "resolution=?, feed_ids=?, use_inferred=? "
+                        "WHERE anime_id=? AND user_id=?",
+                        (
+                            source_mode,
+                            publisher,
+                            resolution,
+                            feed_json,
+                            use_inferred,
+                            anime_id,
+                            user_id,
+                        ),
+                        save=True,
+                    )
+                else:
+                    db.sql(
+                        "INSERT INTO anime_download_preferences "
+                        "(anime_id, user_id, source_mode, publisher, resolution, "
+                        "feed_ids, use_inferred) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            anime_id,
+                            user_id,
+                            source_mode,
+                            publisher,
+                            resolution,
+                            feed_json,
+                            use_inferred,
+                        ),
+                        save=True,
+                    )
+        except InfrastructureError:
+            raise
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to save download preferences: {exc}"
+            ) from exc
+        return self.get_download_preferences(anime_id, user_id)
+
+    def list_rss_feed_seen_keys(
+        self, feed_ids: list[str] | None = None
+    ) -> set[tuple[str, str]]:
+        """Return ``(feed_id, item_key)`` pairs already seen."""
+        self._ensure_rss_feed_seen_table()
+        db = self._database
+        try:
+            if feed_ids:
+                placeholders = ",".join("?" for _ in feed_ids)
+                rows = db.sql(
+                    f"SELECT feed_id, item_key FROM rss_feed_seen "
+                    f"WHERE feed_id IN ({placeholders})",
+                    tuple(str(x) for x in feed_ids),
+                )
+            else:
+                rows = db.sql("SELECT feed_id, item_key FROM rss_feed_seen", ())
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to load rss_feed_seen: {exc}"
+            ) from exc
+        out: set[tuple[str, str]] = set()
+        for row in rows or []:
+            if not row or len(row) < 2:
+                continue
+            feed_id = str(row[0] or "").strip()
+            item_key = str(row[1] or "").strip()
+            if feed_id and item_key:
+                out.add((feed_id, item_key))
+        return out
+
+    def mark_rss_feed_seen(self, feed_id: str, item_key: str) -> None:
+        """Record that a feed item was considered/queued."""
+        self._ensure_rss_feed_seen_table()
+        fid = str(feed_id or "").strip()
+        key = str(item_key or "").strip()
+        if not fid or not key:
+            return
+        now = int(time.time())
+        db = self._database
+        try:
+            with db.get_lock():
+                existing = db.sql(
+                    "SELECT 1 FROM rss_feed_seen WHERE feed_id=? AND item_key=? LIMIT 1",
+                    (fid, key),
+                )
+                if existing:
+                    db.sql(
+                        "UPDATE rss_feed_seen SET seen_at=? WHERE feed_id=? AND item_key=?",
+                        (now, fid, key),
+                        save=True,
+                    )
+                else:
+                    db.sql(
+                        "INSERT INTO rss_feed_seen (feed_id, item_key, seen_at) "
+                        "VALUES (?, ?, ?)",
+                        (fid, key, now),
+                        save=True,
+                    )
+        except Exception as exc:
+            raise InfrastructureError(
+                f"Failed to mark rss feed item seen: {exc}"
             ) from exc

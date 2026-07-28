@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useToast } from "@/components/Toast";
 import { api, type UserState } from "@/lib/api";
 import { DEFAULT_USER_ID } from "@/lib/config";
@@ -13,18 +13,20 @@ type AnimeActionsProps = {
   animeId: number;
   trailer?: string;
   initialUserState: UserState;
-  initialLastSeen?: string;
+  onUserStateChange?: (state: UserState) => void;
 };
 
 export default function AnimeActions({
   animeId,
   trailer,
   initialUserState,
-  initialLastSeen,
+  onUserStateChange,
 }: AnimeActionsProps) {
   const [userState, setUserState] = useState(initialUserState);
   const [trailerOpen, setTrailerOpen] = useState(false);
-  const [seenFile, setSeenFile] = useState(initialLastSeen || "");
+  useEffect(() => {
+    setUserState(initialUserState);
+  }, [initialUserState]);
   const embed = youtubeEmbedUrl(trailer);
   const closeTrailer = useCallback(() => setTrailerOpen(false), []);
   const { panelRef } = useDialogBehavior<HTMLDivElement>({
@@ -33,25 +35,19 @@ export default function AnimeActions({
   });
   const { showToast } = useToast();
 
+  function commitState(next: UserState) {
+    setUserState(next);
+    onUserStateChange?.(next);
+  }
+
   async function toggleLike() {
     const next = !userState.liked;
-    setUserState((s) => ({ ...s, liked: next }));
+    commitState({ ...userState, liked: next });
     try {
       await api.setLike(animeId, DEFAULT_USER_ID, next);
     } catch {
-      setUserState((s) => ({ ...s, liked: !next }));
+      commitState({ ...userState, liked: !next });
       showToast("Failed to update like status. Please try again.", "error");
-    }
-  }
-
-  async function toggleAutoDownload() {
-    const next = !userState.auto_download;
-    setUserState((s) => ({ ...s, auto_download: next }));
-    try {
-      await api.setAutoDownload(animeId, DEFAULT_USER_ID, next);
-    } catch {
-      setUserState((s) => ({ ...s, auto_download: !next }));
-      showToast("Failed to update auto-download. Please try again.", "error");
     }
   }
 
@@ -64,24 +60,12 @@ export default function AnimeActions({
           ? false
           : true
         : prevAuto;
-    setUserState((s) => ({ ...s, tag, auto_download: nextAuto }));
+    commitState({ ...userState, tag, auto_download: nextAuto });
     try {
       await api.setTag(animeId, tag, DEFAULT_USER_ID);
     } catch {
-      setUserState((s) => ({ ...s, tag: prev, auto_download: prevAuto }));
+      commitState({ ...userState, tag: prev, auto_download: prevAuto });
       showToast("Failed to update tag. Please try again.", "error");
-    }
-  }
-
-  async function markSeen() {
-    const fileName = seenFile.trim() || "manual";
-    const prevTag = userState.tag;
-    setUserState((s) => ({ ...s, tag: "SEEN" }));
-    try {
-      await api.markSeen(animeId, fileName, DEFAULT_USER_ID);
-    } catch {
-      setUserState((s) => ({ ...s, tag: prevTag }));
-      showToast("Failed to mark episode as seen. Please try again.", "error");
     }
   }
 
@@ -126,40 +110,6 @@ export default function AnimeActions({
               </option>
             ))}
           </select>
-        </form>
-
-        {(userState.tag || "").toUpperCase() === "WATCHING" ||
-        userState.auto_download ? (
-          <form style={{ display: "inline" }} onSubmit={(e) => e.preventDefault()}>
-            <button
-              className={`btn${userState.auto_download ? " btn--primary" : " btn--ghost"}`}
-              type="button"
-              onClick={() => void toggleAutoDownload()}
-              title="Automatically download the next episode matching your usual release group and quality"
-            >
-              {userState.auto_download ? "Auto-download on" : "Auto-download off"}
-            </button>
-          </form>
-        ) : null}
-
-        <form
-          className="detail__seen-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void markSeen();
-          }}
-        >
-          <input
-            className="input"
-            name="seen_file"
-            placeholder="Episode filename"
-            value={seenFile}
-            onChange={(e) => setSeenFile(e.target.value)}
-            style={{ height: 36, minWidth: 180 }}
-          />
-          <button className="btn btn--ghost" type="submit">
-            Mark seen
-          </button>
         </form>
 
         {trailer ? (

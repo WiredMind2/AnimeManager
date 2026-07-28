@@ -23,6 +23,30 @@
     "max_concurrent": 3,
     "default_folder": "./downloads"
   },
+  "auto_download": {
+    "enabled": true,
+    "interval_minutes": 30,
+    "cooldown_minutes": 30,
+    "default_source_mode": "rss",
+    "default_resolution": "720p",
+    "feeds": {
+      "builtin": [
+        {
+          "id": "subsplease-720",
+          "label": "SubsPlease 720p",
+          "url": "https://subsplease.org/rss/?r=720",
+          "enabled": true
+        },
+        {
+          "id": "subsplease-1080",
+          "label": "SubsPlease 1080p",
+          "url": "https://subsplease.org/rss/?r=1080",
+          "enabled": false
+        }
+      ],
+      "custom": []
+    }
+  },
   "api": {
     "timeout": 30,
     "rate_limit": 60

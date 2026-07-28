@@ -5,6 +5,7 @@
 export const SECTION_ORDER = [
   "anime",
   "downloads",
+  "auto_download",
   "file_managers",
   "torrent_managers",
   "database_managers",
@@ -27,6 +28,7 @@ export const SECTION_ORDER = [
 export const SECTION_TIERS: Record<string, number> = {
   anime: 1,
   downloads: 1,
+  auto_download: 1,
   file_managers: 1,
   torrent_managers: 1,
   database_managers: 1,
@@ -54,6 +56,10 @@ export const SECTION_META: Record<string, { label: string; description: string }
   downloads: {
     label: "Downloads",
     description: "Default destination and concurrency for new downloads.",
+  },
+  auto_download: {
+    label: "Auto-download",
+    description: "Background episode grabber, RSS feeds, and matching defaults.",
   },
   file_managers: {
     label: "File managers",

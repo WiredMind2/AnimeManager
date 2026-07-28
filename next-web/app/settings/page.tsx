@@ -1,4 +1,5 @@
 import AppShell from "@/components/shell/AppShell";
+import AutoDownloadSettingsPanel from "@/components/settings/AutoDownloadSettingsPanel";
 import SettingsForm from "@/components/settings/SettingsForm";
 import { api } from "@/lib/api";
 import { KNOWN_CATEGORIES, LOG_TAIL_INITIAL, mergeKnownCategories } from "@/lib/logs";
@@ -35,11 +36,18 @@ export default async function SettingsPage() {
   }
 
   const logCategories = await resolveLogCategories(settings);
-  const sections = buildSections(settings, { logCategories });
+  const autoDownload =
+    settings.auto_download && typeof settings.auto_download === "object"
+      ? (settings.auto_download as Record<string, unknown>)
+      : {};
+  const settingsForForm = { ...settings };
+  delete settingsForForm.auto_download;
+  const sections = buildSections(settingsForForm, { logCategories });
   const currentSettingsJson = JSON.stringify(settings, null, 2);
 
   return (
     <AppShell activeNav="settings" pageTitle="Settings" showSearch={false}>
+      <AutoDownloadSettingsPanel initial={autoDownload} />
       <SettingsForm
         sections={sections}
         currentSettings={settings}
