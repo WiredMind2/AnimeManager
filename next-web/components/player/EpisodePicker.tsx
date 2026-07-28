@@ -1,6 +1,12 @@
 "use client";
 
 import type { EpisodeFile } from "@/lib/api";
+import {
+  episodePlaybackStatus,
+  episodeUnplayableLabel,
+  episodeUnplayableTitle,
+  isEpisodePlayable,
+} from "@/lib/playback/episode-playable";
 
 export type EpisodePickerProps = {
   episodeFiles: EpisodeFile[];
@@ -31,6 +37,8 @@ export default function EpisodePicker({ episodeFiles, onPlay }: EpisodePickerPro
           {episodeFiles.map((item) => {
             const fileId = String(item.file_id ?? "");
             const title = String(item.title || item.file_name || "Episode");
+            const playable = isEpisodePlayable(item);
+            const status = episodePlaybackStatus(item);
             return (
               <tr key={fileId}>
                 <td className="truncate" title={title}>
@@ -40,15 +48,26 @@ export default function EpisodePicker({ episodeFiles, onPlay }: EpisodePickerPro
                 <td className="num">{item.episode ?? "—"}</td>
                 <td className="num">{formatSizeMb(item.size_bytes)}</td>
                 <td className="num">
-                  <button
-                    className="btn btn--ghost btn--small"
-                    type="button"
-                    data-play-file-id={fileId}
-                    data-play-title={title}
-                    onClick={() => onPlay(fileId, title)}
-                  >
-                    Play
-                  </button>
+                  {playable ? (
+                    <button
+                      className="btn btn--ghost btn--small"
+                      type="button"
+                      data-play-file-id={fileId}
+                      data-play-title={title}
+                      onClick={() => onPlay(fileId, title)}
+                    >
+                      Play
+                    </button>
+                  ) : (
+                    <button
+                      className="btn btn--ghost btn--small"
+                      type="button"
+                      disabled
+                      title={episodeUnplayableTitle(status)}
+                    >
+                      {episodeUnplayableLabel(status)}
+                    </button>
+                  )}
                 </td>
               </tr>
             );

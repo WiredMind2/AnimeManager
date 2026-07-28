@@ -91,6 +91,25 @@ Requires a compatible `python-libtorrent` wheel for your Python version and plat
 
 ---
 
+### FFmpeg (required for web playback)
+
+HLS playback needs `ffmpeg` and `ffprobe`. Composition prefers **project-local** binaries over PATH:
+
+| Location | Role |
+|----------|------|
+| [`tools/ffmpeg/bin/`](tools/ffmpeg/bin/) | Preferred (gitignored) |
+| System `PATH` | Fallback |
+
+Install on Windows (downloads gyan.dev essentials):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/install_ffmpeg.py
+```
+
+Restart the app after installing. See [`tools/ffmpeg/README.md`](tools/ffmpeg/README.md). Without ffmpeg, episode listings show **Needs ffmpeg** (not “Not ready”), and `/play` returns an infrastructure error with the install hint.
+
+---
+
 ## Running the application
 
 ### Commands
@@ -646,6 +665,8 @@ npm run test:playback-smoke           # Playwright smoke script
 | Torrent file presence | [`application/services/torrent_file_presence.py`](application/services/torrent_file_presence.py) |
 | DB gateway | [`application/services/database_manager.py`](application/services/database_manager.py) |
 | Startup jobs | [`application/services/startup_jobs.py`](application/services/startup_jobs.py) |
+| FFmpeg path resolution | [`adapters/media/ffmpeg_paths.py`](adapters/media/ffmpeg_paths.py) |
+| FFmpeg local install | [`scripts/install_ffmpeg.py`](scripts/install_ffmpeg.py) |
 | Playback service | [`application/playback/service.py`](application/playback/service.py) |
 | FFmpeg adapter | [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transcoder.py) |
 | FFmpeg encoder selection | [`adapters/media/ffmpeg_encoder.py`](adapters/media/ffmpeg_encoder.py) |

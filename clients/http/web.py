@@ -588,17 +588,33 @@ def _start_download_response(request: Request, anime_id: int) -> Response:
 def _annotate_episode_playability(episode_files: list[Any]) -> list[Any]:
     """Tag each episode file dict with a ``playable`` flag.
 
-    Files whose probe found no tracks at all are typically torrent
-    preallocations whose download hasn't finished — ffmpeg can't read
-    them, so the UI should not offer a Play action. Items that lack the
-    probe keys entirely (older SDK shapes) are assumed playable.
+    Matches ``PlaybackService.create_session``: playable when duration is
+    known or any audio/subtitle tracks exist. Empty probe results mean a
+    typical incomplete torrent preallocation. Items that lack probe keys
+    entirely (older SDK shapes) are assumed playable.
+
+    ``playback_blocker=ffmpeg_missing`` is not incomplete media — Play is
+    disabled with a distinct UI status, not "wait for download".
     """
     for item in episode_files:
         if not isinstance(item, dict):
             continue
-        has_probe_info = "audio_tracks" in item or "subtitle_tracks" in item
+        blocker = str(item.get("playback_blocker") or "").strip()
+        if blocker == "ffmpeg_missing":
+            item["playable"] = False
+            continue
+        has_probe_info = (
+            "audio_tracks" in item
+            or "subtitle_tracks" in item
+            or "duration_seconds" in item
+        )
+        try:
+            duration = float(item.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
         item["playable"] = bool(
             not has_probe_info
+            or duration > 0
             or item.get("audio_tracks")
             or item.get("subtitle_tracks")
         )

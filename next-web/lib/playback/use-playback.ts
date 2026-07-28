@@ -36,6 +36,11 @@ import {
   type RecoveryReason,
   type SessionRecoveryController,
 } from "@/lib/playback/recovery";
+import {
+  EPISODE_NOT_READY_MESSAGE,
+  isIncompletePlaybackMessage,
+} from "@/lib/playback/episode-playable";
+
 import { loadStartTimeFromPayload } from "@/lib/playback/shaka";
 import {
   applySubtitleSelection,
@@ -54,6 +59,10 @@ export type UsePlaybackOptions = {
   initialFileTitle?: string;
   initialAudioTracks?: PlaybackTrackOption[];
   initialSubtitleTracks?: PlaybackTrackOption[];
+  /** When false, skip auto-start (incomplete download / missing ffmpeg). Defaults to true. */
+  initialFilePlayable?: boolean;
+  /** Shown when ``initialFilePlayable`` is false. */
+  initialUnplayableMessage?: string;
 };
 
 export function usePlayback(
@@ -68,10 +77,18 @@ export function usePlayback(
     initialFileTitle = "",
     initialAudioTracks = [],
     initialSubtitleTracks = [],
+    initialFilePlayable = true,
+    initialUnplayableMessage = EPISODE_NOT_READY_MESSAGE,
   } = opts;
 
-  const [status, setStatusState] = useState("Click play to start.");
-  const [error, setError] = useState("");
+  const [status, setStatusState] = useState(
+    initialFileId && !initialFilePlayable
+      ? initialUnplayableMessage
+      : "Click play to start.",
+  );
+  const [error, setError] = useState(
+    initialFileId && !initialFilePlayable ? initialUnplayableMessage : "",
+  );
   const [title, setTitle] = useState(initialFileTitle || "Nothing playing");
   const [currentFileId, setCurrentFileId] = useState(initialFileId);
   const [audioTracks, setAudioTracks] = useState<PlaybackTrackOption[]>(initialAudioTracks);
@@ -413,16 +430,21 @@ export function usePlayback(
         payload = await createSession(animeId, form);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Playback startup failed.";
-        playerLoggerRef.current?.log("error", "session_create_failed", {
-          ...playerFaultFields("playback_runtime_error", "session_create", false),
+        const incomplete = isIncompletePlaybackMessage(message);
+        playerLoggerRef.current?.log(incomplete ? "warn" : "error", "session_create_failed", {
+          ...playerFaultFields(
+            incomplete ? "startup_config_warning" : "playback_runtime_error",
+            "session_create",
+            incomplete,
+          ),
           error: message,
         });
-        setError(`Session startup error: ${message}`);
-        setStatus("Playback unavailable.");
+        setError(incomplete ? message : `Session startup error: ${message}`);
+        setStatus(incomplete ? message : "Playback unavailable.");
         explicitPlaybackErrorRef.current = {
           kind: "session_create_failed",
           message,
-          code: "SESSION_CREATE",
+          code: incomplete ? "EPISODE_INCOMPLETE" : "SESSION_CREATE",
         };
         markLoadPhase("session_create_failed", { generation, error: message });
         return;
@@ -760,6 +782,19 @@ export function usePlayback(
   useEffect(() => {
     if (!initialFileId) return;
     updateTrackSelectors(initialFileId);
+    if (!initialFilePlayable) {
+      setTitle(initialFileTitle || "Episode");
+      setCurrentFileId(initialFileId);
+      currentFileIdRef.current = initialFileId;
+      setError(initialUnplayableMessage);
+      setStatus(initialUnplayableMessage);
+      playerLoggerRef.current?.log("warn", "session_create_skipped_unplayable", {
+        ...playerFaultFields("startup_config_warning", "session_create", true),
+        file_id: initialFileId,
+        error: initialUnplayableMessage,
+      });
+      return;
+    }
     let cancelled = false;
     let frameId = 0;
     const tryAutoLoad = () => {

@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from adapters.media.ffmpeg_transcoder import FFmpegTranscoderAdapter, _ActiveTranscode
 
 
@@ -163,6 +165,7 @@ def test_adapter_resolves_requested_encoder(monkeypatch):
 
 def test_materialize_subtitle_tracks_extracts_vtt(monkeypatch, tmp_path: Path):
     adapter = FFmpegTranscoderAdapter()
+    monkeypatch.setattr(adapter, "probe_tools_available", lambda: True)
 
     monkeypatch.setattr(
         adapter,
@@ -200,6 +203,7 @@ def test_materialize_subtitle_tracks_extracts_vtt(monkeypatch, tmp_path: Path):
 
 def test_materialize_image_subtitle_surfaces_error(monkeypatch, tmp_path: Path):
     adapter = FFmpegTranscoderAdapter()
+    monkeypatch.setattr(adapter, "probe_tools_available", lambda: True)
     monkeypatch.setattr(
         adapter,
         "probe_media_tracks",
@@ -221,6 +225,7 @@ def test_materialize_image_subtitle_surfaces_error(monkeypatch, tmp_path: Path):
 def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
     """A third concurrent session must not fail with 'server busy'."""
     adapter = FFmpegTranscoderAdapter(max_active_sessions=2)
+    monkeypatch.setattr(adapter, "probe_tools_available", lambda: True)
     out = tmp_path / "out"
     out.mkdir()
 
@@ -273,6 +278,7 @@ def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
 def test_forward_restart_does_not_purge_segments(monkeypatch, tmp_path: Path):
     """Forward seek restart must not delete anchor-encoded segments."""
     adapter = FFmpegTranscoderAdapter()
+    monkeypatch.setattr(adapter, "probe_tools_available", lambda: True)
     out = tmp_path / "streams" / "sess1"
     out.mkdir(parents=True)
     source = tmp_path / "episode.mkv"
@@ -318,6 +324,11 @@ def _install_fake_ffprobe(monkeypatch, stdout: str) -> list[int]:
         return _FakeProbeResult(stdout)
 
     monkeypatch.setattr("adapters.media.ffmpeg_transcoder.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        FFmpegTranscoderAdapter,
+        "probe_tools_available",
+        lambda self: True,
+    )
     return calls
 
 
@@ -385,13 +396,31 @@ def test_probe_media_tracks_failure_is_not_cached(monkeypatch, tmp_path: Path):
 
     def failing_run(command, **_kwargs):
         calls.append(1)
-        raise OSError("ffprobe missing")
+        raise OSError("ffprobe crashed")
 
     monkeypatch.setattr("adapters.media.ffmpeg_transcoder.subprocess.run", failing_run)
+    monkeypatch.setattr(
+        FFmpegTranscoderAdapter,
+        "probe_tools_available",
+        lambda self: True,
+    )
 
     assert adapter.probe_media_tracks(str(source)) == {"audio": [], "subtitles": []}
     assert adapter.probe_media_tracks(str(source)) == {"audio": [], "subtitles": []}
     assert len(calls) == 2
+
+
+def test_probe_media_tracks_raises_when_tools_missing(monkeypatch, tmp_path: Path):
+    from domain.errors import InfrastructureError
+
+    source = tmp_path / "episode.mkv"
+    source.write_bytes(b"x" * 16)
+    adapter = FFmpegTranscoderAdapter(
+        ffmpeg_bin="no-such-ffmpeg-bin",
+        ffprobe_bin="no-such-ffprobe-bin",
+    )
+    with pytest.raises(InfrastructureError, match=r"install_ffmpeg|ffprobe"):
+        adapter.probe_media_tracks(str(source))
 
 
 def test_probe_media_duration_is_cached_for_unchanged_file(

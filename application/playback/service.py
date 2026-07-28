@@ -96,11 +96,28 @@ class PlaybackService:
 
     def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
         out: list[EpisodeFileDTO] = []
+        probe_ok = True
+        available = getattr(self._transcoder, "probe_tools_available", None)
+        if callable(available):
+            probe_ok = bool(available())
         for row in self._media_library.list_episode_files(query.anime_id) or []:
             file_id = str(row.get("file_id") or "").strip()
             path = str(row.get("path") or "").strip()
             title = str(row.get("title") or row.get("name") or "").strip()
             if not file_id or not path:
+                continue
+            if not probe_ok:
+                out.append(
+                    EpisodeFileDTO(
+                        file_id=file_id,
+                        title=title or Path(path).name,
+                        path=path,
+                        size_bytes=_safe_int(row.get("size_bytes") or row.get("size")),
+                        season=_safe_int(row.get("season")),
+                        episode=_safe_int(row.get("episode")),
+                        playback_blocker="ffmpeg_missing",
+                    )
+                )
                 continue
             tracks = self._transcoder.probe_media_tracks(path)
             duration = self._probe_duration(path)
@@ -131,6 +148,16 @@ class PlaybackService:
             raise NotFoundError("Requested episode file was not found.")
         if not os.path.isfile(selected.path):
             raise NotFoundError("Episode file is missing from disk.")
+
+        require_tools = getattr(self._transcoder, "require_probe_tools", None)
+        if callable(require_tools):
+            require_tools()
+        elif selected.playback_blocker == "ffmpeg_missing":
+            raise InfrastructureError(
+                "Playback is unavailable because ffmpeg/ffprobe was not found. "
+                "Run `.venv/Scripts/python.exe scripts/install_ffmpeg.py` "
+                "(or install ffmpeg on PATH), then restart the app."
+            )
 
         duration = self._probe_duration(selected.path)
         if duration <= 0 and selected.duration_seconds is not None and selected.duration_seconds > 0:

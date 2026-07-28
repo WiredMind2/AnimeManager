@@ -113,6 +113,12 @@ animeAPI/docs/
 # lib artifacts
 lib/upx-3.96-win64/
 
+# Project-local ffmpeg (installed via scripts/install_ffmpeg.py)
+tools/ffmpeg/bin/
+tools/ffmpeg/*.zip
+tools/ffmpeg/*.tmp
+
+
 # Cache (application runtime)
 Anime Manager/cache/
 Anime Manager/cache/*

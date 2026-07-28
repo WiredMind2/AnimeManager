@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from adapters.file.local_media_library import LocalMediaLibraryAdapter
 from adapters.media import FFmpegTranscoderAdapter
+from adapters.media.ffmpeg_paths import resolve_ffmpeg_bins
 from adapters.metadata.anime_hydration_adapter import AnimeHydrationAdapter
 from adapters.metadata.api_coordinator_adapter import ApiCoordinatorAdapter
 from adapters.persistence.anime_repository import AnimeRepositoryAdapter
@@ -78,7 +79,10 @@ def build_embedded_facade() -> EmbeddedClientFacade:
 
     _SEGMENT_SECONDS = SEGMENT_SECONDS
     playback_cfg = deps.config.settings.get("playback", {}) or {}
+    ffmpeg_bin, ffprobe_bin = resolve_ffmpeg_bins()
     media_transcoder = FFmpegTranscoderAdapter(
+        ffmpeg_bin=ffmpeg_bin,
+        ffprobe_bin=ffprobe_bin,
         max_active_sessions=2,
         segment_seconds=_SEGMENT_SECONDS,
         video_encoder=str(playback_cfg.get("video_encoder", "auto")),
