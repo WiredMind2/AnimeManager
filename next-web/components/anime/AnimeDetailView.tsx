@@ -12,6 +12,7 @@ import type {
 } from "@/lib/api";
 import type { AnimeDetailTabId } from "./AnimeDetailPageClient";
 import AnimeActions from "./AnimeActions";
+import AutoDownloadPanel from "./AutoDownloadPanel";
 import AnimeCharactersSection from "./AnimeCharactersSection";
 import AnimeRelationsSection from "./AnimeRelationsSection";
 import { buildDetailMetaRows } from "./anime-metadata-utils";
@@ -64,7 +65,12 @@ export default function AnimeDetailView({
   tabsRef,
 }: AnimeDetailViewProps) {
   const [timeZone, setTimeZone] = useState<string | null>(null);
+  const [liveUserState, setLiveUserState] = useState(userState);
   const posterRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setLiveUserState(userState);
+  }, [userState]);
   const coverSrc = useCoverSrc(
     posterRef,
     anime.picture_variants,
@@ -93,6 +99,7 @@ export default function AnimeDetailView({
     { id: "torrents", label: "Torrent search" },
     { id: "player", label: "Episode player" },
     { id: "downloads", label: "Downloads" },
+    { id: "auto-download", label: "Auto-download" },
     ...(pictures.length > 0 ? [{ id: "pictures" as AnimeDetailTabId, label: "Pictures" }] : []),
     ...(characters.length > 0 ? [{ id: "characters" as AnimeDetailTabId, label: "Characters" }] : []),
     { id: "related" as AnimeDetailTabId, label: "Related anime" },
@@ -197,8 +204,8 @@ export default function AnimeDetailView({
           <AnimeActions
             animeId={anime.id!}
             trailer={anime.trailer}
-            initialUserState={userState}
-            initialLastSeen={anime.last_seen}
+            initialUserState={liveUserState}
+            onUserStateChange={setLiveUserState}
           />
         </div>
       </section>
@@ -252,6 +259,19 @@ export default function AnimeDetailView({
           id="panel-downloads"
         >
           <DownloadedEpisodesTable animeId={anime.id!} initialTorrents={animeTorrents} />
+        </div>
+
+        <div
+          className="tabs__panel"
+          role="tabpanel"
+          hidden={activeTab !== "auto-download"}
+          id="panel-auto-download"
+        >
+          <AutoDownloadPanel
+            animeId={anime.id!}
+            initialUserState={liveUserState}
+            onUserStateChange={setLiveUserState}
+          />
         </div>
 
         {pictures.length > 0 ? (

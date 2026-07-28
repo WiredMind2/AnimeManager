@@ -505,6 +505,46 @@ export const api = {
     const qs = fileId ? `?file_id=${encodeURIComponent(fileId)}` : "";
     return request<WatchPageData>(`/ui/anime/${animeId}/watch.json${qs}`);
   },
+getDownloadPreferences: (animeId: number, userId: number) =>
+    request<DownloadPreferences>(
+      `/anime/${animeId}/download-preferences?user_id=${userId}`,
+    ),
+  setDownloadPreferences: (
+    animeId: number,
+    userId: number,
+    prefs: Partial<DownloadPreferences>,
+  ) =>
+    request<DownloadPreferences>(
+      `/anime/${animeId}/download-preferences?user_id=${userId}`,
+      { method: "PATCH", json: prefs },
+    ),
+  getCharacters: (animeId: number) =>
+    request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters`),
+  refreshAnimeCharacters: (animeId: number) =>
+    request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters/refresh`, {
+      method: "POST",
+    }),
+  getCharacter: (characterId: number) =>
+    request<AnimeCharacterDetail>(`/characters/${characterId}`),
+  refreshCharacter: (characterId: number) =>
+    request<AnimeCharacterDetail>(`/characters/${characterId}/refresh`, {
+      method: "POST",
+    }),
+  getAnimePictures: (animeId: number) =>
+    request<{ items: AnimePicture[] }>(`/anime/${animeId}/pictures`),
+  getSearchTerms: (animeId: number) =>
+    request<{ items: string[] }>(`/search-terms/${animeId}`),
+  getRelations: (animeId: number) =>
+    request<{ items: AnimeRelation[] }>(`/anime/${animeId}/relations`),
+  getEpisodeFiles: (animeId: number, userId: number) =>
+    request<{ items: EpisodeFile[] }>(
+      `/anime/${animeId}/episode-files?user_id=${userId}`,
+    ),
+  /** Mirrors ``web_anime_watch`` (``sdk.list_episode_files`` + track/resume maps). */
+  getWatchPageData: (animeId: number, fileId = "") => {
+    const qs = fileId ? `?file_id=${encodeURIComponent(fileId)}` : "";
+    return request<WatchPageData>(`/ui/anime/${animeId}/watch.json${qs}`);
+  },
   getAnimeLibraryTorrents: (animeId: number) =>
     request<{ items: AnimeLibraryTorrent[] }>(`/anime/${animeId}/library-torrents`),
   deleteAnimeTorrent: (animeId: number, hash: string) =>

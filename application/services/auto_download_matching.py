@@ -165,10 +165,10 @@ def owned_episodes_from_files(episode_files: Iterable[Mapping[str, Any]]) -> set
 
 
 def next_episode(owned: Iterable[int]) -> Optional[int]:
-    """Return ``max(owned) + 1``, or ``None`` when there is no history."""
+    """Return ``max(owned) + 1``, or ``1`` when there is no history (cold start)."""
     numbers = [int(n) for n in owned if int(n) > 0]
     if not numbers:
-        return None
+        return 1
     return max(numbers) + 1
 
 

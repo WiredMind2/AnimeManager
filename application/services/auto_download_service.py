@@ -17,6 +17,7 @@ from application.services.auto_download_matching import (
     owned_episodes_from_torrents,
 )
 from application.services.auto_download_prefs import (
+    DEFAULT_SOURCE_MODE,
     normalize_prefs_row,
     resolve_release_preference,
     select_feeds_for_anime,
@@ -357,7 +358,7 @@ class AutoDownloadService:
         episode = next_episode(owned)
         if episode is None:
             return "skipped (no owned episodes)"
-        mode = str(prefs.get("source_mode") or "search").lower()
+        mode = str(prefs.get("source_mode") or DEFAULT_SOURCE_MODE).lower()
         if mode == "rss":
             candidate = self.find_rss_candidate(anime_id, preference, episode, prefs)
         else:

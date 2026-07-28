@@ -12,6 +12,8 @@ in one direction only.
 
 from __future__ import annotations
 
+from adapters.feeds.rss_feed_adapter import RssFeedAdapter
+from adapters.feeds.rss_match import find_rss_candidate
 from adapters.file.local_media_library import LocalMediaLibraryAdapter
 from adapters.media import FFmpegTranscoderAdapter
 from adapters.media.ffmpeg_paths import resolve_ffmpeg_bins
@@ -108,6 +110,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         user_actions_port=user_actions,
         media_streaming_service=media_streaming,
         hydration_service=hydration,
+        title_parser=parse_title,
     )
 
     anime_cfg = deps.config.settings.get("anime", {}) or {}
@@ -122,6 +125,9 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         media_library=media_library,
         parse_title=parse_title,
         log_fn=lambda msg: deps.logger.log("AUTO_DOWNLOAD", msg),
+        settings_provider=lambda: dict(deps.config.settings or {}),
+        feed_fetcher=RssFeedAdapter(),
+        rss_match_fn=find_rss_candidate,
     )
     startup_jobs = StartupJobsService(
         api_coordinator=metadata.api_coordinator,

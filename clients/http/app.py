@@ -352,11 +352,9 @@ def set_auto_download(anime_id: int, user_id: int, enabled: bool = True):
 def get_download_preferences(anime_id: int, user_id: int = 1):
     return get_sdk().get_download_preferences(anime_id, user_id)
 
-
 @app.patch("/anime/{anime_id}/download-preferences")
 def update_download_preferences(anime_id: int, prefs: dict, user_id: int = 1):
     return get_sdk().set_download_preferences(anime_id, user_id, prefs)
-
 
 @app.post("/seen/{anime_id}")
 def mark_seen(anime_id: int, file_name: str, user_id: int):

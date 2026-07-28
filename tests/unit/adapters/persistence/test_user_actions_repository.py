@@ -325,3 +325,34 @@ def test_legacy_watching_without_column_value_is_eligible(adapter_unique):
     db.conn.commit()
     assert adapter.get_user_state(11, 1)["auto_download"] is True
     assert adapter.list_auto_download_eligible(1) == [11]
+
+
+def test_download_preferences_roundtrip(adapter_unique):
+    adapter, _ = adapter_unique
+    assert adapter.get_download_preferences(5, 1) == {}
+    saved = adapter.set_download_preferences(
+        5,
+        1,
+        {
+            "source_mode": "rss",
+            "publisher": "SubsPlease",
+            "resolution": "1080p",
+            "feed_ids": ["subsplease-1080"],
+            "use_inferred": False,
+        },
+    )
+    assert saved["source_mode"] == "rss"
+    assert saved["publisher"] == "SubsPlease"
+    assert saved["resolution"] == "1080p"
+    assert saved["feed_ids"] == ["subsplease-1080"]
+    assert saved["use_inferred"] is False
+    again = adapter.get_download_preferences(5, 1)
+    assert again == saved
+
+
+def test_rss_feed_seen_roundtrip(adapter_unique):
+    adapter, _ = adapter_unique
+    assert adapter.list_rss_feed_seen_keys(["f1"]) == set()
+    adapter.mark_rss_feed_seen("f1", "item-a")
+    adapter.mark_rss_feed_seen("f1", "item-b")
+    assert adapter.list_rss_feed_seen_keys(["f1"]) == {("f1", "item-a"), ("f1", "item-b")}
