@@ -172,3 +172,7 @@ transcripts/
 debug-seek-output.json
 fallback.json
 .repair_catalog_identities.cursor
+
+# /big orchestration artifacts
+.big/
+
