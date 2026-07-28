@@ -10,6 +10,7 @@ from domain.policies.schedule_recency import (
     filter_recent_schedule_records,
     is_recent_schedule_start,
     schedule_recency_cutoff_ts,
+    schedule_recency_horizon_ts,
 )
 
 
@@ -28,18 +29,26 @@ def test_schedule_recency_cutoff_ts_uses_window_days():
     assert cutoff == int(now.timestamp()) - 90 * 86_400
 
 
+def test_schedule_recency_horizon_ts_uses_window_days():
+    now = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    horizon = schedule_recency_horizon_ts(window_days=90, now=now)
+    assert horizon == int(now.timestamp()) + 90 * 86_400
+
+
 def test_is_recent_schedule_start_accepts_in_window():
     now = datetime(2026, 7, 8, tzinfo=timezone.utc)
     recent = int(now.timestamp()) - 10 * 86_400
+    upcoming = int(now.timestamp()) + 10 * 86_400
     assert is_recent_schedule_start(recent, window_days=90, now=now) is True
+    assert is_recent_schedule_start(upcoming, window_days=90, now=now) is True
 
 
-def test_is_recent_schedule_start_rejects_old_and_future():
+def test_is_recent_schedule_start_rejects_old_and_far_future():
     now = datetime(2026, 7, 8, tzinfo=timezone.utc)
     old = int(now.timestamp()) - 120 * 86_400
-    future = int(now.timestamp()) + 10 * 86_400
+    far_future = int(now.timestamp()) + 120 * 86_400
     assert is_recent_schedule_start(old, window_days=90, now=now) is False
-    assert is_recent_schedule_start(future, window_days=90, now=now) is False
+    assert is_recent_schedule_start(far_future, window_days=90, now=now) is False
     assert is_recent_schedule_start(None, window_days=90, now=now) is False
 
 
@@ -50,8 +59,9 @@ def test_filter_recent_schedule_records_sorts_newest_first_and_caps():
         _record(2, int(now.timestamp()) - 40 * 86_400),
         _record(3, int(now.timestamp()) - 200 * 86_400),
         _record(4, int(now.timestamp()) - 1 * 86_400),
+        _record(5, int(now.timestamp()) + 3 * 86_400),
     ]
     filtered = filter_recent_schedule_records(
         records, window_days=90, limit=2, now=now
     )
-    assert [record.id for record in filtered] == [4, 1]
+    assert [record.id for record in filtered] == [5, 4]

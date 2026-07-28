@@ -504,7 +504,9 @@ def test_fetch_latest_merges_cross_provider_schedule_rows():
 def test_fetch_latest_filters_rows_outside_recency_window():
     now = int(time.time())
     recent = now - 10 * 86_400
+    upcoming = now + 10 * 86_400
     old = now - 400 * 86_400
+    far_future = now + 400 * 86_400
     api = _FakeAPI(
         [
             _FakeProvider(
@@ -512,6 +514,8 @@ def test_fetch_latest_filters_rows_outside_recency_window():
                 schedule_items=[
                     _anime_like(1, date_from=recent),
                     _anime_like(2, date_from=old),
+                    _anime_like(3, date_from=upcoming),
+                    _anime_like(4, date_from=far_future),
                 ],
             ),
         ]
@@ -524,8 +528,8 @@ def test_fetch_latest_filters_rows_outside_recency_window():
         coord.close()
 
     assert result is not None
-    assert [record.id for record in result.records] == [1]
-    assert db.upserts and [anime.id for anime in db.upserts[0]] == [1]
+    assert [record.id for record in result.records] == [3, 1]
+    assert db.upserts and [anime.id for anime in db.upserts[0]] == [3, 1]
 
 
 def test_browse_season_dedupes_across_providers():
