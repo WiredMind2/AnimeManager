@@ -18,6 +18,9 @@ class EpisodeFileDTO:
     watch_status: str = "UNSEEN"
     position_seconds: float | None = None
     duration_seconds: float | None = None
+    # Set when playback tooling cannot probe the file (e.g. "ffmpeg_missing").
+    # Distinct from incomplete media (empty tracks after a successful probe).
+    playback_blocker: str | None = None
 
 
 @dataclass(slots=True)

@@ -3,6 +3,11 @@
 import { useRef } from "react";
 import EpisodePicker from "./EpisodePicker";
 import VideoPlayer from "./VideoPlayer";
+import {
+  episodePlaybackStatus,
+  episodeUnplayableMessage,
+  isEpisodePlayable,
+} from "@/lib/playback/episode-playable";
 import { usePlayback } from "@/lib/playback/use-playback";
 import type { EpisodeFile, WatchTrackMap } from "@/lib/api";
 
@@ -29,6 +34,17 @@ export default function WatchView({
   const videoRef = useRef<HTMLVideoElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
+  const selectedEpisode = episodeFiles.find(
+    (item) => String(item.file_id || "") === selectedFileId,
+  );
+  // Unknown selection (not in list) → allow auto-start; server still gates.
+  const initialFilePlayable = selectedEpisode
+    ? isEpisodePlayable(selectedEpisode)
+    : true;
+  const initialUnplayableMessage = selectedEpisode
+    ? episodeUnplayableMessage(episodePlaybackStatus(selectedEpisode))
+    : undefined;
+
   const session = usePlayback(videoRef, panelRef, {
     animeId,
     trackMap,
@@ -36,6 +52,8 @@ export default function WatchView({
     initialFileTitle: selectedFileTitle,
     initialAudioTracks: selectedAudioTracks,
     initialSubtitleTracks: selectedSubtitleTracks,
+    initialFilePlayable,
+    initialUnplayableMessage,
   });
 
   return (

@@ -392,7 +392,10 @@ def anime_pictures(anime_id: int):
 
 @app.get("/anime/{anime_id}/episode-files")
 def anime_episode_files(anime_id: int, user_id: int = 1):
-    return {"items": get_sdk().list_episode_files(anime_id, user_id=user_id)}
+    from . import web as web_module
+
+    items = list(get_sdk().list_episode_files(anime_id, user_id=user_id) or [])
+    return {"items": web_module._annotate_episode_playability(items)}
 
 
 @app.get("/anime/{anime_id}/library-torrents")

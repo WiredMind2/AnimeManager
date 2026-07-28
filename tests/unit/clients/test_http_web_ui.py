@@ -1689,3 +1689,52 @@ def test_play_ignores_stored_position_below_threshold(monkeypatch):
         assert fake.captured_start_time is None, (
             f"Expected no start_time for sub-threshold stored position, got {fake.captured_start_time}"
         )
+
+def test_annotate_episode_playability_matches_create_session_rule():
+    """playable mirrors PlaybackService.create_session readiness checks."""
+    rows = [
+        {
+            "file_id": "incomplete",
+            "audio_tracks": [],
+            "subtitle_tracks": [],
+            "duration_seconds": None,
+        },
+        {
+            "file_id": "duration-only",
+            "audio_tracks": [],
+            "subtitle_tracks": [],
+            "duration_seconds": 1300.0,
+        },
+        {
+            "file_id": "has-audio",
+            "audio_tracks": [{"id": 0, "label": "jpn"}],
+            "subtitle_tracks": [],
+            "duration_seconds": 0,
+        },
+        {"file_id": "legacy-no-probe", "title": "old.mkv"},
+        {
+            "file_id": "ffmpeg-missing",
+            "playback_blocker": "ffmpeg_missing",
+            "audio_tracks": [],
+            "subtitle_tracks": [],
+            "duration_seconds": None,
+        },
+    ]
+    annotated = http_web._annotate_episode_playability(rows)
+    by_id = {item["file_id"]: item["playable"] for item in annotated}
+    assert by_id["incomplete"] is False
+    assert by_id["duration-only"] is True
+    assert by_id["has-audio"] is True
+    assert by_id["legacy-no-probe"] is True
+    assert by_id["ffmpeg-missing"] is False
+    assert annotated[-1]["playback_blocker"] == "ffmpeg_missing"
+
+def test_episode_files_api_includes_playable_flag(client):
+    resp = client.get("/anime/1/episode-files")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items
+    assert "playable" in items[0]
+    # FakeSDK episode rows omit probe keys → assumed playable.
+    assert items[0]["playable"] is True
+

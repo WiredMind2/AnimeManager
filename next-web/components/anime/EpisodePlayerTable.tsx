@@ -5,6 +5,12 @@ import { useEffect, useState } from "react";
 import { type EpisodeFile } from "@/lib/api";
 import { uiPost } from "@/lib/api";
 import { formatMb, watchPercent, watchProgressLabel, watchProgressTitle } from "@/lib/format";
+import {
+  episodePlaybackStatus,
+  episodeUnplayableLabel,
+  episodeUnplayableTitle,
+  isEpisodePlayable,
+} from "@/lib/playback/episode-playable";
 
 type EpisodePlayerTableProps = {
   animeId: number;
@@ -136,12 +142,23 @@ export default function EpisodePlayerTable({
                       </form>
                     </td>
                     <td className="num episode-table__actions">
-                      <Link
-                        className="btn btn--ghost btn--small"
-                        href={`/anime/${animeId}/watch?file_id=${encodeURIComponent(item.file_id || "")}`}
-                      >
-                        Play
-                      </Link>
+                      {isEpisodePlayable(item) ? (
+                        <Link
+                          className="btn btn--ghost btn--small"
+                          href={`/anime/${animeId}/watch?file_id=${encodeURIComponent(item.file_id || "")}`}
+                        >
+                          Play
+                        </Link>
+                      ) : (
+                        <button
+                          className="btn btn--ghost btn--small"
+                          type="button"
+                          disabled
+                          title={episodeUnplayableTitle(episodePlaybackStatus(item))}
+                        >
+                          {episodeUnplayableLabel(episodePlaybackStatus(item))}
+                        </button>
+                      )}
                       <form style={{ display: "inline" }} onSubmit={(e) => e.preventDefault()}>
                         <button
                           className="btn btn--small btn--danger"

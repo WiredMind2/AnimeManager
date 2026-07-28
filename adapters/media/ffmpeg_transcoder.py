@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Callable
 
 from adapters.media.ffmpeg_encoder import build_video_encode_args, resolve_video_encoder
+from adapters.media.ffmpeg_paths import FFMPEG_MISSING_HINT, ffmpeg_bins_available
 from domain.errors import InfrastructureError
 from shared.telemetry import get_telemetry
 
@@ -131,7 +132,28 @@ class FFmpegTranscoderAdapter:
         self._telemetry = get_telemetry()
         self._activity_rank: Callable[[str], float] | None = None
         self._on_evicted: Callable[[str], None] | None = None
-        _LOG.info("ffmpeg_transcoder_init video_encoder=%s", self._video_encoder)
+        _LOG.info(
+            "ffmpeg_transcoder_init video_encoder=%s ffmpeg=%s ffprobe=%s",
+            self._video_encoder,
+            self._ffmpeg_bin,
+            self._ffprobe_bin,
+        )
+        if not self.probe_tools_available():
+            _LOG.warning("ffmpeg_tools_missing hint=%s", FFMPEG_MISSING_HINT)
+
+    def probe_tools_available(self) -> bool:
+        """True when both ffmpeg and ffprobe binaries resolve on disk/PATH."""
+        return ffmpeg_bins_available(self._ffmpeg_bin, self._ffprobe_bin)
+
+    def require_probe_tools(self) -> None:
+        if not self.probe_tools_available():
+            raise InfrastructureError(FFMPEG_MISSING_HINT)
+
+    def _resolved_ffprobe_cmd(self) -> str:
+        return shutil.which(self._ffprobe_bin) or self._ffprobe_bin
+
+    def _resolved_ffmpeg_cmd(self) -> str:
+        return shutil.which(self._ffmpeg_bin) or self._ffmpeg_bin
 
     def set_session_hooks(
         self,
@@ -168,7 +190,8 @@ class FFmpegTranscoderAdapter:
         duration_seconds: float | None = None,
     ) -> dict[str, str]:
         _ = subtitle_track  # sidecar-only: subtitles are not burned into HLS video
-        ffmpeg_cmd = shutil.which(self._ffmpeg_bin) or self._ffmpeg_bin
+        self.require_probe_tools()
+        ffmpeg_cmd = self._resolved_ffmpeg_cmd()
         seg_secs = (
             int(segment_seconds)
             if segment_seconds is not None
@@ -361,6 +384,10 @@ class FFmpegTranscoderAdapter:
         return {key: [dict(item) for item in items] for key, items in tracks.items()}
 
     def probe_media_tracks(self, source_path: str) -> dict[str, list[dict[str, object]]]:
+        if not self.probe_tools_available():
+            # Callers that need a hard failure should use require_probe_tools().
+            # Returning empty here would be misread as an incomplete media file.
+            raise InfrastructureError(FFMPEG_MISSING_HINT)
         signature = self._stat_signature(source_path)
         if signature is not None:
             with self._probe_cache_lock:
@@ -379,7 +406,7 @@ class FFmpegTranscoderAdapter:
         self, source_path: str
     ) -> dict[str, list[dict[str, object]]] | None:
         """Run ffprobe for stream metadata; ``None`` when the probe fails."""
-        ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
+        ffprobe_cmd = self._resolved_ffprobe_cmd()
         command = [
             ffprobe_cmd,
             "-v",
@@ -434,6 +461,8 @@ class FFmpegTranscoderAdapter:
         duration is not available — the caller is expected to drop back
         to a live-style playlist when that happens.
         """
+        if not self.probe_tools_available():
+            raise InfrastructureError(FFMPEG_MISSING_HINT)
         signature = self._stat_signature(source_path)
         if signature is not None:
             with self._probe_cache_lock:
@@ -449,7 +478,7 @@ class FFmpegTranscoderAdapter:
         return duration
 
     def _probe_media_duration_uncached(self, source_path: str) -> float:
-        ffprobe_cmd = shutil.which(self._ffprobe_bin) or self._ffprobe_bin
+        ffprobe_cmd = self._resolved_ffprobe_cmd()
         command = [
             ffprobe_cmd,
             "-v",
@@ -712,7 +741,8 @@ class FFmpegTranscoderAdapter:
         ``probe_media_tracks`` plus ``filename`` (WebVTT) and optional
         ``ass_filename`` for files written under ``output_dir``.
         """
-        ffmpeg_cmd = shutil.which(self._ffmpeg_bin) or self._ffmpeg_bin
+        self.require_probe_tools()
+        ffmpeg_cmd = self._resolved_ffmpeg_cmd()
         tracks = self.probe_media_tracks(source_path).get("subtitles", [])
         out: list[dict[str, object]] = []
         for track in tracks:

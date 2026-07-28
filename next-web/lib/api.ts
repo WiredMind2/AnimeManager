@@ -212,6 +212,10 @@ export type EpisodeFile = {
   duration_seconds?: number;
   audio_tracks?: MediaTrackOption[];
   subtitle_tracks?: MediaTrackOption[];
+  /** Server-annotated; false when ffprobe found no duration/tracks (incomplete download). */
+  playable?: boolean;
+  /** Present when playback tooling cannot probe (e.g. ``ffmpeg_missing``). */
+  playback_blocker?: string | null;
 };
 
 export type WatchTrackMap = Record<

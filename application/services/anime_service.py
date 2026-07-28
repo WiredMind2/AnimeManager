@@ -916,6 +916,7 @@ class AnimeApplicationService:
                     watch_status=st,
                     position_seconds=pos,
                     duration_seconds=row.duration_seconds,
+                    playback_blocker=row.playback_blocker,
                 )
             )
         self._sync_watching_tag_from_library(anime_id, user_id)
