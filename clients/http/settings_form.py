@@ -48,6 +48,7 @@ SECTION_ORDER: tuple[str, ...] = (
     # Tier 1 -- daily-use settings.
     "anime",
     "downloads",
+    "auto_download",
     "file_managers",
     "torrent_managers",
     "database_managers",
@@ -72,6 +73,7 @@ SECTION_ORDER: tuple[str, ...] = (
 SECTION_TIERS: dict[str, int] = {
     "anime": 1,
     "downloads": 1,
+    "auto_download": 1,
     "file_managers": 1,
     "torrent_managers": 1,
     "database_managers": 1,
@@ -102,6 +104,10 @@ SECTION_META: dict[str, dict[str, str]] = {
     "downloads": {
         "label": "Downloads",
         "description": "Default destination and concurrency for new downloads.",
+    },
+    "auto_download": {
+        "label": "Auto-download",
+        "description": "Background episode grabber, RSS feeds, and matching defaults.",
     },
     "file_managers": {
         "label": "File managers",
@@ -219,7 +225,6 @@ _LEAF_LABELS: dict[str, str] = {
     "torrentsStateColors": "Torrent state colors",
     "video_encoder": "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
     "promote_watching_on_startup": "Promote NONE/WATCHLIST to WATCHING when local files exist",
-    "purge_seen_on_startup": "Delete SEEN anime folders and torrents on startup",
 }
 
 # Substrings that mark a string field as a secret -> rendered as

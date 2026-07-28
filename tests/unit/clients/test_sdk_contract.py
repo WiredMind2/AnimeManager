@@ -30,7 +30,7 @@ class FakeFacade:
 
     def start_download(self, anime_id: int, **kwargs):
         _ = (anime_id, kwargs)
-        return True
+        return {"started": True, "skipped": False, "reason": None}
 
     def get_download_progress(self, anime_id: int):
         return {"anime_id": anime_id, "progress": 42}
@@ -39,12 +39,28 @@ class FakeFacade:
         _ = anime_id
         return True
 
+    def cancel_download_by_hash(self, hash_value: str):
+        _ = hash_value
+        return True
+
+    def delete_torrent_by_hash(self, hash_value: str):
+        _ = hash_value
+        return True
+
     def pause_torrent(self, hash_value: str):
         _ = hash_value
         return True
 
     def resume_torrent(self, hash_value: str):
         _ = hash_value
+        return True
+
+    def prioritize_torrent(self, hash_value: str):
+        _ = hash_value
+        return True
+
+    def delete_anime_torrent(self, anime_id: int, hash_value: str):
+        _ = (anime_id, hash_value)
         return True
 
     def get_active_downloads(self):
@@ -101,8 +117,12 @@ def test_sdk_extended_contract(monkeypatch):
     sdk = sdk_module.ClientSDK()
 
     assert sdk.cancel_download(1) is True
+    assert sdk.cancel_download_by_hash("abc") is True
+    assert sdk.delete_torrent_by_hash("abc") is True
     assert sdk.pause_torrent("abc") is True
     assert sdk.resume_torrent("abc") is True
+    assert sdk.prioritize_torrent("abc") is True
+    assert sdk.delete_anime_torrent(1, "abc") is True
     assert sdk.get_active_downloads()[0]["anime_id"] == 1
     assert sdk.search_torrents(["naruto"])[0]["name"] == "t"
     assert sdk.get_user_state(1, 7)["tag"] == "WATCHING"

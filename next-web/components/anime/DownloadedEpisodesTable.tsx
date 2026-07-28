@@ -5,11 +5,15 @@ import { useToast } from "@/components/Toast";
 import { api, type AnimeLibraryTorrent } from "@/lib/api";
 import {
   dispatchDownloadActivityChanged,
+  dispatchLibraryTorrentDeleted,
+  DOWNLOAD_ACTIVITY_CHANGED_EVENT,
   DOWNLOAD_STARTED_EVENT,
   hasActiveTorrents,
   isActiveTorrentState,
   isPausedTorrentState,
+  isQueuedTorrentState,
   torrentProgressPercent,
+  type DownloadActivityDetail,
 } from "@/lib/downloads/torrent-state";
 
 const POLL_INTERVAL_MS = 3000;
@@ -90,17 +94,24 @@ export default function DownloadedEpisodesTable({
     }, BOOTSTRAP_POLL_INTERVAL_MS);
   }, [refresh, stopBootstrapPoll]);
 
-  async function cancelDownload() {
-    // Optimistic: demote active rows right away so the Cancel button and
-    // progress shimmer disappear without waiting for the round trip.
+  async function cancelTorrent(hash: string | undefined) {
+    if (!hash) return;
     const snapshot = torrents;
     setTorrents((prev) =>
       prev.map((t) =>
-        isActiveTorrentState(t.state) ? { ...t, state: "STOPPED" } : t,
+        t.hash === hash && isActiveTorrentState(t.state)
+          ? { ...t, state: "STOPPED" }
+          : t,
       ),
     );
     try {
-      await api.cancelDownload(animeId);
+      const result = await api.cancelDownloadByHash(hash);
+      if (!result.cancelled) {
+        setTorrents(snapshot);
+        showToast("Could not cancel download.", "error");
+        return;
+      }
+      dispatchDownloadActivityChanged({ animeId, active: false });
       await refresh();
     } catch {
       setTorrents(snapshot);
@@ -120,10 +131,17 @@ export default function DownloadedEpisodesTable({
       ),
     );
     try {
-      if (pausing) {
-        await api.pauseDownload(hash);
-      } else {
-        await api.resumeDownload(hash);
+      const result = pausing
+        ? await api.pauseDownload(hash)
+        : await api.resumeDownload(hash);
+      const ok = pausing ? result.paused : result.resumed;
+      if (!ok) {
+        setTorrents(snapshot);
+        showToast(
+          pausing ? "Could not pause torrent." : "Could not resume torrent.",
+          "error",
+        );
+        return;
       }
       await refresh();
     } catch {
@@ -137,6 +155,54 @@ export default function DownloadedEpisodesTable({
     }
   }
 
+  async function prioritizeTorrent(hash: string | undefined) {
+    if (!hash) return;
+    try {
+      const result = await api.prioritizeDownload(hash);
+      if (!result.prioritized) {
+        showToast("Could not prioritize torrent.", "error");
+        return;
+      }
+      await refresh();
+    } catch {
+      showToast("Failed to prioritize torrent. Please try again.", "error");
+    }
+  }
+
+  async function deleteTorrent(hash: string | undefined) {
+    if (!hash) return;
+    if (
+      !confirm(
+        "Delete this torrent and its downloaded files from disk? This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    const snapshot = torrents;
+    setTorrents((prev) =>
+      prev.map((t) => (t.hash === hash ? { ...t, state: "DELETED", progress: t.progress } : t)),
+    );
+    try {
+      const result = await api.deleteAnimeTorrent(animeId, hash);
+      if (!result.deleted) {
+        setTorrents(snapshot);
+        showToast("Could not delete torrent.", "error");
+        return;
+      }
+      dispatchLibraryTorrentDeleted({ animeId, hash });
+      dispatchDownloadActivityChanged({ animeId, active: false });
+      await refresh();
+    } catch (err) {
+      setTorrents(snapshot);
+      const detail =
+        err && typeof err === "object" && "status" in err
+          ? ` (${String((err as { status?: unknown }).status)})`
+          : "";
+      console.error("deleteAnimeTorrent failed", err);
+      showToast(`Failed to delete torrent${detail}. Please try again.`, "error");
+    }
+  }
+
   useEffect(() => {
     const onDownload = () => {
       dispatchDownloadActivityChanged({ animeId, active: true });
@@ -146,6 +212,17 @@ export default function DownloadedEpisodesTable({
     window.addEventListener(DOWNLOAD_STARTED_EVENT, onDownload);
     return () => window.removeEventListener(DOWNLOAD_STARTED_EVENT, onDownload);
   }, [animeId, startBootstrapPoll]);
+
+  useEffect(() => {
+    const onActivityChanged = (event: Event) => {
+      const detail = (event as CustomEvent<DownloadActivityDetail>).detail;
+      if (!detail || detail.animeId !== animeId) return;
+      void refresh();
+    };
+    window.addEventListener(DOWNLOAD_ACTIVITY_CHANGED_EVENT, onActivityChanged);
+    return () =>
+      window.removeEventListener(DOWNLOAD_ACTIVITY_CHANGED_EVENT, onActivityChanged);
+  }, [animeId, refresh]);
 
   useEffect(() => {
     const hasActive = hasActiveTorrents(torrents);
@@ -198,8 +275,12 @@ export default function DownloadedEpisodesTable({
                 const pct = torrentProgressPercent(row.progress, state);
                 const active = isActiveTorrentState(state);
                 const paused = isPausedTorrentState(state);
+                const queued = isQueuedTorrentState(state);
                 const seeding = state === "SEEDING" || state === "UPLOADING";
-                const canPauseOrResume = Boolean(row.hash) && (active || seeding || paused);
+                const canPauseOrResume =
+                  Boolean(row.hash) && (active || seeding || paused) && !queued;
+                const canPrioritize = Boolean(row.hash) && queued;
+                const canDelete = Boolean(row.hash) && state !== "DELETED";
                 return (
                   <tr key={row.hash || row.name || String(pct)}>
                     <td className="truncate" title={row.name}>
@@ -245,6 +326,15 @@ export default function DownloadedEpisodesTable({
                     </td>
                     <td className="num">
                       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                        {canPrioritize ? (
+                          <button
+                            className="btn btn--ghost"
+                            type="button"
+                            onClick={() => void prioritizeTorrent(row.hash)}
+                          >
+                            Prioritize
+                          </button>
+                        ) : null}
                         {canPauseOrResume ? (
                           <button
                             className="btn btn--ghost"
@@ -255,8 +345,21 @@ export default function DownloadedEpisodesTable({
                           </button>
                         ) : null}
                         {active ? (
-                          <button className="btn btn--ghost" type="button" onClick={() => void cancelDownload()}>
+                          <button
+                            className="btn btn--ghost"
+                            type="button"
+                            onClick={() => void cancelTorrent(row.hash)}
+                          >
                             Cancel
+                          </button>
+                        ) : null}
+                        {canDelete ? (
+                          <button
+                            className="btn btn--small btn--danger"
+                            type="button"
+                            onClick={() => void deleteTorrent(row.hash)}
+                          >
+                            Delete
                           </button>
                         ) : null}
                       </div>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 from adapters.file.local_episode_scanner import LocalEpisodeScanner
 from adapters.persistence.user_actions_repository import UserActionsRepository
@@ -12,6 +12,7 @@ from adapters.search import SearchFacade
 from adapters.search.config import load_profile
 from application.services.database_manager import DatabaseManager
 from application.services.download_manager import DownloadManager
+from domain.dto import DownloadStartResult
 
 if TYPE_CHECKING:
     from adapters.persistence.anime_repository import AnimeRepositoryAdapter
@@ -206,15 +207,21 @@ class DownloadAdapter:
         hash_value: str | None = None,
         user_id: int | None = None,
         source: str | None = None,
-    ) -> bool:
-        queue = self._download_manager.download_file(
+    ) -> dict[str, bool | str | None]:
+        result = self._download_manager.enqueue_download(
             anime_id=anime_id,
             url=url,
             hash_value=hash_value,
             user_id=user_id,
             source=source,
         )
-        return queue is not None
+        return asdict(
+            DownloadStartResult(
+                started=result.started,
+                skipped=result.skipped,
+                reason=result.reason,
+            )
+        )
 
     def get_download_progress(self, anime_id: int) -> dict:
         return self._download_manager.get_download_status(anime_id) or {}
@@ -222,11 +229,23 @@ class DownloadAdapter:
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_manager.cancel_download(anime_id)
 
+    def cancel_download_by_hash(self, hash_value: str) -> bool:
+        return self._download_manager.cancel_download_by_hash(hash_value)
+
+    def delete_torrent_by_hash(self, hash_value: str) -> bool:
+        return self._download_manager.delete_torrent_by_hash(hash_value)
+
     def pause_torrent(self, hash_value: str) -> bool:
         return self._download_manager.pause_torrent(hash_value)
 
     def resume_torrent(self, hash_value: str) -> bool:
         return self._download_manager.resume_torrent(hash_value)
+
+    def prioritize_torrent(self, hash_value: str) -> bool:
+        return self._download_manager.prioritize_torrent(hash_value)
+
+    def delete_anime_torrent(self, anime_id: int, hash_value: str) -> bool:
+        return self._download_manager.delete_anime_torrent(anime_id, hash_value)
 
     def get_active_downloads(self) -> list[dict]:
         return self._download_manager.get_active_downloads()

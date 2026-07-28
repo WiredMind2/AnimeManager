@@ -6,9 +6,9 @@ except ImportError:  # pragma: no cover - packaged install fallback
     from AnimeManager.adapters.persistence.models import Torrent  # type: ignore
 
 try:
-    from shared.telemetry.logger import Logger
+    from shared.telemetry.logger import Logger, log as telemetry_log
 except ImportError:  # pragma: no cover - packaged install fallback
-    from AnimeManager.shared.telemetry.logger import Logger  # type: ignore
+    from AnimeManager.shared.telemetry.logger import Logger, log as telemetry_log  # type: ignore
 
 try:
     from clients.tk.dialogs import LoginDialog
@@ -38,9 +38,10 @@ class BaseTorrentManager(Logger):
             try:
                 return func(self, *args, **kwargs)
             except Exception as e:
-                print(
-                    f"Exception occured on torrent manager ({self.name}): {str(e)}"
-                )  # TODO - use logger
+                telemetry_log(
+                    "TORRENT_MANAGER",
+                    f"Exception on torrent manager ({self.name}): {e}",
+                )
                 raise TorrentException(*e.args)
 
         return wrapper

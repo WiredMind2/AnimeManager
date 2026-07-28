@@ -171,7 +171,6 @@ const LEAF_LABELS: Record<string, string> = {
   torrentsStateColors: "Torrent state colors",
   video_encoder: "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
   promote_watching_on_startup: "Promote NONE/WATCHLIST to WATCHING when local files exist",
-  purge_seen_on_startup: "Delete SEEN anime folders and torrents on startup",
 };
 
 const PASSWORD_TOKENS = ["password", "secret", "token", "api_key", "apikey"];

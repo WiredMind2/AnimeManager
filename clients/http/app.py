@@ -268,8 +268,7 @@ def list_top_categories():
 
 @app.post("/download/{anime_id}")
 def start_download(anime_id: int, url: str | None = None, hash_value: str | None = None, user_id: int | None = None):
-    started = get_sdk().start_download(anime_id, url=url, hash_value=hash_value, user_id=user_id)
-    return {"started": started}
+    return get_sdk().start_download(anime_id, url=url, hash_value=hash_value, user_id=user_id)
 
 
 @app.get("/download/progress/{anime_id}")
@@ -282,6 +281,16 @@ def cancel_download(anime_id: int):
     return {"cancelled": get_sdk().cancel_download(anime_id)}
 
 
+@app.post("/download/cancel/hash/{hash_value}")
+def cancel_download_by_hash(hash_value: str):
+    return {"cancelled": get_sdk().cancel_download_by_hash(hash_value)}
+
+
+@app.post("/download/delete/{hash_value}")
+def delete_torrent_by_hash(hash_value: str):
+    return {"deleted": get_sdk().delete_torrent_by_hash(hash_value)}
+
+
 @app.post("/download/pause/{hash_value}")
 def pause_download(hash_value: str):
     return {"paused": get_sdk().pause_torrent(hash_value)}
@@ -290,6 +299,11 @@ def pause_download(hash_value: str):
 @app.post("/download/resume/{hash_value}")
 def resume_download(hash_value: str):
     return {"resumed": get_sdk().resume_torrent(hash_value)}
+
+
+@app.post("/download/prioritize/{hash_value}")
+def prioritize_download(hash_value: str):
+    return {"prioritized": get_sdk().prioritize_torrent(hash_value)}
 
 
 @app.get("/download/active")
@@ -332,6 +346,16 @@ def set_like(anime_id: int, user_id: int, liked: bool = True):
 def set_auto_download(anime_id: int, user_id: int, enabled: bool = True):
     get_sdk().set_auto_download(anime_id, user_id=user_id, enabled=enabled)
     return {"ok": True}
+
+
+@app.get("/anime/{anime_id}/download-preferences")
+def get_download_preferences(anime_id: int, user_id: int = 1):
+    return get_sdk().get_download_preferences(anime_id, user_id)
+
+
+@app.patch("/anime/{anime_id}/download-preferences")
+def update_download_preferences(anime_id: int, prefs: dict, user_id: int = 1):
+    return get_sdk().set_download_preferences(anime_id, user_id, prefs)
 
 
 @app.post("/seen/{anime_id}")
@@ -401,6 +425,14 @@ def anime_library_torrents(anime_id: int):
     from . import web as web_module
 
     return {"items": web_module._collect_anime_torrents(get_sdk(), anime_id)}
+
+
+@app.post("/anime/{anime_id}/library-torrents/{hash_value}/delete")
+def delete_anime_library_torrent(anime_id: int, hash_value: str):
+    """Remove one torrent for the anime and delete its downloaded files."""
+    return {
+        "deleted": get_sdk().delete_anime_torrent(anime_id, hash_value),
+    }
 
 
 @app.get("/anime/{anime_id}/torrent-search-options")

@@ -232,6 +232,43 @@ class TestPauseAndResume:
         assert DownloadManager._normalise_category("pausedDL", 0.4) == "active"
         assert DownloadManager._normalise_category("pausedUP", 1.0) == "completed"
 
+    def test_queueddl_buckets_as_active(self, DownloadManager):
+        assert DownloadManager._normalise_category("queuedDL", 0.1) == "active"
+        assert DownloadManager._normalise_category("queuedUP", 1.0) == "seeding"
+
+    def test_pause_returns_false_when_manager_reports_no_handle(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.pause.return_value = False
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.pause_torrent("abc") is False
+        finally:
+            mgr.close()
+
+    def test_prioritize_delegates_to_torrent_manager(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.prioritize.return_value = True
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.prioritize_torrent("AbCd") is True
+            tm.prioritize.assert_called_once_with(["AbCd"])
+        finally:
+            mgr.close()
+
+    def test_prioritize_returns_false_without_support(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock(spec=[])
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.prioritize_torrent("abc") is False
+        finally:
+            mgr.close()
+
 
 # ---------------------------------------------------------------------------
 # URL handling: magnet vs http, validation
@@ -291,6 +328,7 @@ class TestPrepareTorrent:
 class _FakeDB:
     def __init__(self):
         self.saved = []
+        self.ensured = []
         self.torrent_data: Dict[str, Any] = {}
         self.raise_save = False
 
@@ -299,24 +337,35 @@ class _FakeDB:
             raise RuntimeError("DB exploded")
         self.saved.append((anime_id, torrent, kwargs))
 
+    def ensure_torrent_index(self, anime_id, hash_value, **kwargs):
+        self.ensured.append((anime_id, hash_value, kwargs))
+        return True
+
     def update_torrent_save_path(self, hash_value, save_path):
         self.saved.append(("save_path", hash_value, save_path))
 
     def get_torrent_data(self, hash_value):
         return self.torrent_data.get(hash_value)
 
+    def get_anime_ids_by_hashes(self, hashes):
+        return {}
+
+    def get_anime_titles(self, anime_ids):
+        return {}
+
 
 class TestPortInteractions:
-    def test_save_torrent_no_db_is_noop(self, DownloadManager):
+    def test_save_torrent_no_db_returns_false(self, DownloadManager):
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         try:
             torrent = MagicMock()
-            mgr._save_torrent(1, torrent)  # should not raise
+            torrent.hash = "abcd"
+            assert mgr._save_torrent(1, torrent) is False
         finally:
             mgr.close()
 
-    def test_save_torrent_db_exception_swallowed(self, DownloadManager):
+    def test_save_torrent_db_exception_returns_false(self, DownloadManager):
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         db = _FakeDB()
@@ -324,8 +373,9 @@ class TestPortInteractions:
         mgr.set_database_manager(db)
         try:
             torrent = MagicMock()
-            # Must not propagate; logs and continues.
-            mgr._save_torrent(1, torrent)
+            torrent.hash = "abcd"
+            # Must not propagate; logs and returns False so caller can abort.
+            assert mgr._save_torrent(1, torrent) is False
         finally:
             mgr.close()
 
@@ -336,7 +386,8 @@ class TestPortInteractions:
         mgr.set_database_manager(db)
         try:
             torrent = MagicMock()
-            mgr._save_torrent(99, torrent)
+            torrent.hash = "abcd"
+            assert mgr._save_torrent(99, torrent) is True
             assert len(db.saved) == 1
             assert db.saved[0][0] == 99
             assert db.saved[0][1] is torrent
@@ -384,6 +435,7 @@ class TestStartDownload:
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         tm = MagicMock()
+        tm.list.return_value = []
         mgr.set_torrent_manager(tm)
         try:
             t = MagicMock()
@@ -397,6 +449,7 @@ class TestStartDownload:
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         tm = MagicMock()
+        tm.list.return_value = []
         tm.add.return_value = [MagicMock(hash="h1"), MagicMock(hash="h2")]
         mgr.set_torrent_manager(tm)
         try:
@@ -417,6 +470,7 @@ class TestStartDownload:
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         tm = MagicMock()
+        tm.list.return_value = []
         tm.add.return_value = []
         mgr.set_torrent_manager(tm)
         try:
@@ -430,6 +484,7 @@ class TestStartDownload:
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         tm = MagicMock()
+        tm.list.return_value = []
         tm.add.side_effect = RuntimeError("network")
         mgr.set_torrent_manager(tm)
         try:
@@ -555,12 +610,13 @@ class TestExecuteDownload:
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         tm = MagicMock()
-        tm.add.return_value = [MagicMock(hash="h")]
+        tm.add.return_value = [MagicMock(hash="deadbeef")]
         # A torrent-manager list() that yields nothing keeps the refresh
         # path a no-op so this test exercises the *initial* state seeded
         # by _execute_download itself.
         tm.list.return_value = []
         mgr.set_torrent_manager(tm)
+        mgr.set_database_manager(_FakeDB())
         try:
             task = DownloadTask(
                 844,
@@ -585,6 +641,55 @@ class TestExecuteDownload:
             # the live torrent-manager value overrides it as soon as the
             # refresh tick fires.
             assert actives[0]["progress"] == 0.0
+        finally:
+            mgr.close()
+
+    def test_execute_aborts_when_save_torrent_fails(
+        self, DownloadManager, DownloadTask
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.list.return_value = []
+        db = _FakeDB()
+        db.raise_save = True
+        mgr.set_torrent_manager(tm)
+        mgr.set_database_manager(db)
+        try:
+            task = DownloadTask(1, url="magnet:?xt=urn:btih:abc", hash_value="abcd")
+            torrent = MagicMock()
+            torrent.hash = "abcd"
+            torrent.name = "ep.mkv"
+            torrent.to_magnet.return_value = "magnet:?xt=urn:btih:abcd"
+            with patch.object(mgr, "_prepare_torrent", return_value=torrent):
+                mgr._execute_download(task)
+            results = []
+            while not task.status_queue.empty():
+                results.append(task.status_queue.get_nowait())
+            assert results == [True, False]
+            tm.add.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_start_download_already_in_client_ensures_index(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.list.return_value = [{"hash": "abcd", "name": "live"}]
+        db = _FakeDB()
+        mgr.set_torrent_manager(tm)
+        mgr.set_database_manager(db)
+        try:
+            torrent = MagicMock()
+            torrent.hash = "abcd"
+            torrent.name = "ep.mkv"
+            torrent.trackers = []
+            torrent.to_magnet.return_value = "magnet:?xt=urn:btih:abcd"
+            assert mgr._start_download(42, torrent) is True
+            tm.add.assert_not_called()
+            assert db.ensured
+            assert db.ensured[0][0] == 42
+            assert db.ensured[0][1] == "abcd"
         finally:
             mgr.close()
 
@@ -1531,5 +1636,333 @@ class TestTorrentDeletedStatus:
             )
             assert count == 0
             fm.delete.assert_not_called()
+        finally:
+            mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# Hash-level download idempotency
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadHashIdempotency:
+    def test_resolve_hash_from_magnet(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        try:
+            assert (
+                mgr._resolve_download_hash(
+                    "magnet:?xt=urn:btih:ABCDEF&dn=x", None
+                )
+                == "abcdef"
+            )
+            assert mgr._resolve_download_hash(None, "  DeadBeef  ") == "deadbeef"
+            assert (
+                mgr._resolve_download_hash(
+                    "magnet:?xt=urn:btih:1111", "2222"
+                )
+                == "2222"
+            )
+            # Base32 magnet tokens must canonicalize to lowercase hex.
+            import base64
+
+            raw = bytes.fromhex("dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c")
+            b32 = base64.b32encode(raw).decode("ascii")
+            assert (
+                mgr._resolve_download_hash(f"magnet:?xt=urn:btih:{b32}", None)
+                == "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+            )
+        finally:
+            mgr.close()
+
+    def test_overview_heals_orphan_from_save_path(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.list.return_value = [
+            {
+                "hash": "deadbeef",
+                "name": "[SubsPlease] Show - 11.mkv",
+                "state": "downloading",
+                "progress": 0.5,
+                "path": r"C:\Library\Animes\Show Title - 99",
+            }
+        ]
+        db = _FakeDB()
+        mgr.set_torrent_manager(tm)
+        mgr.set_database_manager(db)
+        try:
+            overview = mgr.get_torrents_overview()
+            assert overview["active"]
+            row = overview["active"][0]
+            assert row["anime_id"] == 99
+            assert db.ensured
+            assert db.ensured[0][0] == 99
+            assert db.ensured[0][1] == "deadbeef"
+        finally:
+            mgr.close()
+
+    def test_second_enqueue_same_hash_is_skipped(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        # Prevent the worker from draining the first task before the second call.
+        mgr._stopping.set()
+        try:
+            first = mgr.download_file(1, hash_value="abc123")
+            second = mgr.download_file(1, hash_value="ABC123")
+            assert isinstance(first, queue.Queue)
+            assert second is None
+            skipped = mgr.enqueue_download(1, hash_value="ABC123")
+            assert skipped.skipped is True
+            assert "abc123" in mgr._queued_hashes
+            assert mgr._download_queue.qsize() == 1
+        finally:
+            mgr.close()
+
+    def test_second_enqueue_same_magnet_hash_is_skipped(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        mgr._stopping.set()
+        magnet = "magnet:?xt=urn:btih:0964cdac47ab68f039c9b3d8ad66ee933a0370af&dn=ep"
+        try:
+            mgr.download_file(2210, url=magnet)
+            mgr.download_file(
+                2210,
+                url=magnet,
+                hash_value="0964cdac47ab68f039c9b3d8ad66ee933a0370af",
+            )
+            assert mgr._download_queue.qsize() == 1
+        finally:
+            mgr.close()
+
+    def test_skips_when_already_indexed(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.get_torrent_status.return_value = "complete"
+        db.get_torrent_data.return_value = ("Show - 04.mkv", [])
+        mgr.set_database_manager(db)
+        try:
+            q = mgr.download_file(1, hash_value="indexedhash")
+            assert q is None
+            result = mgr.enqueue_download(1, hash_value="indexedhash")
+            assert result.skipped is True
+            assert result.started is False
+            assert mgr._download_queue.qsize() == 0
+            assert "indexedhash" not in mgr._queued_hashes
+        finally:
+            mgr.close()
+
+    def test_skips_when_live_in_torrent_client(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.list.return_value = [{"hash": "livehash", "name": "x"}]
+        mgr.set_torrent_manager(tm)
+        db = MagicMock()
+        db.get_torrent_status.return_value = None
+        db.get_torrent_data.return_value = None
+        mgr.set_database_manager(db)
+        try:
+            q = mgr.download_file(1, hash_value="livehash")
+            assert q is None
+            result = mgr.enqueue_download(1, hash_value="livehash")
+            assert result.skipped is True
+            assert result.reason == "already in torrent client"
+            assert mgr._download_queue.qsize() == 0
+            tm.list.assert_called()
+        finally:
+            mgr.close()
+
+    def test_deleted_status_still_allows_redownload(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        mgr._stopping.set()
+        db = MagicMock()
+        # After clear, status becomes None but the row still exists — that
+        # must not be treated as "already indexed" for this intentional redo.
+        db.get_torrent_status.side_effect = ["deleted", None]
+        db.get_torrent_data.return_value = ("gone.mkv", [])
+        mgr.set_database_manager(db)
+        try:
+            q = mgr.download_file(1, hash_value="deadbeef")
+            assert isinstance(q, queue.Queue)
+            db.update_torrent_status.assert_called_once_with("deadbeef", None)
+            assert mgr._download_queue.qsize() == 1
+        finally:
+            mgr.close()
+
+    def test_start_download_skips_add_when_live(self, DownloadManager):
+        from adapters.persistence.models import Torrent
+
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.list.return_value = [{"hash": "abc", "name": "ep"}]
+        mgr.set_torrent_manager(tm)
+        try:
+            with patch.object(mgr, "_get_anime_folder", return_value="/tmp/a"):
+                t = Torrent(hash="abc", name="ep", trackers=[])
+                assert mgr._start_download(1, t) is True
+            tm.add.assert_not_called()
+        finally:
+            mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_anime_torrent (user-facing Downloads tab delete)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteAnimeTorrent:
+    def test_marks_deleted_and_removes_files(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {
+                "hash": "batch123",
+                "name": "[SubsPlease] Show (01-28) [Batch]",
+                "status": "complete",
+            }
+        ]
+        tm = MagicMock()
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.delete_anime_torrent(7, "BATCH123") is True
+            db.update_torrent_status.assert_called_once_with("batch123", "deleted")
+            tm.delete.assert_called_once_with("batch123", delete_files=True)
+        finally:
+            mgr.close()
+
+    def test_rejects_unknown_hash(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "other", "name": "ep", "status": "complete"}
+        ]
+        tm = MagicMock()
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.delete_anime_torrent(7, "missing") is False
+            db.update_torrent_status.assert_not_called()
+            tm.delete.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_cancels_matching_in_flight_task(self, DownloadManager, DownloadTask):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "abc123", "name": "ep", "status": None}
+        ]
+        tm = MagicMock()
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        task = DownloadTask(7, hash_value="abc123")
+        with mgr._lock:
+            mgr._active_downloads[7] = task
+        try:
+            assert mgr.delete_anime_torrent(7, "abc123") is True
+            assert task.cancelled is True
+            assert 7 not in mgr._active_downloads
+            tm.delete.assert_called_once_with("abc123", delete_files=True)
+        finally:
+            mgr.close()
+
+    def test_already_deleted_still_removes_from_client(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "gone1", "name": "ep", "status": "deleted"}
+        ]
+        tm = MagicMock()
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.delete_anime_torrent(7, "gone1") is True
+            db.update_torrent_status.assert_not_called()
+            tm.delete.assert_called_once_with("gone1", delete_files=True)
+        finally:
+            mgr.close()
+
+
+class TestCancelAndDeleteByHash:
+    def test_cancel_by_hash_removes_client_keeps_files(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.list.return_value = [{"hash": "abc123", "state": "downloading"}]
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.cancel_download_by_hash("ABC123") is True
+            tm.delete.assert_called_once_with("abc123", delete_files=False)
+        finally:
+            mgr.close()
+
+    def test_cancel_by_hash_does_not_mark_db_deleted(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "abc123", "status": "complete"}
+        ]
+        tm = MagicMock()
+        tm.list.return_value = [{"hash": "abc123", "state": "downloading"}]
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            mgr.cancel_download_by_hash("abc123")
+            db.update_torrent_status.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_delete_by_hash_uses_anime_index(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        db = MagicMock()
+        db.get_anime_ids_by_hashes.return_value = {"deadbeef": 9}
+        db.list_torrents_for_anime.return_value = [
+            {"hash": "deadbeef", "name": "ep", "status": "complete"}
+        ]
+        tm = MagicMock()
+        mgr.set_database_manager(db)
+        mgr.set_torrent_manager(tm)
+        try:
+            assert mgr.delete_torrent_by_hash("deadbeef") is True
+            db.update_torrent_status.assert_called_once_with("deadbeef", "deleted")
+            tm.delete.assert_called_once_with("deadbeef", delete_files=True)
+        finally:
+            mgr.close()
+
+    def test_overview_skips_restore_when_already_restored(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        tm = MagicMock()
+        tm.is_restored.return_value = True
+        tm.list.return_value = []
+        mgr.set_torrent_manager(tm)
+        try:
+            mgr.get_torrents_overview()
+            tm.ensure_restored.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_execute_honours_cancelled_before_start(
+        self, DownloadManager, DownloadTask
+    ):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        try:
+            task = DownloadTask(1, hash_value="abc123")
+            task.cancel()
+            mgr._execute_download(task)
+            assert 1 not in mgr._active_downloads
+            assert task.status_queue.get_nowait() is False
         finally:
             mgr.close()

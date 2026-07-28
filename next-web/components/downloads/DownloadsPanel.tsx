@@ -3,6 +3,7 @@
 import EmptyState from "@/components/EmptyState";
 import DownloadCard from "@/components/downloads/DownloadCard";
 import type { DownloadsOverview } from "@/lib/api";
+import { mergeOverviewOtherIntoActive } from "@/lib/downloads/overview";
 
 const SECTIONS = [
   {
@@ -47,7 +48,8 @@ function totalVisible(overview: DownloadsOverview): number {
 }
 
 export default function DownloadsPanel({ overview, onRefresh }: DownloadsPanelProps) {
-  const showGlobalEmpty = totalVisible(overview) === 0;
+  const normalized = mergeOverviewOtherIntoActive(overview);
+  const showGlobalEmpty = totalVisible(normalized) === 0;
 
   return (
     <div id="downloads-panel" data-downloads-panel>
@@ -60,7 +62,7 @@ export default function DownloadsPanel({ overview, onRefresh }: DownloadsPanelPr
       ) : null}
 
       {SECTIONS.map(({ key, heading, blurb, emptyText }) => {
-        const rows = overview[key] ?? [];
+        const rows = normalized[key] ?? [];
         const isEmpty = rows.length === 0;
 
         return (

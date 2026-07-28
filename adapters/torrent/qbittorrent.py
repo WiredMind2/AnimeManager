@@ -72,12 +72,12 @@ class qBittorrent(BaseTorrentManager):
             if LoginFailed is not None and isinstance(e, LoginFailed):
                 self.qb = None
                 self.login_event = None
-                print("Couldn't connect to qBittorrent client!")
+                self.log("QBITTORRENT", "Couldn't connect to qBittorrent client!")
                 return None
             if msg.startswith("Failed to connect to qBittorrent"):
                 self.qb = None
                 self.login_event = None
-                print("Couldn't connect to qBittorrent client!")
+                self.log("QBITTORRENT", "Couldn't connect to qBittorrent client!")
                 return None
 
             # Fallback: ask user to re-enter credentials
@@ -287,6 +287,23 @@ class qBittorrent(BaseTorrentManager):
         if not hashes:
             return
         self.qb.torrents_resume(torrent_hashes=hashes)
+
+    @wait_connection
+    def prioritize(self, hashes):
+        if self.qb is None:
+            raise TorrentException("Couldn't connect to qBittorrent")
+        if not hashes:
+            return False
+        top = getattr(self.qb, "torrents_top_priority", None)
+        if not callable(top):
+            top = getattr(self.qb, "torrents_increasePrio", None)
+        if not callable(top):
+            return False
+        try:
+            top(torrent_hashes=hashes)
+        except TypeError:
+            top(hashes)
+        return True
 
     @wait_connection
     def list_files(self, hash_value):

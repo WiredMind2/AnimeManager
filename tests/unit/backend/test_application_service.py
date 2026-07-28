@@ -55,9 +55,9 @@ class FakeProvider:
 
 
 class FakeDownload:
-    def start_download(self, anime_id: int, url=None, hash_value=None, user_id=None):
-        _ = (anime_id, url, hash_value, user_id)
-        return True
+    def start_download(self, anime_id: int, url=None, hash_value=None, user_id=None, source=None):
+        _ = (anime_id, url, hash_value, user_id, source)
+        return {"started": True, "skipped": False, "reason": None}
 
     def get_download_progress(self, anime_id: int):
         return {"anime_id": anime_id, "progress": 50}
@@ -153,7 +153,7 @@ def test_list_and_download_use_cases():
     listing = service.get_anime_list(AnimeListRequest())
     assert listing.items[0].id == 1
     started = service.start_download(DownloadRequest(anime_id=1, url="magnet:?xt=urn:btih:abc"))
-    assert started is True
+    assert started["started"] is True
 
 
 def test_extended_contract_use_cases():

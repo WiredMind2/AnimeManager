@@ -211,7 +211,7 @@ class EmbeddedClientFacade:
         url: str | None = None,
         hash_value: str | None = None,
         user_id: int | None = None,
-    ) -> bool:
+    ) -> dict:
         return self._service.start_download(
             DownloadRequest(
                 anime_id=anime_id,
@@ -227,11 +227,23 @@ class EmbeddedClientFacade:
     def cancel_download(self, anime_id: int) -> bool:
         return self._service.cancel_download(anime_id)
 
+    def cancel_download_by_hash(self, hash_value: str) -> bool:
+        return self._service.cancel_download_by_hash(hash_value)
+
+    def delete_torrent_by_hash(self, hash_value: str) -> bool:
+        return self._service.delete_torrent_by_hash(hash_value)
+
     def pause_torrent(self, hash_value: str) -> bool:
         return self._service.pause_torrent(hash_value)
 
     def resume_torrent(self, hash_value: str) -> bool:
         return self._service.resume_torrent(hash_value)
+
+    def prioritize_torrent(self, hash_value: str) -> bool:
+        return self._service.prioritize_torrent(hash_value)
+
+    def delete_anime_torrent(self, anime_id: int, hash_value: str) -> bool:
+        return self._service.delete_anime_torrent(anime_id, hash_value)
 
     def get_active_downloads(self) -> list[dict]:
         return self._service.get_active_downloads()
@@ -273,6 +285,14 @@ class EmbeddedClientFacade:
         self, anime_id: int, user_id: int, enabled: bool = True
     ) -> None:
         self._service.set_auto_download(anime_id, user_id, enabled)
+
+    def get_download_preferences(self, anime_id: int, user_id: int) -> dict:
+        return self._service.get_download_preferences(anime_id, user_id)
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict
+    ) -> dict:
+        return self._service.set_download_preferences(anime_id, user_id, prefs)
 
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._service.mark_seen(anime_id, file_name, user_id)

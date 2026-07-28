@@ -16,6 +16,10 @@ import {
   type UserState,
 } from "@/lib/api";
 import { DEFAULT_USER_ID } from "@/lib/config";
+import {
+  LIBRARY_TORRENT_DELETED_EVENT,
+  type LibraryTorrentDeletedDetail,
+} from "@/lib/downloads/torrent-state";
 import { truncateTitle } from "@/lib/format";
 
 export type AnimeDetailTabId =
@@ -249,6 +253,22 @@ export default function AnimeDetailPageClient({
       controller.abort();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialAnime captured per animeId mount (key={animeId})
+  }, [animeId]);
+
+  useEffect(() => {
+    const onTorrentDeleted = (event: Event) => {
+      const detail = (event as CustomEvent<LibraryTorrentDeletedDetail>).detail;
+      if (!detail || detail.animeId !== animeId) return;
+      void api
+        .getEpisodeFiles(animeId, DEFAULT_USER_ID)
+        .then((res) => setEpisodeFiles(res.items ?? []))
+        .catch(() => {
+          /* keep current episode list */
+        });
+    };
+    window.addEventListener(LIBRARY_TORRENT_DELETED_EVENT, onTorrentDeleted);
+    return () =>
+      window.removeEventListener(LIBRARY_TORRENT_DELETED_EVENT, onTorrentDeleted);
   }, [animeId]);
 
   const title = anime.title?.trim() || `Anime #${animeId}`;

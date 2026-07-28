@@ -73,11 +73,11 @@ class RecordingSDK:
             default=lambda: {"items": [], "has_next": False},
         )
 
-    def search_anime(self, query: str, limit: int = 50):
+    def search_anime(self, query: str, limit: int = 50, offset: int = 0):
         return self._invoke(
             "search_anime",
-            (query, limit),
-            {},
+            (),
+            {"query": query, "limit": limit, "offset": offset},
             default=lambda: [],
         )
 
@@ -174,12 +174,28 @@ class RecordingSDK:
             "start_download",
             (anime_id, url, hash_value, user_id),
             {},
-            default=lambda: True,
+            default=lambda: {"started": True, "skipped": False, "reason": None},
         )
 
     def cancel_download(self, anime_id: int):
         return self._invoke(
             "cancel_download", (anime_id,), {}, default=lambda: True
+        )
+
+    def cancel_download_by_hash(self, hash_value: str):
+        return self._invoke(
+            "cancel_download_by_hash",
+            (hash_value,),
+            {},
+            default=lambda: True,
+        )
+
+    def delete_torrent_by_hash(self, hash_value: str):
+        return self._invoke(
+            "delete_torrent_by_hash",
+            (hash_value,),
+            {},
+            default=lambda: True,
         )
 
     def set_tag(self, anime_id, tag, user_id):
@@ -249,7 +265,9 @@ def sdk():
 @pytest.fixture
 def client(monkeypatch, sdk):
     monkeypatch.setattr(http_app, "get_sdk", lambda: sdk)
-    return TestClient(http_app.app, follow_redirects=False)
+    return TestClient(
+        http_app.app, follow_redirects=False, raise_server_exceptions=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +302,7 @@ class TestAnimeEndpoint:
         [
             (NotFoundError("nope"), 404),
             (ValidationError("bad"), 400),
-            (InfrastructureError("db"), 500),
+            (InfrastructureError("db"), 502),
             (RuntimeError("boom"), 500),
         ],
     )
@@ -370,9 +388,17 @@ class TestSearchEndpoint:
 
     def test_limit_default_and_override(self, client, sdk):
         client.get("/search", params={"query": "bleach"})
-        assert sdk.last_call("search_anime") == ("search_anime", ("bleach", 50), {})
+        assert sdk.last_call("search_anime") == (
+            "search_anime",
+            (),
+            {"query": "bleach", "limit": 50, "offset": 0},
+        )
         client.get("/search", params={"query": "naruto", "limit": 7})
-        assert sdk.last_call("search_anime") == ("search_anime", ("naruto", 7), {})
+        assert sdk.last_call("search_anime") == (
+            "search_anime",
+            (),
+            {"query": "naruto", "limit": 7, "offset": 0},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -382,12 +408,31 @@ class TestSearchEndpoint:
 
 class TestDownloadEndpoints:
     def test_start_returns_started_flag(self, client, sdk):
-        sdk.overrides["start_download"] = lambda *a, **k: True
+        sdk.overrides["start_download"] = lambda *a, **k: {
+            "started": True,
+            "skipped": False,
+            "reason": None,
+        }
         resp = client.post(
             "/download/9", params={"url": "magnet:?xt=urn:btih:abc"}
         )
         assert resp.status_code == 200
-        assert resp.json() == {"started": True}
+        assert resp.json() == {"started": True, "skipped": False, "reason": None}
+
+    def test_start_returns_skipped_when_duplicate(self, client, sdk):
+        sdk.overrides["start_download"] = lambda *a, **k: {
+            "started": False,
+            "skipped": True,
+            "reason": "already queued",
+        }
+        resp = client.post(
+            "/download/9", params={"url": "magnet:?xt=urn:btih:abc"}
+        )
+        assert resp.json() == {
+            "started": False,
+            "skipped": True,
+            "reason": "already queued",
+        }
 
     def test_start_passes_hash_and_user(self, client, sdk):
         client.post(
@@ -410,6 +455,16 @@ class TestDownloadEndpoints:
         body = client.post("/download/cancel/5").json()
         assert body == {"cancelled": True}
         assert sdk.last_call("cancel_download")[1] == (5,)
+
+    def test_cancel_by_hash(self, client, sdk):
+        body = client.post("/download/cancel/hash/abc123").json()
+        assert body == {"cancelled": True}
+        assert sdk.last_call("cancel_download_by_hash")[1] == ("abc123",)
+
+    def test_delete_by_hash(self, client, sdk):
+        body = client.post("/download/delete/abc123").json()
+        assert body == {"deleted": True}
+        assert sdk.last_call("delete_torrent_by_hash")[1] == ("abc123",)
 
     def test_active_returns_list_under_items_key(self, client, sdk):
         sdk.overrides["get_active_downloads"] = lambda: [
@@ -514,12 +569,10 @@ class TestUserActions:
         }
 
     def test_unauthorized_does_not_leak_500(self, client, sdk):
-        """UnauthorizedError currently maps to 500 by design (no 401
-        branch in _map_error). Pin the behavior so a future change is
-        intentional rather than accidental."""
+        """UnauthorizedError maps to 401 via map_error_to_status / ADR 0004."""
         sdk.overrides["set_tag"] = UnauthorizedError("nope")
         resp = client.post("/tag/5", params={"tag": "X", "user_id": 1})
-        assert resp.status_code == 500
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------

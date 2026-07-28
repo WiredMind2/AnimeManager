@@ -3,6 +3,7 @@ import {
   hasActiveTorrents,
   isActiveTorrentState,
   isPausedTorrentState,
+  isQueuedTorrentState,
   torrentProgressPercent,
 } from "@/lib/downloads/torrent-state";
 
@@ -29,6 +30,16 @@ describe("isPausedTorrentState", () => {
     expect(isPausedTorrentState("PAUSEDUP")).toBe(true);
     expect(isPausedTorrentState("Paused")).toBe(true);
     expect(isPausedTorrentState("DOWNLOADING")).toBe(false);
+  });
+});
+
+describe("isQueuedTorrentState", () => {
+  it("detects queued download and seed states", () => {
+    expect(isQueuedTorrentState("queuedDL")).toBe(true);
+    expect(isQueuedTorrentState("QUEUEDUP")).toBe(true);
+    expect(isQueuedTorrentState("queued")).toBe(true);
+    expect(isQueuedTorrentState("pausedDL")).toBe(false);
+    expect(isQueuedTorrentState("DOWNLOADING")).toBe(false);
   });
 });
 

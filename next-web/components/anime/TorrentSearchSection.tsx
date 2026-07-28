@@ -91,6 +91,16 @@ export default function TorrentSearchSection({
       setStatus("done");
       source.close();
     });
+
+    source.onerror = () => {
+      if (searchGen.current !== gen) return;
+      setStatus((current) => {
+        if (current !== "searching") return current;
+        setErrorMsg("Search connection failed");
+        return "error";
+      });
+      source.close();
+    };
   }, [animeId, showNsfw]);
 
   useEffect(() => {

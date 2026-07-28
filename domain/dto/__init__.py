@@ -61,6 +61,15 @@ class DownloadRequest:
 
 
 @dataclass(slots=True)
+class DownloadStartResult:
+    """Truthful outcome of enqueueing a download (HTTP / SDK contract)."""
+
+    started: bool
+    skipped: bool = False
+    reason: Optional[str] = None
+
+
+@dataclass(slots=True)
 class AnimeListResponse:
     items: list[AnimeEntity] = field(default_factory=list)
     has_next: bool = False
@@ -73,5 +82,6 @@ __all__ = [
     "GenreBrowseRequest",
     "TopBrowseRequest",
     "DownloadRequest",
+    "DownloadStartResult",
     "AnimeListResponse",
 ]

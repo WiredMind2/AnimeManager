@@ -1385,6 +1385,17 @@ def test_normalize_anime_torrent_row_deleted_status():
     assert row["state"] == "DELETED"
 
 
+def test_normalize_anime_torrent_row_complete_status():
+    row = http_web._normalize_anime_torrent_row(
+        {
+            "hash": "abc",
+            "name": "Show.mkv",
+            "status": "complete",
+        }
+    )
+    assert row["state"] == "COMPLETE"
+    assert row["progress"] == 1.0
+
 def test_collect_anime_torrents_active_overrides_deleted(monkeypatch):
     class _Sdk:
         def get_anime_torrents(self, anime_id):
@@ -1412,6 +1423,80 @@ def test_collect_anime_torrents_active_overrides_deleted(monkeypatch):
     assert rows[0]["state"] == "DOWNLOADING"
     assert rows[0].get("status") != "deleted"
 
+
+def test_collect_anime_torrents_enriches_from_overview():
+    class _Sdk:
+        def get_anime_torrents(self, anime_id):
+            return [
+                {
+                    "hash": "deadbeef",
+                    "name": "Show - 02.mkv",
+                    "path": "/anime/show",
+                    "status": "complete",
+                }
+            ]
+
+        def get_active_downloads(self):
+            return []
+
+        def get_torrents_overview(self):
+            return {
+                "active": [],
+                "seeding": [
+                    {
+                        "anime_id": 42,
+                        "hash": "DEADBEEF",
+                        "name": "Show - 02.mkv",
+                        "state": "SEEDING",
+                        "progress": 1.0,
+                        "size": 1572864000,
+                        "downloaded": 1572864000,
+                    }
+                ],
+                "completed": [],
+                "error": [],
+                "other": [],
+            }
+
+    rows = http_web._collect_anime_torrents(_Sdk(), 42)
+    assert len(rows) == 1
+    assert rows[0]["state"] == "SEEDING"
+    assert rows[0]["size"] == 1572864000
+    assert rows[0]["progress"] == 1.0
+    assert rows[0]["size_human"] == "1.5 GB"
+
+def test_collect_anime_torrents_overview_adds_unindexed_live_row():
+    class _Sdk:
+        def get_anime_torrents(self, anime_id):
+            return []
+
+        def get_active_downloads(self):
+            return []
+
+        def get_torrents_overview(self):
+            return {
+                "active": [
+                    {
+                        "anime_id": 7,
+                        "hash": "newhash",
+                        "name": "Show - 01.mkv",
+                        "state": "DOWNLOADING",
+                        "progress": 0.25,
+                        "size": 1024,
+                        "downloaded": 256,
+                    }
+                ],
+                "seeding": [],
+                "completed": [],
+                "error": [],
+                "other": [],
+            }
+
+    rows = http_web._collect_anime_torrents(_Sdk(), 7)
+    assert len(rows) == 1
+    assert rows[0]["hash"] == "newhash"
+    assert rows[0]["state"] == "DOWNLOADING"
+    assert rows[0]["progress"] == 0.25
 
 def test_anime_detail_downloaded_episodes_shows_deleted(client, monkeypatch):
     monkeypatch.setattr(

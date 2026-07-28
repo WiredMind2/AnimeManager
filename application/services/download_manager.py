@@ -17,9 +17,11 @@ The legacy event-bus subscriptions that drove ``download.start`` /
 
 import os
 import queue
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from shared.base_component import BaseComponent
@@ -31,6 +33,18 @@ from shared.utils.folder_names import (
     match_anime_folder_names,
 )
 from adapters.persistence.models import Magnet, Torrent
+
+_INFOHASH_RE = re.compile(r"xt=urn:btih:([A-Za-z0-9]+)", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class DownloadEnqueueResult:
+    """Internal enqueue outcome including the optional status queue."""
+
+    started: bool
+    skipped: bool = False
+    reason: Optional[str] = None
+    status_queue: Optional[queue.Queue] = None
 
 
 class DownloadManager(BaseComponent):
@@ -53,6 +67,11 @@ class DownloadManager(BaseComponent):
         self._database_manager = None
         self._active_downloads: Dict[int, "DownloadTask"] = {}
         self._download_queue: "queue.Queue[DownloadTask]" = queue.Queue()
+        # Infohashes waiting in the queue or currently executing — used to
+        # reject duplicate enqueue requests before LibTorrent sees them.
+        self._queued_hashes: set[str] = set()
+        # Hashes cancelled while still waiting in the queue (not yet executing).
+        self._cancelled_hashes: set[str] = set()
         self._max_concurrent_downloads = max_concurrent_downloads
         self._lock = threading.RLock()
         self._last_status_refresh: float = 0.0
@@ -77,6 +96,8 @@ class DownloadManager(BaseComponent):
             for task in self._active_downloads.values():
                 task.cancel()
             self._active_downloads.clear()
+            self._queued_hashes.clear()
+            self._cancelled_hashes.clear()
         executor = self._executor
         self._executor = None
         if executor is not None:
@@ -108,35 +129,158 @@ class DownloadManager(BaseComponent):
         """Notify when a download starts so the UI tag can move to ``WATCHING``."""
         self._watching_tag_callback = callback
 
+    @staticmethod
+    def _normalize_infohash(value: Optional[str]) -> Optional[str]:
+        text = str(value or "").strip().lower()
+        return text or None
+
+    @classmethod
+    def _hash_from_magnet(cls, url: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        text = str(url).strip()
+        if not text.lower().startswith("magnet:"):
+            return None
+        match = _INFOHASH_RE.search(text)
+        return match.group(1).lower() if match else None
+
+    def _resolve_download_hash(
+        self, url: Optional[str], hash_value: Optional[str]
+    ) -> Optional[str]:
+        """Prefer an explicit hash; fall back to parsing a magnet ``xt``."""
+        return self._normalize_infohash(hash_value) or self._hash_from_magnet(url)
+
+    def _duplicate_download_reason(
+        self, hash_value: str, *, ignore_index: bool = False
+    ) -> Optional[str]:
+        """Return why ``hash_value`` should not be enqueued, or ``None``.
+
+        When ``ignore_index`` is True (caller just cleared a ``deleted``
+        status for an intentional re-download), the DB index check is
+        skipped so the torrent can be queued again. Active / queued /
+        live-client checks still apply.
+        """
+        key = self._normalize_infohash(hash_value)
+        if not key:
+            return None
+
+        with self._lock:
+            if key in self._queued_hashes:
+                return "already queued"
+            for task in self._active_downloads.values():
+                task_hash = self._normalize_infohash(task.hash_value)
+                if task_hash == key:
+                    return "already active"
+
+        if self._lookup_live_torrent(key) is not None:
+            return "already in torrent client"
+
+        if ignore_index:
+            return None
+
+        db_manager = self._database_manager
+        if db_manager is None:
+            return None
+
+        status_getter = getattr(db_manager, "get_torrent_status", None)
+        status: Optional[str] = None
+        if callable(status_getter):
+            try:
+                raw = status_getter(key)
+                status = str(raw).strip().lower() if raw is not None else None
+            except Exception:  # noqa: BLE001
+                status = None
+        if status == "deleted":
+            return None
+
+        data_getter = getattr(db_manager, "get_torrent_data", None)
+        if callable(data_getter):
+            try:
+                if data_getter(key) is not None:
+                    return "already indexed"
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+    def _skipped_download_queue(self) -> queue.Queue:
+        """Status queue for an idempotent skip (callers treat non-None as ok)."""
+        status_queue: queue.Queue = queue.Queue()
+        status_queue.put(True)
+        return status_queue
+
     def download_file(self, anime_id: int, url: Optional[str] = None,
                      hash_value: Optional[str] = None, user_id: Optional[int] = None,
                      source: Optional[str] = None) -> Optional[queue.Queue]:
-        """
-        Download a file or torrent.
+        """Enqueue a download and return the status queue when started.
 
-        Args:
-            anime_id: Anime ID
-            url: URL to download from
-            hash_value: Torrent hash for existing torrent
-            user_id: User ID for tagging
-            source: Optional origin marker (``manual`` / ``auto``)
-
-        Returns:
-            Queue for download status updates
+        Prefer :meth:`enqueue_download` when callers need skip/reason metadata.
         """
+        result = self.enqueue_download(
+            anime_id,
+            url=url,
+            hash_value=hash_value,
+            user_id=user_id,
+            source=source,
+        )
+        return result.status_queue if result.started else None
+
+    def enqueue_download(
+        self,
+        anime_id: int,
+        url: Optional[str] = None,
+        hash_value: Optional[str] = None,
+        user_id: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> DownloadEnqueueResult:
+        """Enqueue a download and return a truthful start/skip outcome."""
         if not url and not hash_value:
             self.log("DOWNLOAD_MANAGER", "[ERROR] - No URL or hash provided")
-            return None
+            return DownloadEnqueueResult(started=False, reason="no url or hash")
 
-        self._clear_deleted_status_for_redownload(hash_value)
+        resolved_hash = self._resolve_download_hash(url, hash_value)
+        if resolved_hash:
+            hash_value = resolved_hash
+
+        cleared_deleted = self._clear_deleted_status_for_redownload(hash_value)
+
+        if resolved_hash:
+            reason = self._duplicate_download_reason(
+                resolved_hash, ignore_index=cleared_deleted
+            )
+            if reason:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Skipping duplicate download for anime {anime_id} "
+                    f"hash {resolved_hash}: {reason}",
+                )
+                return DownloadEnqueueResult(
+                    started=False, skipped=True, reason=reason
+                )
 
         task = DownloadTask(anime_id, url, hash_value, user_id, source=source)
-        with self._telemetry.time("download.enqueue_ms"):
-            self._download_queue.put(task)
+        with self._lock:
+            if resolved_hash:
+                if resolved_hash in self._queued_hashes:
+                    self.log(
+                        "DOWNLOAD_MANAGER",
+                        f"Skipping duplicate download for anime {anime_id} "
+                        f"hash {resolved_hash}: already queued",
+                    )
+                    return DownloadEnqueueResult(
+                        started=False,
+                        skipped=True,
+                        reason="already queued",
+                    )
+                self._cancelled_hashes.discard(resolved_hash)
+                self._queued_hashes.add(resolved_hash)
+            with self._telemetry.time("download.enqueue_ms"):
+                self._download_queue.put(task)
         self._sync_queue_gauge()
 
         self.log("DOWNLOAD_MANAGER", f"Queued download for anime {anime_id}")
-        return task.status_queue
+        return DownloadEnqueueResult(
+            started=True, status_queue=task.status_queue
+        )
 
     def redownload(self, anime_id: int) -> int:
         """
@@ -152,24 +296,146 @@ class DownloadManager(BaseComponent):
         return 0
 
     def cancel_download(self, anime_id: int) -> bool:
-        """
-        Cancel download for an anime.
+        """Cancel all active downloads for an anime and stop client torrents.
 
-        Args:
-            anime_id: Anime ID
-
-        Returns:
-            True if download was cancelled, False otherwise
+        Removes matching torrents from the torrent client with
+        ``delete_files=False``. Does not mark DB status ``deleted``.
         """
+        cancelled = False
+        hashes_to_remove: list[str] = []
+
         with self._lock:
             task = self._active_downloads.pop(anime_id, None)
         if task is not None:
             task.cancel()
-            self.log("DOWNLOAD_MANAGER", f"Cancelled download for anime {anime_id}")
+            cancelled = True
+            key = self._normalize_infohash(task.hash_value)
+            if key:
+                self._cancel_in_flight_hash_locked(key)
+                hashes_to_remove.append(key)
+
+        for row_hash in self._live_hashes_for_anime(anime_id):
+            if row_hash.lower() not in {h.lower() for h in hashes_to_remove}:
+                hashes_to_remove.append(row_hash)
+
+        if hashes_to_remove:
+            self.remove_torrents_from_client(hashes_to_remove, delete_files=False)
+
+        if cancelled or hashes_to_remove:
+            self.log("DOWNLOAD_MANAGER", f"Cancelled download(s) for anime {anime_id}")
             return True
 
         self.log("DOWNLOAD_MANAGER", f"No active download found for anime {anime_id}")
         return False
+
+    def cancel_download_by_hash(self, hash_value: str) -> bool:
+        """Cancel a torrent by info-hash and remove it from the client.
+
+        Keeps downloaded files on disk and does not mark DB ``deleted``.
+        """
+        key = self._normalize_infohash(hash_value)
+        if not key:
+            return False
+
+        cancelled = self._cancel_in_flight_for_hash(key)
+        if self._lookup_live_torrent(key) is not None:
+            self._remove_torrent_from_client(key, delete_files=False)
+            cancelled = True
+
+        if cancelled:
+            self.log("DOWNLOAD_MANAGER", f"Cancelled torrent {key}")
+        return cancelled
+
+    def delete_torrent_by_hash(self, hash_value: str) -> bool:
+        """Delete a torrent by info-hash: client removal + files + DB deleted."""
+        key = str(hash_value or "").strip()
+        if not key:
+            return False
+
+        anime_id: Optional[int] = None
+        db_manager = self._database_manager
+        if db_manager is not None:
+            getter = getattr(db_manager, "get_anime_ids_by_hashes", None)
+            if callable(getter):
+                try:
+                    mapping = getter([key.lower()]) or {}
+                    raw = mapping.get(key.lower())
+                    if raw is not None:
+                        anime_id = int(raw)
+                except Exception:
+                    anime_id = None
+
+        if anime_id is not None:
+            return self.delete_anime_torrent(anime_id, key)
+
+        self._cancel_in_flight_for_hash(self._normalize_infohash(key) or key)
+        self._remove_torrent_from_client(key, delete_files=True)
+        self.log(
+            "DOWNLOAD_MANAGER",
+            f"Deleted unindexed torrent {key} from client (files removed)",
+        )
+        return True
+
+    def _cancel_in_flight_for_hash(self, hash_value: str) -> bool:
+        key = self._normalize_infohash(hash_value)
+        if not key:
+            return False
+        cancelled = False
+        with self._lock:
+            cancelled = self._cancel_in_flight_hash_locked(key)
+            to_remove: list[int] = []
+            for aid, task in self._active_downloads.items():
+                task_hash = self._normalize_infohash(task.hash_value)
+                if task_hash == key:
+                    task.cancel()
+                    to_remove.append(aid)
+                    cancelled = True
+            for aid in to_remove:
+                self._active_downloads.pop(aid, None)
+        return cancelled
+
+    def _cancel_in_flight_hash_locked(self, key: str) -> bool:
+        """Mutate queue/cancel sets for ``key``; caller must hold ``_lock``."""
+        cancelled = False
+        if key in self._queued_hashes:
+            self._queued_hashes.discard(key)
+            cancelled = True
+        if key not in self._cancelled_hashes:
+            self._cancelled_hashes.add(key)
+            cancelled = True
+        return cancelled
+
+    def _live_hashes_for_anime(self, anime_id: int) -> list[str]:
+        """Return info-hashes for non-deleted torrents still in the client."""
+        db_manager = self._database_manager
+        if db_manager is None:
+            return []
+        lister = getattr(db_manager, "list_torrents_for_anime", None)
+        if not callable(lister):
+            return []
+        try:
+            rows = list(lister(anime_id) or [])
+        except Exception:
+            return []
+
+        hashes: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            hash_val = str(row.get("hash") or "").strip()
+            if not hash_val:
+                continue
+            if str(row.get("status") or "").lower() == "deleted":
+                continue
+            live = self._lookup_live_torrent(hash_val)
+            if live is None:
+                continue
+            category = self._normalise_category(
+                live.get("state"), live.get("progress")
+            )
+            if category in ("active", "error", "other"):
+                hashes.append(hash_val)
+        return hashes
 
     def pause_torrent(self, hash_value: str) -> bool:
         """Pause a torrent in the attached torrent client by info-hash."""
@@ -178,6 +444,43 @@ class DownloadManager(BaseComponent):
     def resume_torrent(self, hash_value: str) -> bool:
         """Resume a paused torrent in the attached torrent client by info-hash."""
         return self._set_torrent_paused(hash_value, paused=False)
+
+    def prioritize_torrent(self, hash_value: str) -> bool:
+        """Move a queued torrent to the front of the client's download queue."""
+        key = str(hash_value or "").strip()
+        if not key:
+            return False
+        tm = self._torrent_manager
+        if tm is None:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Cannot prioritize {key}: no torrent manager",
+            )
+            return False
+        method = getattr(tm, "prioritize", None)
+        if not callable(method):
+            self.log(
+                "DOWNLOAD_MANAGER",
+                "Torrent manager does not support prioritize",
+            )
+            return False
+        try:
+            result = method([key])
+            ok = True if result is None else bool(result)
+            if ok:
+                self.log("DOWNLOAD_MANAGER", f"Prioritized torrent {key}")
+            else:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Prioritize found no live torrent for {key}",
+                )
+            return ok
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Failed to prioritize torrent {key}: {exc}",
+            )
+            return False
 
     def _set_torrent_paused(self, hash_value: str, *, paused: bool) -> bool:
         key = str(hash_value or "").strip()
@@ -199,12 +502,21 @@ class DownloadManager(BaseComponent):
             )
             return False
         try:
-            method([key])
-            self.log(
-                "DOWNLOAD_MANAGER",
-                f"{'Paused' if paused else 'Resumed'} torrent {key}",
-            )
-            return True
+            result = method([key])
+            # Adapters may return None (legacy) or a bool indicating a handle
+            # was actually toggled. Treat None as success for older managers.
+            ok = True if result is None else bool(result)
+            if ok:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"{'Paused' if paused else 'Resumed'} torrent {key}",
+                )
+            else:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"{method_name.capitalize()} found no live torrent for {key}",
+                )
+            return ok
         except Exception as exc:
             self.log(
                 "DOWNLOAD_MANAGER",
@@ -347,15 +659,7 @@ class DownloadManager(BaseComponent):
         if tm is None:
             return empty
 
-        ensure = getattr(tm, "ensure_restored", None)
-        if callable(ensure):
-            try:
-                ensure()
-            except Exception as exc:
-                self.log(
-                    "DOWNLOAD_MANAGER",
-                    f"LibTorrent restore wait failed: {exc}",
-                )
+        self._maybe_ensure_torrent_session_restored(tm)
 
         try:
             rows = tm.list() or []
@@ -509,6 +813,26 @@ class DownloadManager(BaseComponent):
 
         return out
 
+    def _maybe_ensure_torrent_session_restored(self, tm: Any) -> None:
+        """Restore LibTorrent sessions once; skip on subsequent overview polls."""
+        is_restored = getattr(tm, "is_restored", None)
+        if callable(is_restored):
+            if is_restored():
+                return
+        elif getattr(tm, "_restored", False):
+            return
+
+        ensure = getattr(tm, "ensure_restored", None)
+        if not callable(ensure):
+            return
+        try:
+            ensure()
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"LibTorrent restore wait failed: {exc}",
+            )
+
     def _refresh_active_task_status(self) -> None:
         """Pull live progress / state from the torrent manager into each task.
 
@@ -647,25 +971,30 @@ class DownloadManager(BaseComponent):
             task.progress,
         )
 
-    def _clear_deleted_status_for_redownload(self, hash_value: Optional[str]) -> None:
-        """Allow a manual re-download to proceed after a DELETED torrent."""
+    def _clear_deleted_status_for_redownload(self, hash_value: Optional[str]) -> bool:
+        """Allow a manual re-download to proceed after a DELETED torrent.
+
+        Returns True when a ``deleted`` status was cleared.
+        """
         if not hash_value:
-            return
+            return False
         db_manager = self._database_manager
         if db_manager is None:
-            return
+            return False
         getter = getattr(db_manager, "get_torrent_status", None)
         updater = getattr(db_manager, "update_torrent_status", None)
         if not callable(getter) or not callable(updater):
-            return
+            return False
         try:
             if str(getter(hash_value) or "").lower() == "deleted":
                 updater(hash_value, None)
+                return True
         except Exception as exc:
             self.log(
                 "DOWNLOAD_MANAGER",
                 f"Could not clear deleted status for {hash_value}: {exc}",
             )
+        return False
 
     def _maybe_mark_torrent_complete(
         self,
@@ -1073,6 +1402,74 @@ class DownloadManager(BaseComponent):
             if key:
                 self._remove_torrent_from_client(key, delete_files=delete_files)
 
+    def delete_anime_torrent(self, anime_id: int, hash_value: str) -> bool:
+        """Delete one indexed torrent, its client entry, and downloaded files.
+
+        Verifies ``hash_value`` belongs to ``anime_id`` via ``torrentsIndex``,
+        marks DB status ``deleted``, cancels a matching in-flight download,
+        and removes the torrent from the client with ``delete_files=True``.
+        Does not delete the whole anime library folder.
+        """
+        key = str(hash_value or "").strip()
+        if not key:
+            return False
+        try:
+            aid = int(anime_id)
+        except (TypeError, ValueError):
+            return False
+
+        db_manager = self._database_manager
+        if db_manager is None:
+            return False
+        lister = getattr(db_manager, "list_torrents_for_anime", None)
+        updater = getattr(db_manager, "update_torrent_status", None)
+        if not callable(lister) or not callable(updater):
+            return False
+
+        owned = False
+        already_deleted = False
+        try:
+            rows = list(lister(aid) or [])
+        except Exception:
+            return False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_hash = str(row.get("hash") or "").strip()
+            if not row_hash or row_hash.lower() != key.lower():
+                continue
+            owned = True
+            already_deleted = str(row.get("status") or "").lower() == "deleted"
+            key = row_hash
+            break
+
+        if not owned:
+            return False
+
+        with self._lock:
+            task = self._active_downloads.get(aid)
+        if task is not None:
+            task_hash = str(getattr(task, "hash_value", None) or "").strip()
+            if task_hash and task_hash.lower() == key.lower():
+                self._cancel_in_flight_for_hash(key)
+
+        if not already_deleted:
+            try:
+                updater(key, "deleted")
+            except Exception as exc:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Could not mark torrent deleted for {key}: {exc}",
+                )
+                return False
+
+        self.remove_torrents_from_client([key], delete_files=True)
+        self.log(
+            "DOWNLOAD_MANAGER",
+            f"Deleted torrent {key} for anime {aid} (files removed)",
+        )
+        return True
+
     def _sync_queue_gauge(self) -> None:
         try:
             depth = self._download_queue.qsize()
@@ -1091,6 +1488,19 @@ class DownloadManager(BaseComponent):
             executor = self._executor
             if task is None or executor is None:
                 continue
+
+            key = self._normalize_infohash(task.hash_value)
+            with self._lock:
+                if task.cancelled or (key and key in self._cancelled_hashes):
+                    if key:
+                        self._queued_hashes.discard(key)
+                        self._cancelled_hashes.discard(key)
+                    try:
+                        task.status_queue.put(False)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+
             try:
                 executor.submit(self._execute_download, task)
             except Exception as exc:
@@ -1103,7 +1513,17 @@ class DownloadManager(BaseComponent):
         Args:
             task: Download task to execute
         """
+        key = self._normalize_infohash(task.hash_value)
         with self._lock:
+            if task.cancelled or (key and key in self._cancelled_hashes):
+                if key:
+                    self._queued_hashes.discard(key)
+                    self._cancelled_hashes.discard(key)
+                try:
+                    task.status_queue.put(False)
+                except Exception:  # noqa: BLE001
+                    pass
+                return
             self._active_downloads[task.anime_id] = task
 
         # The task stays in ``_active_downloads`` for as long as the user
@@ -1113,9 +1533,19 @@ class DownloadManager(BaseComponent):
         keep_visible = False
         task.state = "QUEUED"
         try:
+            if task.cancelled or (key and key in self._cancelled_hashes):
+                task.status_queue.put(False)
+                return
+
             task.status_queue.put(True)  # Download started
 
             torrent = self._prepare_torrent(task)
+            key = self._normalize_infohash(task.hash_value)
+            with self._lock:
+                cancelled = task.cancelled or (key and key in self._cancelled_hashes)
+            if cancelled:
+                task.status_queue.put(False)
+                return
             if not torrent:
                 task.status_queue.put(False)
                 return
@@ -1162,8 +1592,11 @@ class DownloadManager(BaseComponent):
             self.log("DOWNLOAD_MANAGER", f"Download execution failed for anime {task.anime_id}: {e}")
             task.status_queue.put(False)
         finally:
-            if not keep_visible:
-                with self._lock:
+            key = self._normalize_infohash(task.hash_value)
+            with self._lock:
+                if key:
+                    self._queued_hashes.discard(key)
+                if not keep_visible:
                     self._active_downloads.pop(task.anime_id, None)
 
     def _prepare_torrent(self, task: 'DownloadTask') -> Optional[Torrent]:
@@ -1272,6 +1705,14 @@ class DownloadManager(BaseComponent):
         try:
             if not self._torrent_manager or not hasattr(torrent, "to_magnet"):
                 return False
+
+            torrent_hash = self._normalize_infohash(getattr(torrent, "hash", None))
+            if torrent_hash and self._lookup_live_torrent(torrent_hash) is not None:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Torrent {torrent_hash} already in client; skipping add",
+                )
+                return True
 
             folder_path = self._get_anime_folder(anime_id)
             if not folder_path:
