@@ -219,8 +219,10 @@ class ClientSDK:
         url: str | None = None,
         hash_value: str | None = None,
         user_id: int | None = None,
-    ) -> bool:
-        return self._facade.start_download(anime_id, url=url, hash_value=hash_value, user_id=user_id)
+    ) -> dict[str, Any]:
+        return self._facade.start_download(
+            anime_id, url=url, hash_value=hash_value, user_id=user_id
+        )
 
     def get_download_progress(self, anime_id: int) -> dict[str, Any]:
         return self._facade.get_download_progress(anime_id)
@@ -228,11 +230,23 @@ class ClientSDK:
     def cancel_download(self, anime_id: int) -> bool:
         return self._facade.cancel_download(anime_id)
 
+    def cancel_download_by_hash(self, hash_value: str) -> bool:
+        return self._facade.cancel_download_by_hash(hash_value)
+
+    def delete_torrent_by_hash(self, hash_value: str) -> bool:
+        return self._facade.delete_torrent_by_hash(hash_value)
+
     def pause_torrent(self, hash_value: str) -> bool:
         return self._facade.pause_torrent(hash_value)
 
     def resume_torrent(self, hash_value: str) -> bool:
         return self._facade.resume_torrent(hash_value)
+
+    def prioritize_torrent(self, hash_value: str) -> bool:
+        return self._facade.prioritize_torrent(hash_value)
+
+    def delete_anime_torrent(self, anime_id: int, hash_value: str) -> bool:
+        return self._facade.delete_anime_torrent(anime_id, hash_value)
 
     def get_active_downloads(self) -> list[dict[str, Any]]:
         return self._facade.get_active_downloads()
@@ -306,6 +320,16 @@ class ClientSDK:
         self, anime_id: int, user_id: int, enabled: bool = True
     ) -> None:
         self._facade.set_auto_download(anime_id, user_id, enabled)
+
+    def get_download_preferences(
+        self, anime_id: int, user_id: int
+    ) -> dict[str, Any]:
+        return self._facade.get_download_preferences(anime_id, user_id)
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._facade.set_download_preferences(anime_id, user_id, prefs)
 
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._facade.mark_seen(anime_id, file_name, user_id)

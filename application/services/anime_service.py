@@ -61,6 +61,7 @@ class AnimeApplicationService:
         user_actions_port: UserActionsPort,
         media_streaming_service: PlaybackService | None = None,
         hydration_service: AnimeHydrationService | None = None,
+        title_parser=None,
     ) -> None:
         self._anime_repository = anime_repository
         self._metadata_provider = metadata_provider
@@ -68,6 +69,7 @@ class AnimeApplicationService:
         self._user_actions_port = user_actions_port
         self._media_streaming = media_streaming_service
         self._hydration = hydration_service
+        self._title_parser = title_parser
 
     def _prefetch_metadata(
         self,
@@ -553,7 +555,7 @@ class AnimeApplicationService:
         except Exception:
             pass
 
-    def start_download(self, request: DownloadRequest) -> bool:
+    def start_download(self, request: DownloadRequest) -> dict:
         if request.url is None and request.hash_value is None:
             raise ValidationError(
                 "Either url or hash_value must be provided."
@@ -572,11 +574,51 @@ class AnimeApplicationService:
     def cancel_download(self, anime_id: int) -> bool:
         return self._download_port.cancel_download(anime_id)
 
+    def cancel_download_by_hash(self, hash_value: str) -> bool:
+        key = str(hash_value or "").strip()
+        if not key:
+            raise ValidationError("hash_value is required")
+        canceller = getattr(self._download_port, "cancel_download_by_hash", None)
+        if not callable(canceller):
+            return False
+        return bool(canceller(key))
+
+    def delete_torrent_by_hash(self, hash_value: str) -> bool:
+        key = str(hash_value or "").strip()
+        if not key:
+            raise ValidationError("hash_value is required")
+        deleter = getattr(self._download_port, "delete_torrent_by_hash", None)
+        if not callable(deleter):
+            raise NotFoundError(f"Torrent {key} not found")
+        ok = bool(deleter(key))
+        if not ok:
+            raise NotFoundError(f"Torrent {key} not found")
+        return True
+
     def pause_torrent(self, hash_value: str) -> bool:
         return self._download_port.pause_torrent(hash_value)
 
     def resume_torrent(self, hash_value: str) -> bool:
         return self._download_port.resume_torrent(hash_value)
+
+    def prioritize_torrent(self, hash_value: str) -> bool:
+        return self._download_port.prioritize_torrent(hash_value)
+
+    def delete_anime_torrent(self, anime_id: int, hash_value: str) -> bool:
+        key = str(hash_value or "").strip()
+        if not key:
+            raise ValidationError("hash_value is required")
+        deleter = getattr(self._download_port, "delete_anime_torrent", None)
+        if not callable(deleter):
+            raise NotFoundError(
+                f"Torrent {key} not found for anime {anime_id}"
+            )
+        ok = bool(deleter(int(anime_id), key))
+        if not ok:
+            raise NotFoundError(
+                f"Torrent {key} not found for anime {anime_id}"
+            )
+        return True
 
     def get_active_downloads(self) -> list[dict]:
         return self._download_port.get_active_downloads()
@@ -676,6 +718,73 @@ class AnimeApplicationService:
         if not callable(setter):
             return
         setter(anime_id, enabled, user_id)
+
+    def get_download_preferences(self, anime_id: int, user_id: int) -> dict:
+        from application.services.auto_download_matching import infer_preference
+        from application.services.auto_download_prefs import (
+            list_configured_feeds,
+            normalize_prefs_row,
+            resolve_release_preference,
+        )
+
+        getter = getattr(self._user_actions_port, "get_download_preferences", None)
+        raw: dict = {}
+        if callable(getter):
+            try:
+                loaded = getter(anime_id, user_id) or {}
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except Exception:
+                raw = {}
+        settings = self.get_settings()
+        prefs = normalize_prefs_row(raw, settings=settings)
+        inferred = None
+        parser = self._title_parser
+        if prefs.get("use_inferred") and callable(parser):
+            torrents_getter = getattr(self._anime_repository, "get_anime_torrents", None)
+            rows = []
+            if callable(torrents_getter):
+                try:
+                    rows = list(torrents_getter(anime_id) or [])
+                except Exception:
+                    rows = []
+            inferred = infer_preference(rows, parse_title=parser)
+        effective = resolve_release_preference(
+            prefs, inferred=inferred, settings=settings
+        )
+        return {
+            **prefs,
+            "inferred": (
+                {"publisher": inferred.publisher, "resolution": inferred.resolution}
+                if inferred is not None
+                else None
+            ),
+            "effective": (
+                {"publisher": effective.publisher, "resolution": effective.resolution}
+                if effective is not None
+                else None
+            ),
+            "available_feeds": list_configured_feeds(settings),
+        }
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict
+    ) -> dict:
+        if not isinstance(prefs, dict):
+            raise ValidationError("Download preferences must be an object.")
+        setter = getattr(self._user_actions_port, "set_download_preferences", None)
+        if not callable(setter):
+            raise ValidationError("Download preferences are not supported.")
+        allowed = {
+            "source_mode",
+            "publisher",
+            "resolution",
+            "feed_ids",
+            "use_inferred",
+        }
+        payload = {k: v for k, v in prefs.items() if k in allowed}
+        setter(anime_id, user_id, payload)
+        return self.get_download_preferences(anime_id, user_id)
 
     def mark_seen(self, anime_id: int, file_name: str, user_id: int) -> None:
         self._user_actions_port.mark_seen(anime_id, file_name, user_id)

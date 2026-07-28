@@ -42,7 +42,7 @@ class FakeFacade:
         )
 
     def start_download(self, anime_id, url=None, hash_value=None, user_id=None):
-        return True
+        return {"started": True, "skipped": False, "reason": None}
 
     def get_download_progress(self, anime_id):
         return {"anime_id": anime_id, "progress": 30}
@@ -134,7 +134,11 @@ class TestSDKEdges:
         assert out["metadata_pending"] is False
 
     def test_start_download_pass_through(self, sdk):
-        assert sdk.start_download(1, url="magnet:?xt=urn:btih:abc") is True
+        assert sdk.start_download(1, url="magnet:?xt=urn:btih:abc") == {
+            "started": True,
+            "skipped": False,
+            "reason": None,
+        }
 
     def test_get_download_progress_returns_dict(self, sdk):
         assert sdk.get_download_progress(1) == {"anime_id": 1, "progress": 30}

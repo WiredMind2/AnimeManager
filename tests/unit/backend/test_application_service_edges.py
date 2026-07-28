@@ -77,9 +77,9 @@ class FakeDownload:
     def __init__(self):
         self.start_calls = []
 
-    def start_download(self, anime_id, url=None, hash_value=None, user_id=None):
+    def start_download(self, anime_id, url=None, hash_value=None, user_id=None, source=None):
         self.start_calls.append((anime_id, url, hash_value, user_id))
-        return True
+        return {"started": True, "skipped": False, "reason": None}
 
     def get_download_progress(self, anime_id):
         return {"anime_id": anime_id, "progress": 0}
@@ -331,20 +331,20 @@ class TestStartDownloadEdges:
             service.start_download(DownloadRequest(anime_id=1))
 
     def test_with_url_only(self, service):
-        ok = service.start_download(
+        result = service.start_download(
             DownloadRequest(anime_id=1, url="magnet:?xt=urn:btih:abc")
         )
-        assert ok is True
+        assert result == {"started": True, "skipped": False, "reason": None}
 
     def test_with_hash_only(self, service):
-        ok = service.start_download(DownloadRequest(anime_id=1, hash_value="abc"))
-        assert ok is True
+        result = service.start_download(DownloadRequest(anime_id=1, hash_value="abc"))
+        assert result["started"] is True
 
     def test_with_both_url_and_hash(self, service):
-        ok = service.start_download(
+        result = service.start_download(
             DownloadRequest(anime_id=1, url="u", hash_value="h")
         )
-        assert ok is True
+        assert result["started"] is True
 
 
 # ---------------------------------------------------------------------------

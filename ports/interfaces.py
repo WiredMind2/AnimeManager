@@ -197,7 +197,8 @@ class DownloadPort(Protocol):
         hash_value: str | None = None,
         user_id: int | None = None,
         source: str | None = None,
-    ) -> bool:
+    ) -> dict[str, bool | str | None]:
+        """Return ``{started, skipped?, reason?}`` — duplicates must not claim started."""
         ...
 
     def get_download_progress(self, anime_id: int) -> dict:
@@ -206,10 +207,26 @@ class DownloadPort(Protocol):
     def cancel_download(self, anime_id: int) -> bool:
         ...
 
+    def cancel_download_by_hash(self, hash_value: str) -> bool:
+        """Remove torrent from client, keep files; cancel in-flight task."""
+        ...
+
+    def delete_torrent_by_hash(self, hash_value: str) -> bool:
+        """Remove torrent from client, delete files, mark DB deleted when indexed."""
+        ...
+
     def pause_torrent(self, hash_value: str) -> bool:
         ...
 
     def resume_torrent(self, hash_value: str) -> bool:
+        ...
+
+    def prioritize_torrent(self, hash_value: str) -> bool:
+        """Move a queued torrent to the front of the download queue."""
+        ...
+
+    def delete_anime_torrent(self, anime_id: int, hash_value: str) -> bool:
+        """Remove one torrent for ``anime_id``, deleting its downloaded files."""
         ...
 
     def get_active_downloads(self) -> list[dict]:
@@ -285,6 +302,26 @@ class UserActionsPort(Protocol):
 
     def list_auto_download_eligible(self, user_id: int = 1) -> list[int]:
         """Return WATCHING anime IDs with auto-download enabled for ``user_id``."""
+        ...
+
+    def get_download_preferences(self, anime_id: int, user_id: int) -> dict:
+        """Return per-anime auto-download preferences (may be empty)."""
+        ...
+
+    def set_download_preferences(
+        self, anime_id: int, user_id: int, prefs: dict
+    ) -> dict:
+        """Upsert per-anime auto-download preferences and return stored values."""
+        ...
+
+    def list_rss_feed_seen_keys(
+        self, feed_ids: list[str] | None = None
+    ) -> set[tuple[str, str]]:
+        """Return ``(feed_id, item_key)`` pairs already seen from RSS feeds."""
+        ...
+
+    def mark_rss_feed_seen(self, feed_id: str, item_key: str) -> None:
+        """Record that an RSS item was consumed."""
         ...
 
     def get_episode_progress_map(self, anime_id: int, user_id: int) -> dict[str, dict[str, Any]]:

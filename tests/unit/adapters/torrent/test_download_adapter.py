@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,17 +104,41 @@ def test_promote_watching_swallows_errors():
     adapter._promote_watching_on_download_start(1, 1)
 
 
-def test_start_download_returns_true_when_queued():
+def test_start_download_returns_truthful_dict_when_queued():
     adapter, dm = _make_adapter()
-    dm.download_file.return_value = object()
-    assert adapter.start_download(1, url="magnet:?", user_id=1) is True
-    dm.download_file.assert_called_once()
+    dm.enqueue_download.return_value = types.SimpleNamespace(
+        started=True, skipped=False, reason=None
+    )
+    assert adapter.start_download(1, url="magnet:?", user_id=1) == {
+        "started": True,
+        "skipped": False,
+        "reason": None,
+    }
+    dm.enqueue_download.assert_called_once()
+
+
+def test_start_download_returns_skipped_dict():
+    adapter, dm = _make_adapter()
+    dm.enqueue_download.return_value = types.SimpleNamespace(
+        started=False, skipped=True, reason="already queued"
+    )
+    assert adapter.start_download(1, url="magnet:?") == {
+        "started": False,
+        "skipped": True,
+        "reason": "already queued",
+    }
 
 
 def test_start_download_returns_false_when_not_queued():
     adapter, dm = _make_adapter()
-    dm.download_file.return_value = None
-    assert adapter.start_download(1) is False
+    dm.enqueue_download.return_value = types.SimpleNamespace(
+        started=False, skipped=False, reason="no url or hash"
+    )
+    assert adapter.start_download(1) == {
+        "started": False,
+        "skipped": False,
+        "reason": "no url or hash",
+    }
 
 
 def test_get_download_progress_and_cancel():
@@ -132,6 +157,13 @@ def test_pause_and_resume_torrent():
     assert adapter.resume_torrent("abc") is True
     dm.pause_torrent.assert_called_once_with("abc")
     dm.resume_torrent.assert_called_once_with("abc")
+
+
+def test_prioritize_torrent():
+    adapter, dm = _make_adapter()
+    dm.prioritize_torrent.return_value = True
+    assert adapter.prioritize_torrent("abc") is True
+    dm.prioritize_torrent.assert_called_once_with("abc")
 
 
 def test_get_active_downloads():

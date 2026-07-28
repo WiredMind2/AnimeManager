@@ -174,12 +174,28 @@ class RecordingSDK:
             "start_download",
             (anime_id, url, hash_value, user_id),
             {},
-            default=lambda: True,
+            default=lambda: {"started": True, "skipped": False, "reason": None},
         )
 
     def cancel_download(self, anime_id: int):
         return self._invoke(
             "cancel_download", (anime_id,), {}, default=lambda: True
+        )
+
+    def cancel_download_by_hash(self, hash_value: str):
+        return self._invoke(
+            "cancel_download_by_hash",
+            (hash_value,),
+            {},
+            default=lambda: True,
+        )
+
+    def delete_torrent_by_hash(self, hash_value: str):
+        return self._invoke(
+            "delete_torrent_by_hash",
+            (hash_value,),
+            {},
+            default=lambda: True,
         )
 
     def set_tag(self, anime_id, tag, user_id):
@@ -382,12 +398,31 @@ class TestSearchEndpoint:
 
 class TestDownloadEndpoints:
     def test_start_returns_started_flag(self, client, sdk):
-        sdk.overrides["start_download"] = lambda *a, **k: True
+        sdk.overrides["start_download"] = lambda *a, **k: {
+            "started": True,
+            "skipped": False,
+            "reason": None,
+        }
         resp = client.post(
             "/download/9", params={"url": "magnet:?xt=urn:btih:abc"}
         )
         assert resp.status_code == 200
-        assert resp.json() == {"started": True}
+        assert resp.json() == {"started": True, "skipped": False, "reason": None}
+
+    def test_start_returns_skipped_when_duplicate(self, client, sdk):
+        sdk.overrides["start_download"] = lambda *a, **k: {
+            "started": False,
+            "skipped": True,
+            "reason": "already queued",
+        }
+        resp = client.post(
+            "/download/9", params={"url": "magnet:?xt=urn:btih:abc"}
+        )
+        assert resp.json() == {
+            "started": False,
+            "skipped": True,
+            "reason": "already queued",
+        }
 
     def test_start_passes_hash_and_user(self, client, sdk):
         client.post(
@@ -410,6 +445,16 @@ class TestDownloadEndpoints:
         body = client.post("/download/cancel/5").json()
         assert body == {"cancelled": True}
         assert sdk.last_call("cancel_download")[1] == (5,)
+
+    def test_cancel_by_hash(self, client, sdk):
+        body = client.post("/download/cancel/hash/abc123").json()
+        assert body == {"cancelled": True}
+        assert sdk.last_call("cancel_download_by_hash")[1] == ("abc123",)
+
+    def test_delete_by_hash(self, client, sdk):
+        body = client.post("/download/delete/abc123").json()
+        assert body == {"deleted": True}
+        assert sdk.last_call("delete_torrent_by_hash")[1] == ("abc123",)
 
     def test_active_returns_list_under_items_key(self, client, sdk):
         sdk.overrides["get_active_downloads"] = lambda: [
