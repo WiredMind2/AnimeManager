@@ -1,11 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import type { TorrentTableRow } from "@/lib/api";
 import { DEFAULT_USER_ID } from "@/lib/config";
 import { DOWNLOAD_STARTED_EVENT } from "@/lib/downloads/torrent-state";
+import {
+  isStartDownloadSkipped,
+  startDownloadFailureMessage,
+} from "@/lib/downloads/start-download";
 
 type TorrentRowProps = {
   row: TorrentTableRow;
@@ -15,12 +19,14 @@ type TorrentRowProps = {
 
 export default function TorrentRow({ row, animeId, onFilterClick }: TorrentRowProps) {
   const [queued, setQueued] = useState(false);
+  const queuedRef = useRef(false);
   const { showToast } = useToast();
   const p = row.parsed;
 
   function handleDownload() {
-    if (!animeId || !row.link) return;
-    // Optimistic: flip to "Queued" immediately; roll back if the POST fails.
+    if (!animeId || !row.link || queued || queuedRef.current) return;
+    // Synchronous guard — setState alone can miss a second click before paint.
+    queuedRef.current = true;
     setQueued(true);
     window.dispatchEvent(new CustomEvent(DOWNLOAD_STARTED_EVENT));
     void api
@@ -29,7 +35,15 @@ export default function TorrentRow({ row, animeId, onFilterClick }: TorrentRowPr
         hash_value: row.hash,
         user_id: DEFAULT_USER_ID,
       })
+      .then((result) => {
+        if (isStartDownloadSkipped(result)) {
+          queuedRef.current = false;
+          setQueued(false);
+          showToast(startDownloadFailureMessage(result), "error");
+        }
+      })
       .catch(() => {
+        queuedRef.current = false;
         setQueued(false);
         showToast("Failed to queue download. Please try again.", "error");
       });
@@ -147,6 +161,7 @@ export default function TorrentRow({ row, animeId, onFilterClick }: TorrentRowPr
               <button
                 className="btn btn--primary btn--small"
                 type="button"
+                disabled={queued}
                 onClick={handleDownload}
               >
                 Download

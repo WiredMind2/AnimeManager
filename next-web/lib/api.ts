@@ -167,6 +167,25 @@ export type UserState = {
   seen?: string[];
 };
 
+export type RssFeedConfig = {
+  id: string;
+  label: string;
+  url: string;
+  enabled: boolean;
+  builtin?: boolean;
+};
+
+export type DownloadPreferences = {
+  source_mode: "search" | "rss";
+  publisher?: string | null;
+  resolution?: string | null;
+  feed_ids?: string[];
+  use_inferred?: boolean;
+  inferred?: { publisher: string; resolution: string } | null;
+  effective?: { publisher: string; resolution: string } | null;
+  available_feeds?: RssFeedConfig[];
+};
+
 export type ParsedTitle = {
   publisher?: string;
   publisher_display?: string;
@@ -442,10 +461,18 @@ export const api = {
       `/auto-download/${animeId}?user_id=${userId}&enabled=${enabled ? "true" : "false"}`,
       { method: "POST" },
     ),
-  markSeen: (animeId: number, fileName: string, userId: number) =>
-    request<{ ok: boolean }>(
-      `/seen/${animeId}?file_name=${encodeURIComponent(fileName)}&user_id=${userId}`,
-      { method: "POST" },
+  getDownloadPreferences: (animeId: number, userId: number) =>
+    request<DownloadPreferences>(
+      `/anime/${animeId}/download-preferences?user_id=${userId}`,
+    ),
+  setDownloadPreferences: (
+    animeId: number,
+    userId: number,
+    prefs: Partial<DownloadPreferences>,
+  ) =>
+    request<DownloadPreferences>(
+      `/anime/${animeId}/download-preferences?user_id=${userId}`,
+      { method: "PATCH", json: prefs },
     ),
   getCharacters: (animeId: number) =>
     request<{ items: AnimeCharacter[] }>(`/anime/${animeId}/characters`),
@@ -476,6 +503,11 @@ export const api = {
   },
   getAnimeLibraryTorrents: (animeId: number) =>
     request<{ items: AnimeLibraryTorrent[] }>(`/anime/${animeId}/library-torrents`),
+  deleteAnimeTorrent: (animeId: number, hash: string) =>
+    request<{ deleted: boolean }>(
+      `/anime/${animeId}/library-torrents/${encodeURIComponent(hash)}/delete`,
+      { method: "POST" },
+    ),
   getTorrentSearchOptions: (animeId: number) =>
     request<TorrentSearchOptions>(`/anime/${animeId}/torrent-search-options`),
   toggleSearchTitle: (animeId: number, title: string, enabled: boolean) =>
@@ -501,10 +533,24 @@ export const api = {
     if (opts.url) qs.set("url", opts.url);
     if (opts.hash_value) qs.set("hash_value", opts.hash_value);
     if (opts.user_id !== undefined) qs.set("user_id", String(opts.user_id));
-    return request<{ started: boolean }>(`/download/${animeId}?${qs}`, { method: "POST" });
+    return request<{ started: boolean; skipped?: boolean; reason?: string }>(
+      `/download/${animeId}?${qs}`,
+      { method: "POST" },
+    );
   },
+  /** Cancel all active downloads for an anime. */
   cancelDownload: (animeId: number) =>
     request<{ cancelled: boolean }>(`/download/cancel/${animeId}`, { method: "POST" }),
+  /** Remove one torrent from the client; keep files on disk. */
+  cancelDownloadByHash: (hash: string) =>
+    request<{ cancelled: boolean }>(`/download/cancel/${encodeURIComponent(hash)}`, {
+      method: "POST",
+    }),
+  /** Remove one torrent from the client and delete its files. */
+  deleteDownloadByHash: (hash: string) =>
+    request<{ deleted: boolean }>(`/download/delete/${encodeURIComponent(hash)}`, {
+      method: "POST",
+    }),
   pauseDownload: (hash: string) =>
     request<{ paused: boolean }>(`/download/pause/${encodeURIComponent(hash)}`, {
       method: "POST",
@@ -513,6 +559,11 @@ export const api = {
     request<{ resumed: boolean }>(`/download/resume/${encodeURIComponent(hash)}`, {
       method: "POST",
     }),
+  prioritizeDownload: (hash: string) =>
+    request<{ prioritized: boolean }>(
+      `/download/prioritize/${encodeURIComponent(hash)}`,
+      { method: "POST" },
+    ),
   getDownloadProgress: (animeId: number) =>
     request<unknown>(`/download/progress/${animeId}`),
   getActiveDownloads: () => request<{ items: DownloadItem[] }>("/download/active"),
