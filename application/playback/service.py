@@ -22,7 +22,6 @@ from application.playback.contract import (
     SEGMENT_SECONDS,
     SESSION_CREATE_WAIT_SECONDS,
     SESSION_TTL_SECONDS,
-    TOKEN_MIN_TTL_SECONDS,
 )
 from application.playback.playlist import (
     write_initial_playlist,
@@ -226,7 +225,7 @@ class PlaybackService:
 
         token = self._tokens.build(
             session_id=session_id,
-            expires_at=now + max(ttl_seconds, TOKEN_MIN_TTL_SECONDS),
+            expires_at=expires_at,
         )
         dto = PlaybackSessionDTO(
             session_id=session_id,
@@ -304,6 +303,10 @@ class PlaybackService:
             session.last_seen_at = now
             ttl = max(60, int(session.ttl_seconds or self._default_ttl_seconds))
             session.expires_at = now + ttl
+            session.token = self._tokens.build(
+                session_id=session.session_id,
+                expires_at=session.expires_at,
+            )
             if (
                 command.position_seconds is not None
                 and session.total_segments > 0
@@ -342,10 +345,8 @@ class PlaybackService:
             session = self._sessions.get(query.session_id)
         if session is None:
             raise NotFoundError("Playback session not found.")
-        if query.token and not self._tokens.verify(query.session_id, query.token):
+        if not query.token or not self._tokens.verify(query.session_id, query.token):
             raise UnauthorizedError("Playback token is invalid or expired.")
-        if not query.token and query.segment_name is None:
-            raise UnauthorizedError("Playback token is required for manifest access.")
 
         if query.segment_name:
             segment_name = _validate_segment_name(query.segment_name)

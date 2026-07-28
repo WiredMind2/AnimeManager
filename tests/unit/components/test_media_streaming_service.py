@@ -423,6 +423,55 @@ def test_media_session_segment_rejects_manifest_without_token(tmp_path: Path):
         )
 
 
+def test_media_session_rejects_segment_without_token(tmp_path: Path):
+    svc = _legacy_service(tmp_path)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+        )
+    )
+    with pytest.raises(UnauthorizedError):
+        svc.resolve_media_path(
+            GetPlaybackSessionQuery(
+                session_id=session.session_id,
+                token="",
+                segment_name="segment_00000.ts",
+            )
+        )
+
+
+def test_heartbeat_refreshes_token_aligned_to_session_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    svc = _legacy_service(tmp_path)
+    clock = {"now": 1_700_000_000.0}
+    monkeypatch.setattr(time, "time", lambda: clock["now"])
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+        )
+    )
+    original = session.token
+    clock["now"] += 30.0
+    beat = svc.heartbeat(HeartbeatPlaybackSessionCommand(session_id=session.session_id))
+    assert beat.token != original
+    assert abs(beat.expires_at - (beat.last_seen_at + 120)) < 0.01
+    got, _path = svc.resolve_media_path(
+        GetPlaybackSessionQuery(
+            session_id=session.session_id,
+            token=beat.token,
+            segment_name=None,
+        )
+    )
+    assert got.session_id == session.session_id
+
+
 def test_stop_session_preserves_segment_files(tmp_path: Path):
     svc = _legacy_service(tmp_path)
     session = svc.create_session(

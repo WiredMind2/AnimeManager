@@ -24,7 +24,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from fastapi import (
     APIRouter,
@@ -143,6 +143,23 @@ def _flash(kind: str, message: str) -> dict[str, str]:
     return {"kind": kind, "message": message}
 
 
+def _playlist_with_segment_tokens(playlist_text: str, token: str) -> str:
+    """Append ``?token=`` to relative HLS segment URIs for Shaka fetches."""
+    cleaned = str(token or "").strip()
+    if not cleaned:
+        return playlist_text
+    token_q = f"?token={quote(cleaned, safe='')}"
+    lines: list[str] = []
+    for line in playlist_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("segment_") and ".ts" in stripped:
+            base = stripped.split("?", 1)[0]
+            lines.append(f"{base}{token_q}")
+        else:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if playlist_text.endswith("\n") or lines else "")
+
+
 def _render(
     request: Request,
     template: str,
@@ -153,7 +170,13 @@ def _render(
     ctx = {"request": request, "filter_options": FILTER_OPTIONS}
     if context:
         ctx.update(context)
-    return templates.TemplateResponse(template, ctx, status_code=status_code)
+    # Starlette 0.37+: TemplateResponse(request, name, context=...).
+    return templates.TemplateResponse(
+        request,
+        template,
+        ctx,
+        status_code=status_code,
+    )
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -265,8 +288,10 @@ def _collect_anime_torrents(sdk: ClientSDK, anime_id: int) -> list[dict[str, Any
         if active.get("hash") and active["hash"] in seen_hashes:
             for row in saved:
                 if row.get("hash") == active["hash"]:
+                    # An active download always wins over a stale DELETED row
+                    # (e.g. re-download before status was cleared in the DB).
                     if str(row.get("state") or "").upper() == "DELETED":
-                        break
+                        row.pop("status", None)
                     row.update({k: v for k, v in active.items() if v is not None})
                     break
             continue
@@ -1854,8 +1879,13 @@ def web_stream_manifest(
             detail=msg,
         )
         raise HTTPException(status_code=code, detail=msg) from exc
-    return FileResponse(
-        path=path,
+    try:
+        playlist_text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Manifest is not available.") from exc
+    body = _playlist_with_segment_tokens(playlist_text, token)
+    return Response(
+        content=body,
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
     )
@@ -1865,7 +1895,7 @@ def web_stream_manifest(
 def web_stream_player_log_download(
     request: Request,
     session_id: str,
-    token: str = "",
+    token: str,
 ) -> Response:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
@@ -1897,7 +1927,7 @@ def web_stream_segment(
     request: Request,
     session_id: str,
     segment_name: str,
-    token: str = "",
+    token: str,
 ) -> Response:
     sdk = get_sdk()
     started_at = time.monotonic()
@@ -1905,6 +1935,7 @@ def web_stream_segment(
     if not _is_client_allowed_for_streaming(request, sdk):
         _log_stream_access_denied(request, sdk, session_id=session_id, route="segment")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    _verify_playback_token(sdk, session_id=session_id, token=token)
     output_dir = _playback_output_dir(sdk, session_id)
     try:
         _session, path = sdk.resolve_playback_media_path(
@@ -3291,8 +3322,9 @@ def web_offline(request: Request) -> HTMLResponse:
     JS) so it renders even when no other asset is cached.
     """
     return templates.TemplateResponse(
+        request,
         "offline.html",
-        {"request": request},
+        {},
     )
 
 

@@ -32,6 +32,8 @@ export type LoadPipelineCallbacks = {
   onSubtitleTrackId: (id: string) => void;
   applySubtitles: () => void;
   onAttachProgress?: (inProgress: boolean) => void;
+  /** Latest HMAC session token for stream request URLs. */
+  getPlaybackToken?: () => string;
 };
 
 export type ShakaLoadInput = {
@@ -64,6 +66,40 @@ export type ShakaLoadFailure = {
 };
 
 export type ShakaLoadResult = ShakaLoadSuccess | ShakaLoadFailure;
+
+/** Ensure HLS segment/manifest requests carry the latest session token. */
+export function registerStreamTokenRequestFilter(
+  player: {
+    getNetworkingEngine?: () => {
+      registerRequestFilter?: (fn: unknown) => void;
+    } | null;
+  },
+  getToken: () => string,
+): void {
+  try {
+    const net = player.getNetworkingEngine?.();
+    if (!net || typeof net.registerRequestFilter !== "function") return;
+    net.registerRequestFilter((_type: unknown, request: { uris?: string[] }) => {
+      const token = getToken().trim();
+      if (!token || !Array.isArray(request?.uris)) return;
+      request.uris = request.uris.map((uri) => {
+        if (!uri || !uri.includes("/ui/stream/")) return uri;
+        try {
+          const absolute = uri.startsWith("http")
+            ? new URL(uri)
+            : new URL(uri, "http://local.invalid");
+          absolute.searchParams.set("token", token);
+          if (uri.startsWith("http")) return absolute.toString();
+          return `${absolute.pathname}${absolute.search}${absolute.hash}`;
+        } catch {
+          return uri;
+        }
+      });
+    });
+  } catch {
+    /* optional */
+  }
+}
 
 export function registerStreamRecoveryFilter(
   player: { getNetworkingEngine?: () => { registerResponseFilter?: (fn: unknown) => void } | null },
@@ -168,6 +204,7 @@ export async function runShakaLoadPipeline(input: ShakaLoadInput): Promise<Shaka
     markPhase("shaka_configured", { generation });
 
     registerStreamRecoveryFilter(player, onScheduleRecovery, logger);
+    registerStreamTokenRequestFilter(player, () => callbacks.getPlaybackToken?.() || "");
 
     markPhase("shaka_attach_start", { generation });
     setAttachProgress(true);

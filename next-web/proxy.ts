@@ -41,6 +41,11 @@ export function applyProxyClientIdentityHeaders(
   headers.set("x-forwarded-host", request.headers.get("host") ?? request.nextUrl.host);
 }
 
+/**
+ * Next.js 16+ proxy entry (replaces ``middleware.ts``). Runs for ``/backend/*``
+ * so FastAPI sees the browser IP. ``app/backend/[...path]/route.ts`` also
+ * applies the same headers as a belt-and-suspenders path.
+ */
 export function proxy(request: NextRequest) {
   if (!request.nextUrl.pathname.startsWith("/backend")) {
     return NextResponse.next();

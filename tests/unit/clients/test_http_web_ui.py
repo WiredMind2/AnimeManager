@@ -345,7 +345,7 @@ class FakeSDK:
             from domain.errors import NotFoundError
 
             raise NotFoundError("missing session")
-        if token and token != session["token"]:
+        if not token or token != session["token"]:
             from domain.errors import UnauthorizedError
 
             raise UnauthorizedError("bad token")
@@ -1385,6 +1385,34 @@ def test_normalize_anime_torrent_row_deleted_status():
     assert row["state"] == "DELETED"
 
 
+def test_collect_anime_torrents_active_overrides_deleted(monkeypatch):
+    class _Sdk:
+        def get_anime_torrents(self, anime_id):
+            return [
+                {
+                    "hash": "abc123",
+                    "name": "Show - 03.mkv",
+                    "status": "deleted",
+                }
+            ]
+
+        def get_active_downloads(self):
+            return [
+                {
+                    "anime_id": 2206,
+                    "hash": "abc123",
+                    "name": "Show - 03.mkv",
+                    "state": "DOWNLOADING",
+                    "progress": 0.1,
+                }
+            ]
+
+    rows = http_web._collect_anime_torrents(_Sdk(), 2206)
+    assert len(rows) == 1
+    assert rows[0]["state"] == "DOWNLOADING"
+    assert rows[0].get("status") != "deleted"
+
+
 def test_anime_detail_downloaded_episodes_shows_deleted(client, monkeypatch):
     monkeypatch.setattr(
         client.fake,
@@ -1464,15 +1492,29 @@ def test_streaming_allows_hostname_that_resolves_to_private_lan(client, monkeypa
         params={"token": token},
     )
     assert manifest_resp.status_code == 200
-    seg_resp = client.get(f"/ui/stream/{session_id}/segment_00001.ts")
+    assert "token=" in manifest_resp.text
+    seg_resp = client.get(
+        f"/ui/stream/{session_id}/segment_00001.ts",
+        params={"token": token},
+    )
     assert seg_resp.status_code == 200
 
 
-def test_stream_segment_allows_tokenless_fetch_for_relative_playlist_urls(client):
+def test_stream_segment_requires_token(client):
     client.post("/ui/anime/1/play", data={"file_id": "ep-001"})
     resp = client.get("/ui/stream/sess-1/segment_00001.ts")
+    assert resp.status_code == 422
+
+
+def test_stream_manifest_embeds_token_on_segment_uris(client):
+    created = client.post("/ui/anime/1/play", data={"file_id": "ep-001"}).json()
+    token = created["token"]
+    resp = client.get(
+        "/ui/stream/sess-1/index.m3u8",
+        params={"token": token},
+    )
     assert resp.status_code == 200
-    assert resp.content == b"segment"
+    assert f"segment_00001.ts?token={token}" in resp.text or "segment_00001.ts?token=" in resp.text
 
 
 def test_stream_heartbeat_and_stop_endpoints(client):

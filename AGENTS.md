@@ -454,6 +454,8 @@ Watch UI: [`next-web/components/player/WatchView.tsx`](next-web/components/playe
 
 Browser calls `/backend/ui/...` → [`next-web/app/backend/[...path]/route.ts`](next-web/app/backend/[...path]/route.ts) → FastAPI. Proxy timeout: **240s** (ffmpeg resume).
 
+Playback HMAC tokens are required on **manifest, segments, heartbeat, stop, and log**. Manifests rewrite relative segment URIs with `?token=`. Heartbeat refreshes the token to match the extended session TTL. The signing secret is persisted under appdata as `playback_token_secret` so restarts do not invalidate in-flight clients unnecessarily.
+
 ---
 
 ## HTTP API and Next.js proxy

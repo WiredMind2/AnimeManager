@@ -96,6 +96,7 @@ export function usePlayback(
   const sessionGenerationRef = useRef<number | null>(null);
   const activeLoadGenerationRef = useRef<number | null>(null);
   const heartbeatStopRef = useRef<(() => void) | null>(null);
+  const playbackTokenRef = useRef("");
   const stopUrlRef = useRef("");
   const replayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const replayInFlightRef = useRef(false);
@@ -309,6 +310,7 @@ export function usePlayback(
       sessionIdRef.current = "";
       sessionGenerationRef.current = null;
       playerLoggerRef.current?.setLogUrl("");
+      playbackTokenRef.current = "";
       playerLoggerRef.current?.setSessionId("");
     },
     [destroyPlayer],
@@ -439,6 +441,7 @@ export function usePlayback(
       const loadStartTime = loadStartTimeFromPayload(payload) ?? 0;
       sessionIdRef.current = payload.session_id || "";
       sessionGenerationRef.current = generation;
+      playbackTokenRef.current = String(payload.token || "").trim();
       playerLoggerRef.current?.setLogUrl(resolveSessionLogUrl(payload));
       playerLoggerRef.current?.setSessionId(sessionIdRef.current);
       playerLoggerRef.current?.log("info", "session_create_ok", {
@@ -503,6 +506,7 @@ export function usePlayback(
           onAttachProgress: (inProgress) => {
             shakaAttachInProgressRef.current = inProgress;
           },
+          getPlaybackToken: () => playbackTokenRef.current,
         },
       });
 
@@ -529,6 +533,9 @@ export function usePlayback(
       if (shouldStartHeartbeatAfterLoad(loadResult)) {
         heartbeatStopRef.current = startHeartbeat(payload.heartbeat_url || "", {
           onSessionLost: () => sessionRecoveryRef.current?.schedule("heartbeat_404"),
+          onTokenRefresh: (token) => {
+            playbackTokenRef.current = token;
+          },
         });
       }
       } finally {
