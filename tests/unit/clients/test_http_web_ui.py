@@ -1476,17 +1476,67 @@ def test_stream_segment_allows_tokenless_fetch_for_relative_playlist_urls(client
 
 
 def test_stream_heartbeat_and_stop_endpoints(client):
-    client.post("/ui/anime/1/play", data={"file_id": "ep-001"})
-    hb = client.post("/ui/stream/sess-1/heartbeat")
+    created = client.post("/ui/anime/1/play", data={"file_id": "ep-001"}).json()
+    token = created["token"]
+    session_id = created["session_id"]
+    hb = client.post(f"/ui/stream/{session_id}/heartbeat", params={"token": token})
     assert hb.status_code == 200
-    stop = client.post("/ui/stream/sess-1/stop")
+    stop = client.post(f"/ui/stream/{session_id}/stop", params={"token": token})
     assert stop.status_code == 200
 
 
-def test_stream_player_log_ingest(client):
+def test_stream_heartbeat_requires_token(client):
     client.post("/ui/anime/1/play", data={"file_id": "ep-001"})
+    hb = client.post("/ui/stream/sess-1/heartbeat")
+    assert hb.status_code == 401
+
+
+def test_play_response_includes_token_in_session_urls(client):
+    created = client.post("/ui/anime/1/play", data={"file_id": "ep-001"}).json()
+    assert "token=" in created["heartbeat_url"]
+    assert "token=" in created["stop_url"]
+    assert "token=" in created["log_url"]
+
+
+def test_client_host_ignores_spoofed_forwarded_from_untrusted_peer(client, monkeypatch):
+    from starlette.requests import Request as StarletteRequest
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [
+            (b"x-forwarded-for", b"127.0.0.1"),
+        ],
+        "client": ("203.0.113.50", 12345),
+    }
+    request = StarletteRequest(scope)
+    assert http_web._client_host(request) == "203.0.113.50"
+
+
+def test_client_host_trusts_forwarded_from_loopback_proxy(client, monkeypatch):
+    from starlette.requests import Request as StarletteRequest
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [
+            (b"x-forwarded-for", b"192.168.1.42"),
+        ],
+        "client": ("127.0.0.1", 54321),
+    }
+    request = StarletteRequest(scope)
+    assert http_web._client_host(request) == "192.168.1.42"
+
+
+def test_stream_player_log_ingest(client):
+    created = client.post("/ui/anime/1/play", data={"file_id": "ep-001"}).json()
+    token = created["token"]
+    session_id = created["session_id"]
     resp = client.post(
-        "/ui/stream/sess-1/log",
+        f"/ui/stream/{session_id}/log",
+        params={"token": token},
         json={
             "events": [
                 {

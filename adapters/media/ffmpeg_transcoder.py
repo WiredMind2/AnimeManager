@@ -33,12 +33,47 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from adapters.media.ffmpeg_encoder import build_video_encode_args, resolve_video_encoder
 from domain.errors import InfrastructureError
 from shared.telemetry import get_telemetry
 
 _LOG = logging.getLogger(__name__)
+
+# Sidecar subtitles only — these image-based codecs cannot be extracted to WebVTT.
+IMAGE_SUBTITLE_CODECS: frozenset[str] = frozenset(
+    {
+        "hdmv_pgs_subtitle",
+        "pgssub",
+        "dvd_subtitle",
+        "dvb_subtitle",
+        "xsub",
+        "mov_text",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionReusePolicy:
+    """When an existing ffmpeg process may be reused vs respawned."""
+
+    same_start_index: bool
+    same_segment_seconds: bool
+    same_audio_track: bool
+    same_source_path: bool
+    process_alive: bool
+
+    def allows_reuse(self) -> bool:
+        return all(
+            (
+                self.process_alive,
+                self.same_start_index,
+                self.same_segment_seconds,
+                self.same_audio_track,
+                self.same_source_path,
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -52,7 +87,6 @@ class _ActiveTranscode:
     segment_seconds: int
     source_path: str
     audio_track: int | None
-    subtitle_track: int | None
 
 
 class FFmpegTranscoderAdapter:
@@ -95,7 +129,19 @@ class FFmpegTranscoderAdapter:
         self._tracks_cache: dict[str, tuple[tuple[int, int], dict[str, list[dict[str, object]]]]] = {}
         self._duration_cache: dict[str, tuple[tuple[int, int], float]] = {}
         self._telemetry = get_telemetry()
+        self._activity_rank: Callable[[str], float] | None = None
+        self._on_evicted: Callable[[str], None] | None = None
         _LOG.info("ffmpeg_transcoder_init video_encoder=%s", self._video_encoder)
+
+    def set_session_hooks(
+        self,
+        *,
+        activity_rank: Callable[[str], float] | None = None,
+        on_evicted: Callable[[str], None] | None = None,
+    ) -> None:
+        """Optional hooks from :class:`PlaybackService` for eviction policy."""
+        self._activity_rank = activity_rank
+        self._on_evicted = on_evicted
 
     def _sync_active_gauge(self, *, _lock_held: bool = False) -> None:
         if _lock_held:
@@ -121,6 +167,7 @@ class FFmpegTranscoderAdapter:
         segment_seconds: int | None = None,
         duration_seconds: float | None = None,
     ) -> dict[str, str]:
+        _ = subtitle_track  # sidecar-only: subtitles are not burned into HLS video
         ffmpeg_cmd = shutil.which(self._ffmpeg_bin) or self._ffmpeg_bin
         seg_secs = (
             int(segment_seconds)
@@ -155,13 +202,25 @@ class FFmpegTranscoderAdapter:
         with self._lock:
             self._reap_finished_locked()
             existing = self._active.get(session_id)
-            if (
-                existing is not None
-                and existing.process.poll() is None
-                and existing.start_segment_index == start_index
-                and existing.segment_seconds == seg_secs
-                and existing.audio_track == audio_track
-            ):
+            reuse = SessionReusePolicy(
+                process_alive=(
+                    existing is not None and existing.process.poll() is None
+                ),
+                same_start_index=(
+                    existing is not None
+                    and existing.start_segment_index == start_index
+                ),
+                same_segment_seconds=(
+                    existing is not None and existing.segment_seconds == seg_secs
+                ),
+                same_audio_track=(
+                    existing is not None and existing.audio_track == audio_track
+                ),
+                same_source_path=(
+                    existing is not None and existing.source_path == source_path
+                ),
+            )
+            if existing is not None and reuse.allows_reuse():
                 return {
                     "manifest_path": existing.manifest_path,
                     "output_dir": existing.output_dir,
@@ -217,17 +276,15 @@ class FFmpegTranscoderAdapter:
                 playlist_output=ffmpeg_target_playlist,
                 output_dir=output_dir,
                 audio_track=audio_track,
-                subtitle_track=subtitle_track,
                 start_segment_index=start_index,
                 segment_seconds=seg_secs,
                 duration_seconds=probed_duration,
             )
             _LOG.info(
-                "ffmpeg_spawn source=%s start_seg=%s audio=%s subtitle=%s cmd=%s",
+                "ffmpeg_spawn source=%s start_seg=%s audio=%s cmd=%s",
                 source_path,
                 start_index,
                 audio_track,
-                subtitle_track,
                 " ".join(command),
             )
             self._write_spawn_record(log_path, command)
@@ -242,15 +299,13 @@ class FFmpegTranscoderAdapter:
                 segment_seconds=seg_secs,
                 source_path=source_path,
                 audio_track=audio_track,
-                subtitle_track=None,
             )
             _LOG.info(
-                "transcode_started session=%s active=%s source=%s start_seg=%s subs=%s log=%s",
+                "transcode_started session=%s active=%s source=%s start_seg=%s log=%s",
                 session_id,
                 len(self._active),
                 source_path,
                 start_index,
-                None,
                 log_path,
             )
 
@@ -273,7 +328,6 @@ class FFmpegTranscoderAdapter:
             "start_segment_index": str(start_index),
             "segment_seconds": str(seg_secs),
             "log_path": log_path,
-            "effective_subtitle_track": "",
         }
 
     def stop_hls_session(self, session_id: str) -> None:
@@ -461,11 +515,7 @@ class FFmpegTranscoderAdapter:
             self._sync_active_gauge(_lock_held=True)
 
     def _evict_oldest_locked(self, *, excluding: str) -> bool:
-        """Stop the least-recently-started session to make room for a new encode.
-
-        Called with ``self._lock`` held. Returns ``False`` when every active
-        session is ``excluding`` (should not happen in practice).
-        """
+        """Stop the least-active session to make room for a new encode."""
         candidates = [
             (sid, active)
             for sid, active in self._active.items()
@@ -473,7 +523,16 @@ class FFmpegTranscoderAdapter:
         ]
         if not candidates:
             return False
-        victim_id, victim = min(candidates, key=lambda item: item[1].started_at)
+
+        def _rank(item: tuple[str, _ActiveTranscode]) -> tuple[float, float]:
+            sid, active = item
+            if self._activity_rank is not None:
+                activity = self._activity_rank(sid)
+                if activity > 0:
+                    return (activity, active.started_at)
+            return (0.0, active.started_at)
+
+        victim_id, victim = min(candidates, key=_rank)
         _LOG.warning(
             "transcode_evicted victim=%s for incoming=%s active=%s",
             victim_id,
@@ -483,6 +542,15 @@ class FFmpegTranscoderAdapter:
         self._terminate(victim.process)
         self._active.pop(victim_id, None)
         self._sync_active_gauge(_lock_held=True)
+        if self._on_evicted is not None:
+            try:
+                self._on_evicted(victim_id)
+            except Exception as exc:  # noqa: BLE001
+                _LOG.warning(
+                    "transcode_eviction_callback_failed victim=%s err=%s",
+                    victim_id,
+                    exc,
+                )
         return True
 
     @staticmethod
@@ -507,7 +575,6 @@ class FFmpegTranscoderAdapter:
         playlist_output: str,
         output_dir: str,
         audio_track: int | None,
-        subtitle_track: int | None,
         start_segment_index: int,
         segment_seconds: int,
         duration_seconds: float = 0.0,
@@ -654,6 +721,23 @@ class FFmpegTranscoderAdapter:
             except (TypeError, ValueError):
                 continue
             codec = str(track.get("codec") or "").strip().lower()
+            label = str(track.get("label") or f"Subtitle {sub_id}")
+            if codec in IMAGE_SUBTITLE_CODECS:
+                _LOG.warning(
+                    "subtitle_sidecar_unsupported codec=%s track=%s path=%s",
+                    codec,
+                    sub_id,
+                    source_path,
+                )
+                out.append(
+                    {
+                        "id": sub_id,
+                        "label": label,
+                        "codec": codec,
+                        "error": "image_subtitles_not_supported",
+                    }
+                )
+                continue
             filename = f"subtitle_{sub_id:03d}.vtt"
             target = str(Path(output_dir) / filename)
             command = [
@@ -679,13 +763,36 @@ class FFmpegTranscoderAdapter:
                     stderr=subprocess.DEVNULL,
                     timeout=30,
                 )
-            except Exception:
+            except Exception as exc:
+                _LOG.warning(
+                    "subtitle_vtt_extract_failed track=%s codec=%s path=%s err=%s",
+                    sub_id,
+                    codec,
+                    source_path,
+                    exc,
+                )
+                out.append(
+                    {
+                        "id": sub_id,
+                        "label": label,
+                        "codec": codec,
+                        "error": "subtitle_extract_failed",
+                    }
+                )
                 continue
             if not os.path.isfile(target):
+                out.append(
+                    {
+                        "id": sub_id,
+                        "label": label,
+                        "codec": codec,
+                        "error": "subtitle_extract_empty",
+                    }
+                )
                 continue
             row: dict[str, object] = {
                 "id": sub_id,
-                "label": str(track.get("label") or f"Subtitle {sub_id}"),
+                "label": label,
                 "filename": filename,
                 "codec": codec,
             }
@@ -812,4 +919,4 @@ class FFmpegTranscoderAdapter:
                 pass
 
 
-__all__ = ["FFmpegTranscoderAdapter"]
+__all__ = ["FFmpegTranscoderAdapter", "IMAGE_SUBTITLE_CODECS", "SessionReusePolicy"]

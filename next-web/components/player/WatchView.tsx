@@ -10,7 +10,6 @@ export type WatchViewProps = {
   animeId: number;
   episodeFiles: EpisodeFile[];
   trackMap: WatchTrackMap;
-  episodeResumeMap: Record<string, number>;
   selectedFileId: string;
   selectedFileTitle: string;
   selectedAudioTracks: { id: string; label: string }[];
@@ -22,7 +21,6 @@ export default function WatchView({
   animeId,
   episodeFiles,
   trackMap,
-  episodeResumeMap,
   selectedFileId,
   selectedFileTitle,
   selectedAudioTracks,

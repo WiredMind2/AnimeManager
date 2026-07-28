@@ -727,6 +727,43 @@ def test_speculative_far_segment_on_resume_does_not_restart(tmp_path: Path):
     assert session.transcode_start_segment == 31
 
 
+def test_intentional_scrub_after_playhead_advance_restarts(tmp_path: Path):
+    """User scrub forward beyond initial resume+6min succeeds once playhead moves."""
+    svc, transcoder = _seekable_service(tmp_path, duration=1422.0, segment_seconds=4)
+    session = svc.create_session(
+        CreatePlaybackSessionCommand(
+            anime_id=1,
+            file_id="ep-1",
+            client_host="127.0.0.1",
+            ttl_seconds=120,
+            start_time_seconds=133.0,
+        )
+    )
+    calls_before = len(transcoder.calls)
+
+    svc.heartbeat(
+        HeartbeatPlaybackSessionCommand(
+            session_id=session.session_id,
+            position_seconds=400.0,
+        )
+    )
+
+    _session, seg_path = svc.resolve_media_path(
+        GetPlaybackSessionQuery(
+            session_id=session.session_id,
+            token=session.token,
+            segment_name="segment_00100.ts",
+        )
+    )
+    assert seg_path.endswith("segment_00100.ts")
+    assert Path(seg_path).is_file()
+    assert len(transcoder.calls) > calls_before
+    restart_starts = [
+        call["start_segment_index"] for call in transcoder.calls[calls_before:]
+    ]
+    assert 100 in restart_starts
+
+
 def test_resolve_manifest_finishes_vod_when_all_segments_exist(tmp_path: Path):
     svc, _ = _seekable_service(tmp_path, duration=12.0, segment_seconds=4)
     session = svc.create_session(

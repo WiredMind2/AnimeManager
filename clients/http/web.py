@@ -55,11 +55,13 @@ try:  # pragma: no cover - import path differs depending on launch mode
         ValidationError,
     )
     from ..sdk import ClientSDK
+    from application.playback.contract import SESSION_TTL_SECONDS
     from application.services import player_session_log
     from . import log_buffer, settings_form
     from .errors import map_error_to_status
     from .telemetry_events import ingest_client_events
 except ImportError:  # pragma: no cover
+    from application.playback.contract import SESSION_TTL_SECONDS  # type: ignore
     from application.services import player_session_log  # type: ignore
     from clients.sdk import ClientSDK
     from clients.http import log_buffer, settings_form  # type: ignore  # noqa: F401
@@ -98,7 +100,7 @@ router = APIRouter(default_response_class=HTMLResponse)
 # ---------------------------------------------------------------------------
 PAGE_SIZE = 24
 DEFAULT_USER_ID = 1
-PLAYBACK_SESSION_TTL_SECONDS = 900
+PLAYBACK_SESSION_TTL_SECONDS = SESSION_TTL_SECONDS
 
 # Maps to the historical Tk filter list (settings.json filter parity).
 FILTER_OPTIONS: list[dict[str, Any]] = [
@@ -536,13 +538,52 @@ def _map_error(exc: Exception) -> tuple[int, str]:
     return map_error_to_status(exc)
 
 
-def _client_host(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "").strip()
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+def _peer_host(request: Request) -> str:
     if request.client and request.client.host:
         return str(request.client.host).strip()
     return ""
+
+
+def _is_trusted_proxy_peer(peer: str) -> bool:
+    if not peer:
+        return False
+    if peer in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        return True
+    try:
+        return ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        return False
+
+
+def _client_host(request: Request) -> str:
+    peer = _peer_host(request)
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded and _is_trusted_proxy_peer(peer):
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip and _is_trusted_proxy_peer(peer):
+        return real_ip
+    return peer
+
+
+def _verify_playback_token(
+    sdk: ClientSDK,
+    *,
+    session_id: str,
+    token: str,
+) -> None:
+    cleaned = str(token or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=401, detail="Playback token is required.")
+    try:
+        sdk.resolve_playback_media_path(
+            session_id=session_id,
+            token=cleaned,
+            segment_name=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        code, msg = _map_error(exc)
+        raise HTTPException(status_code=code, detail=msg) from exc
 
 
 def _host_in_allowlist(host: str, rules: list[str]) -> bool:
@@ -1343,10 +1384,14 @@ def _watch_page_context(
 
 @router.get("/ui/anime/{anime_id}/watch.json", name="web_anime_watch_json")
 def web_anime_watch_json(
+    request: Request,
     anime_id: int,
     file_id: str = Query(""),
 ) -> JSONResponse:
     sdk = get_sdk()
+    if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, route="watch_json")
+        raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
     try:
         ctx = _watch_page_context(sdk, anime_id, file_id=file_id)
     except NotFoundError:
@@ -1361,6 +1406,9 @@ def web_anime_watch(
     file_id: str = "",
 ) -> HTMLResponse:
     sdk = get_sdk()
+    if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, route="watch")
+        raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
     try:
         ctx = _watch_page_context(sdk, anime_id, file_id=file_id)
     except NotFoundError:
@@ -1440,6 +1488,9 @@ def web_action_episode_progress(
     position_seconds: str = Form(""),
 ) -> Response:
     sdk = get_sdk()
+    if not _is_client_allowed_for_streaming(request, sdk):
+        _log_stream_access_denied(request, sdk, route="episode_progress")
+        raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
     pos: float | None = None
     raw_pos = str(position_seconds or "").strip()
     if raw_pos:
@@ -1742,8 +1793,9 @@ def web_action_play(
             "session_id": session_id,
             "token": token,
             "manifest_url": manifest_url,
-            "heartbeat_url": f"/ui/stream/{session_id}/heartbeat",
-            "stop_url": f"/ui/stream/{session_id}/stop",
+            "heartbeat_url": f"/ui/stream/{session_id}/heartbeat?token={token}",
+            "stop_url": f"/ui/stream/{session_id}/stop?token={token}",
+            "log_url": f"/ui/stream/{session_id}/log?token={token}",
             "expires_at": session.get("expires_at"),
             "file_title": session.get("file_title"),
             "hls_anchor_segment": session.get("hls_anchor_segment"),
@@ -1902,10 +1954,15 @@ def web_stream_segment(
 
 
 @router.post("/ui/stream/{session_id}/heartbeat", name="web_stream_heartbeat")
-def web_stream_heartbeat(request: Request, session_id: str) -> JSONResponse:
+def web_stream_heartbeat(
+    request: Request,
+    session_id: str,
+    token: str = Query(""),
+) -> JSONResponse:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    _verify_playback_token(sdk, session_id=session_id, token=token)
     try:
         payload = sdk.heartbeat_playback_session(session_id)
     except Exception as exc:  # noqa: BLE001
@@ -1922,11 +1979,16 @@ def web_stream_heartbeat(request: Request, session_id: str) -> JSONResponse:
 
 
 @router.post("/ui/stream/{session_id}/stop", name="web_stream_stop")
-def web_stream_stop(request: Request, session_id: str) -> JSONResponse:
+def web_stream_stop(
+    request: Request,
+    session_id: str,
+    token: str = Query(""),
+) -> JSONResponse:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
         _log_stream_access_denied(request, sdk, session_id=session_id, route="stop")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    _verify_playback_token(sdk, session_id=session_id, token=token)
     output_dir = _playback_output_dir(sdk, session_id)
     try:
         sdk.stop_playback_session(session_id)
@@ -1948,11 +2010,13 @@ def web_stream_stop(request: Request, session_id: str) -> JSONResponse:
 async def web_stream_player_log(
     request: Request,
     session_id: str,
+    token: str = Query(""),
 ) -> JSONResponse:
     sdk = get_sdk()
     if not _is_client_allowed_for_streaming(request, sdk):
         _log_stream_access_denied(request, sdk, session_id=session_id, route="player_log")
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
+    _verify_playback_token(sdk, session_id=session_id, token=token)
     output_dir = _playback_output_dir(sdk, session_id)
     if not output_dir:
         raise HTTPException(status_code=404, detail="Playback session not found.")

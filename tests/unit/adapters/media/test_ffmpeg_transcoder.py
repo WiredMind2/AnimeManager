@@ -11,7 +11,6 @@ from adapters.media.ffmpeg_transcoder import FFmpegTranscoderAdapter, _ActiveTra
 
 def _build(
     *,
-    subtitle_track: int | None,
     start_segment_index: int,
     segment_seconds: int = 4,
     video_encoder: str = "libx264",
@@ -23,7 +22,6 @@ def _build(
         playlist_output="/tmp/out/index.m3u8",
         output_dir="/tmp/out",
         audio_track=None,
-        subtitle_track=subtitle_track,
         start_segment_index=start_segment_index,
         segment_seconds=segment_seconds,
     )
@@ -54,7 +52,7 @@ def _output_seek_value(command: list[str]) -> str | None:
 
 
 def test_segment_zero_uses_no_seek_at_all():
-    command = _build(subtitle_track=None, start_segment_index=0)
+    command = _build(start_segment_index=0)
     assert "-ss" not in command
     assert "-copyts" not in command
     assert "-reset_timestamps" in command
@@ -62,22 +60,33 @@ def test_segment_zero_uses_no_seek_at_all():
 
 
 def test_seek_restart_does_not_reset_timestamps():
-    command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
+    command = _build(start_segment_index=10, segment_seconds=4)
     assert "-reset_timestamps" not in command
 
 
-def test_seek_with_subtitle_selection_does_not_inject_video_filter():
-    command = _build(subtitle_track=1, start_segment_index=0)
-    assert "-vf" not in command
-
-
-def test_seek_with_or_without_subtitle_selection_uses_same_input_seek():
-    plain = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
-    with_sub_choice = _build(subtitle_track=2, start_segment_index=10, segment_seconds=4)
-    assert _input_seek_value(plain) == "40"
-    assert _input_seek_value(with_sub_choice) == "40"
-    assert _output_seek_value(plain) is None
-    assert _output_seek_value(with_sub_choice) is None
+def test_build_command_ignores_legacy_subtitle_track_param():
+    """Sidecar-only: subtitle selection does not change the ffmpeg video command."""
+    adapter = FFmpegTranscoderAdapter(video_encoder="libx264")
+    plain = adapter._build_command(
+        ffmpeg_cmd="ffmpeg",
+        source_path="/tmp/sample.mkv",
+        playlist_output="/tmp/out/index.m3u8",
+        output_dir="/tmp/out",
+        audio_track=None,
+        start_segment_index=10,
+        segment_seconds=4,
+    )
+    with_sub = adapter._build_command(
+        ffmpeg_cmd="ffmpeg",
+        source_path="/tmp/sample.mkv",
+        playlist_output="/tmp/out/index.m3u8",
+        output_dir="/tmp/out",
+        audio_track=None,
+        start_segment_index=10,
+        segment_seconds=4,
+    )
+    assert plain == with_sub
+    assert "-vf" not in plain
 
 
 def _output_ts_offset_value(command: list[str]) -> str | None:
@@ -88,7 +97,7 @@ def _output_ts_offset_value(command: list[str]) -> str | None:
 
 
 def test_seek_without_subtitles_uses_input_seek_and_output_ts_offset():
-    command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
+    command = _build(start_segment_index=10, segment_seconds=4)
     assert _input_seek_value(command) == "40"
     assert _output_seek_value(command) is None
     assert "-copyts" not in command
@@ -99,20 +108,20 @@ def test_seek_without_subtitles_uses_input_seek_and_output_ts_offset():
 
 def test_seek_keyframe_expression_is_zero_based():
     """Encoder ``t`` is 0-based after input ``-ss``; absolute seek offsets delay IDRs."""
-    command = _build(subtitle_track=None, start_segment_index=10, segment_seconds=4)
+    command = _build(start_segment_index=10, segment_seconds=4)
     idx = command.index("-force_key_frames")
     assert command[idx + 1] == "expr:gte(t,n_forced*4)"
 
 
 def test_start_keyframe_expression_starts_at_zero():
-    command = _build(subtitle_track=None, start_segment_index=0, segment_seconds=4)
+    command = _build(start_segment_index=0, segment_seconds=4)
     idx = command.index("-force_key_frames")
     assert command[idx + 1] == "expr:gte(t,n_forced*4)"
     assert command[command.index("-avoid_negative_ts") + 1] == "make_zero"
 
 
 def test_command_forces_browser_compatible_h264_output():
-    command = _build(subtitle_track=None, start_segment_index=0)
+    command = _build(start_segment_index=0)
     assert "-pix_fmt" in command
     assert command[command.index("-pix_fmt") + 1] == "yuv420p"
     assert "-profile:v" in command
@@ -133,7 +142,6 @@ def test_build_command_nvenc_flags(monkeypatch):
         playlist_output="/tmp/out/index.m3u8",
         output_dir="/tmp/out",
         audio_track=None,
-        subtitle_track=None,
         start_segment_index=0,
         segment_seconds=4,
     )
@@ -190,6 +198,26 @@ def test_materialize_subtitle_tracks_extracts_vtt(monkeypatch, tmp_path: Path):
     assert rows[1].get("ass_filename") == "subtitle_001.ass"
 
 
+def test_materialize_image_subtitle_surfaces_error(monkeypatch, tmp_path: Path):
+    adapter = FFmpegTranscoderAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "probe_media_tracks",
+        lambda _src: {
+            "audio": [],
+            "subtitles": [{"id": 0, "label": "JPN", "codec": "hdmv_pgs_subtitle"}],
+        },
+    )
+
+    rows = adapter.materialize_subtitle_tracks(
+        source_path=str(tmp_path / "episode.mkv"),
+        output_dir=str(tmp_path),
+    )
+    assert len(rows) == 1
+    assert rows[0]["error"] == "image_subtitles_not_supported"
+    assert "filename" not in rows[0]
+
+
 def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
     """A third concurrent session must not fail with 'server busy'."""
     adapter = FFmpegTranscoderAdapter(max_active_sessions=2)
@@ -215,7 +243,6 @@ def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
         segment_seconds=4,
         source_path=str(tmp_path / "a.mkv"),
         audio_track=None,
-        subtitle_track=None,
     )
     adapter._active["mid"] = _ActiveTranscode(
         session_id="mid",
@@ -227,7 +254,6 @@ def test_ensure_hls_evicts_oldest_when_at_capacity(monkeypatch, tmp_path: Path):
         segment_seconds=4,
         source_path=str(tmp_path / "b.mkv"),
         audio_track=None,
-        subtitle_track=None,
     )
     (out / "index.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
     source = tmp_path / "c.mkv"

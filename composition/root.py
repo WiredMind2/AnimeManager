@@ -21,6 +21,7 @@ from adapters.persistence.user_actions_repository import UserActionsRepository
 from adapters.search.title_parser import parse_title
 from adapters.torrent.download_adapter import DownloadAdapter
 from application.playback import PlaybackService
+from application.playback.contract import SEGMENT_SECONDS, SESSION_TTL_SECONDS
 from application.services.anime_hydration import AnimeHydrationService
 from application.services.anime_service import AnimeApplicationService
 from application.services.anime_write_service import AnimeWriteService
@@ -75,7 +76,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
     )
     hydration.start()
 
-    _SEGMENT_SECONDS = 4
+    _SEGMENT_SECONDS = SEGMENT_SECONDS
     playback_cfg = deps.config.settings.get("playback", {}) or {}
     media_transcoder = FFmpegTranscoderAdapter(
         max_active_sessions=2,
@@ -85,7 +86,12 @@ def build_embedded_facade() -> EmbeddedClientFacade:
     media_streaming = PlaybackService(
         media_library=media_library,
         transcoder=media_transcoder,
+        default_ttl_seconds=SESSION_TTL_SECONDS,
         segment_seconds=_SEGMENT_SECONDS,
+    )
+    media_transcoder.set_session_hooks(
+        activity_rank=media_streaming.transcode_activity_timestamp,
+        on_evicted=media_streaming.handle_transcode_evicted,
     )
 
     service = AnimeApplicationService(

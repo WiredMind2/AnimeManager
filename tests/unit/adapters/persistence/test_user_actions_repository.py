@@ -261,6 +261,15 @@ def test_episode_progress_update_existing_row(adapter_unique):
     assert progress["ep-002"]["status"] == "IN_PROGRESS"
 
 
+def test_episode_progress_status_only_preserves_position(adapter_unique):
+    adapter, _ = adapter_unique
+    adapter.set_episode_progress(4, 1, "ep-004", "IN_PROGRESS", 708.0)
+    adapter.set_episode_progress(4, 1, "ep-004", "SEEN")
+    progress = adapter.get_episode_progress_map(4, 1)
+    assert progress["ep-004"]["status"] == "SEEN"
+    assert progress["ep-004"]["position_seconds"] == 708.0
+
+
 def test_episode_progress_delete(adapter_unique):
     adapter, _ = adapter_unique
     adapter.set_episode_progress(3, 1, "ep-003", "SEEN")

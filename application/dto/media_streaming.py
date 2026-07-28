@@ -55,8 +55,13 @@ class PlaybackSessionDTO:
     # Client resume hint (seconds); the player passes this as
     # ``Player.load(manifest, startTime)``.
     playback_start_seconds: float = 0.0
+    # Best-known client playhead (segment index), updated via heartbeat
+    # and successful segment resolves.
+    live_playhead_segment: int = 0
     # Updated whenever seek-on-demand relaunches ffmpeg.
     transcode_start_segment: int = 0
+    # Per-session TTL window (seconds); heartbeat extends ``expires_at`` by this.
+    ttl_seconds: int = 0
     extra: dict[str, str] = field(default_factory=dict)
 
 

@@ -1,5 +1,8 @@
 import { uiPost } from "@/lib/api";
 
+/** Mirrors server ``NEAR_END_RESTART_SECONDS`` in ``application/playback/contract.py``. */
+export const NEAR_END_RESTART_SECONDS = 15;
+
 export function positionKey(animeId: number, fileId: string): string {
   return animeId && fileId ? `animePlayer:${animeId}:${fileId}` : "";
 }
@@ -7,6 +10,9 @@ export function positionKey(animeId: number, fileId: string): string {
 export function clampPlaybackSeconds(seconds: number, maxSeconds?: number | null): number {
   if (!Number.isFinite(seconds) || seconds < 0) return 0;
   if (maxSeconds != null && Number.isFinite(maxSeconds) && maxSeconds > 0) {
+    if (seconds >= maxSeconds - NEAR_END_RESTART_SECONDS) {
+      return 0;
+    }
     return Math.min(seconds, maxSeconds * 1.1);
   }
   return seconds;

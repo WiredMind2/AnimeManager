@@ -1,4 +1,4 @@
-import { backendPath } from "@/lib/config";
+import { resolveBackendUrl } from "@/lib/playback/session-api";
 
 export type PlayerLogLevel = "debug" | "info" | "warn" | "error";
 
@@ -43,6 +43,7 @@ type PlayerLoggerOptions = {
   animeId: number;
   fileId?: string;
   sessionId?: string;
+  logUrl?: string;
   getVideo?: () => HTMLVideoElement | null;
 };
 
@@ -157,6 +158,7 @@ export function shakaErrorToPlain(
 
 export type PlayerLogger = {
   setSessionId: (sessionId: string) => void;
+  setLogUrl: (logUrl: string) => void;
   setFileId: (fileId: string) => void;
   log: (level: PlayerLogLevel, event: string, data?: Record<string, unknown>) => void;
   flush: () => void;
@@ -165,6 +167,7 @@ export type PlayerLogger = {
 
 export function createPlayerLogger(opts: PlayerLoggerOptions): PlayerLogger {
   let sessionId = opts.sessionId || "";
+  let logUrl = opts.logUrl || "";
   let fileId = opts.fileId || "";
   const animeId = opts.animeId;
   const getVideo = opts.getVideo;
@@ -186,11 +189,11 @@ export function createPlayerLogger(opts: PlayerLoggerOptions): PlayerLogger {
   };
 
   const flushNow = () => {
-    if (!sessionId || queue.length === 0) {
+    if (!logUrl || queue.length === 0) {
       return;
     }
+    const url = resolveBackendUrl(logUrl);
     const batch = queue.splice(0, MAX_QUEUE);
-    const url = backendPath(`/ui/stream/${encodeURIComponent(sessionId)}/log`);
     const body = JSON.stringify({ events: batch });
     try {
       if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
@@ -252,7 +255,7 @@ export function createPlayerLogger(opts: PlayerLoggerOptions): PlayerLogger {
       /* ignore */
     }
 
-    if (!sessionId || disposed) {
+    if (!logUrl || disposed) {
       return;
     }
     queue.push({
@@ -272,6 +275,12 @@ export function createPlayerLogger(opts: PlayerLoggerOptions): PlayerLogger {
         flushNow();
       }
       sessionId = next;
+    },
+    setLogUrl(next) {
+      if (logUrl && logUrl !== next) {
+        flushNow();
+      }
+      logUrl = next;
     },
     setFileId(next) {
       fileId = next;

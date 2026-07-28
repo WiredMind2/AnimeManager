@@ -123,3 +123,10 @@ def test_build_video_encode_args_amf_forces_idr() -> None:
     assert args[args.index("-c:v") + 1] == "h264_amf"
     assert args[args.index("-forced_idr") + 1] == "1"
     assert "-force_key_frames" in args
+
+
+def test_build_video_encode_args_mf_forces_idr() -> None:
+    args = build_video_encode_args("h264_mf", keyframe_expr="expr:gte(t,n_forced*4)")
+    assert args[args.index("-c:v") + 1] == "h264_mf"
+    assert args[args.index("-forced_idr") + 1] == "1"
+    assert "-force_key_frames" in args

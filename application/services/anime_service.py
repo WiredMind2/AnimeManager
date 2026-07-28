@@ -15,6 +15,7 @@ from application.commands import (
 from application.dto import EpisodeFileDTO, PlaybackSessionDTO
 from application.queries import GetPlaybackSessionQuery, ListEpisodeFilesQuery
 from application.playback import PlaybackService
+from application.playback.contract import SESSION_TTL_SECONDS
 from application.playback.file_ids import find_episode_by_file_id, progress_for_file_id
 from application.services.anime_hydration import (
     PRIORITY_PREFETCH,
@@ -966,7 +967,7 @@ class AnimeApplicationService:
         file_id: str,
         *,
         client_host: str = "",
-        ttl_seconds: int = 900,
+        ttl_seconds: int = SESSION_TTL_SECONDS,
         audio_track: int | None = None,
         subtitle_track: int | None = None,
         start_time_seconds: float | None = None,

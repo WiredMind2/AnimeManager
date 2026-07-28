@@ -312,9 +312,9 @@ class UserActionsRepository:
         status_u = str(status or "UNSEEN").upper()
         if status_u not in self._EPISODE_STATUSES:
             raise InfrastructureError(f"Invalid episode status: {status!r}")
-        if position_seconds is None:
-            pos_val = None
-        else:
+        pos_val: float | None = None
+        update_position = position_seconds is not None
+        if update_position:
             try:
                 pos_val = float(position_seconds)
             except (TypeError, ValueError):
@@ -330,12 +330,20 @@ class UserActionsRepository:
                     (anime_id, user_id, fid),
                 )
                 if existing:
-                    db.sql(
-                        "UPDATE episode_progress SET status=?, position_seconds=?, updated_at=? "
-                        "WHERE anime_id=? AND user_id=? AND file_id=?",
-                        (status_u, pos_val, now, anime_id, user_id, fid),
-                        save=True,
-                    )
+                    if update_position:
+                        db.sql(
+                            "UPDATE episode_progress SET status=?, position_seconds=?, updated_at=? "
+                            "WHERE anime_id=? AND user_id=? AND file_id=?",
+                            (status_u, pos_val, now, anime_id, user_id, fid),
+                            save=True,
+                        )
+                    else:
+                        db.sql(
+                            "UPDATE episode_progress SET status=?, updated_at=? "
+                            "WHERE anime_id=? AND user_id=? AND file_id=?",
+                            (status_u, now, anime_id, user_id, fid),
+                            save=True,
+                        )
                 else:
                     db.sql(
                         "INSERT INTO episode_progress "
