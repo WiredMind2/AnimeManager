@@ -247,12 +247,99 @@ def _humanize_size(num: Any) -> str | None:
     return f"{size:.1f} {units[idx]}"
 
 
+def _torrent_hash_key(value: Any) -> str | None:
+    token = str(value or "").strip().lower()
+    return token or None
+
+
+def _iter_overview_download_rows(overview: Any) -> list[dict[str, Any]]:
+    if not isinstance(overview, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for bucket_rows in overview.values():
+        for dl in bucket_rows or []:
+            if isinstance(dl, dict):
+                rows.append(dl)
+    return rows
+
+
+def _live_downloads_for_anime(
+    sdk: ClientSDK,
+    anime_id: int,
+    saved_hashes: set[str],
+) -> list[dict[str, Any]]:
+    """Collect live torrent rows for ``anime_id`` from overview + active list.
+
+    Overview covers seeding/completed/error buckets that
+    :meth:`get_active_downloads` omits. Active downloads remain a fallback
+    for SDKs without overview and for queued tasks not yet in the client.
+    """
+    live: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append_if_relevant(dl: dict[str, Any]) -> None:
+        h_key = _torrent_hash_key(dl.get("hash"))
+        try:
+            matches_anime = int(dl.get("anime_id") or 0) == int(anime_id)
+        except (TypeError, ValueError):
+            matches_anime = False
+        matches_saved = bool(h_key and h_key in saved_hashes)
+        if not matches_anime and not matches_saved:
+            return
+        if h_key and h_key in seen:
+            return
+        if h_key:
+            seen.add(h_key)
+        live.append(_normalize_active_download(dl))
+
+    overview_getter = getattr(sdk, "get_torrents_overview", None)
+    if callable(overview_getter):
+        try:
+            overview = overview_getter() or {}
+        except Exception:  # noqa: BLE001
+            _LOG.debug("get_torrents_overview failed during detail render", exc_info=True)
+            overview = {}
+        for dl in _iter_overview_download_rows(overview):
+            _append_if_relevant(dl)
+
+    try:
+        all_active = list(sdk.get_active_downloads() or [])
+    except Exception:  # noqa: BLE001
+        _LOG.debug("get_active_downloads failed during detail render", exc_info=True)
+        all_active = []
+    for dl in all_active:
+        if isinstance(dl, dict):
+            _append_if_relevant(dl)
+
+    return live
+
+
+def _merge_live_torrent_into_saved(
+    saved: list[dict[str, Any]],
+    live: dict[str, Any],
+) -> None:
+    h_key = _torrent_hash_key(live.get("hash"))
+    if h_key:
+        for row in saved:
+            if _torrent_hash_key(row.get("hash")) != h_key:
+                continue
+            # Live data always wins over a stale DELETED row
+            # (e.g. re-download before status was cleared in the DB).
+            if str(row.get("state") or "").upper() == "DELETED":
+                row.pop("status", None)
+            row.update({k: v for k, v in live.items() if v is not None})
+            if row.get("size") is not None:
+                row["size_human"] = _humanize_size(row.get("size"))
+            return
+    saved.insert(0, live)
+
+
 def _collect_anime_torrents(sdk: ClientSDK, anime_id: int) -> list[dict[str, Any]]:
-    """Return the union of saved + in-flight torrents for ``anime_id``.
+    """Return the union of saved + live torrents for ``anime_id``.
 
     The detail page surfaces both the "Downloaded episodes" library
-    (persisted torrent metadata) and any task currently making progress
-    for the same anime, so the user always sees a single accurate list.
+    (persisted torrent metadata) and live client state (active, seeding,
+    completed) for the same anime, so Size/Progress/State stay accurate.
     Missing SDK methods or backend errors degrade to an empty list --
     every other section on the page is independent.
     """
@@ -267,35 +354,13 @@ def _collect_anime_torrents(sdk: ClientSDK, anime_id: int) -> list[dict[str, Any
         for row in raw:
             saved.append(_normalize_anime_torrent_row(row))
 
-    actives: list[dict[str, Any]] = []
-    try:
-        all_active = list(sdk.get_active_downloads() or [])
-    except Exception:  # noqa: BLE001
-        _LOG.debug("get_active_downloads failed during detail render", exc_info=True)
-        all_active = []
-    for dl in all_active:
-        if not isinstance(dl, dict):
-            continue
-        try:
-            if int(dl.get("anime_id") or 0) != int(anime_id):
-                continue
-        except (TypeError, ValueError):
-            continue
-        actives.append(_normalize_active_download(dl))
-
-    seen_hashes = {row["hash"] for row in saved if row.get("hash")}
-    for active in actives:
-        if active.get("hash") and active["hash"] in seen_hashes:
-            for row in saved:
-                if row.get("hash") == active["hash"]:
-                    # An active download always wins over a stale DELETED row
-                    # (e.g. re-download before status was cleared in the DB).
-                    if str(row.get("state") or "").upper() == "DELETED":
-                        row.pop("status", None)
-                    row.update({k: v for k, v in active.items() if v is not None})
-                    break
-            continue
-        saved.insert(0, active)
+    saved_hashes = {
+        key
+        for key in (_torrent_hash_key(row.get("hash")) for row in saved)
+        if key
+    }
+    for live in _live_downloads_for_anime(sdk, anime_id, saved_hashes):
+        _merge_live_torrent_into_saved(saved, live)
 
     return saved
 
@@ -319,6 +384,10 @@ def _normalize_anime_torrent_row(row: Any) -> dict[str, Any]:
     persisted_status = str(data.get("status") or "").lower()
     if persisted_status == "deleted":
         data["state"] = "DELETED"
+        return data
+    if persisted_status == "complete":
+        data["state"] = "COMPLETE"
+        data["progress"] = 1.0
         return data
     state = (data.get("state") or "").upper() or None
     size = data.get("size") or 0

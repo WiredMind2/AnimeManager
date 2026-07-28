@@ -18,6 +18,7 @@ const ACTIVE_TORRENT_STATES = new Set([
   "allocating",
   "queued",
   "queued_for_checking",
+  "queuedup",
   "pauseddl",
 ]);
 
@@ -33,6 +34,17 @@ export function isActiveTorrentState(state?: string | null): boolean {
 export function isPausedTorrentState(state?: string | null): boolean {
   const token = normalizeTorrentStateToken(state);
   return token === "pauseddl" || token === "pausedup" || token.startsWith("paused");
+}
+
+/** True when the torrent is waiting in the auto-managed download/seed queue. */
+export function isQueuedTorrentState(state?: string | null): boolean {
+  const token = normalizeTorrentStateToken(state);
+  return (
+    token === "queueddl" ||
+    token === "queuedup" ||
+    token === "queued" ||
+    token === "queued_for_checking"
+  );
 }
 
 /** Return progress as 0–100 percent, or null when not applicable. */
@@ -62,6 +74,22 @@ export type DownloadActivityDetail = {
 
 export const DOWNLOAD_STARTED_EVENT = "am:download-started";
 export const DOWNLOAD_ACTIVITY_CHANGED_EVENT = "am:download-activity-changed";
+export const LIBRARY_TORRENT_DELETED_EVENT = "am:library-torrent-deleted";
+
+export type LibraryTorrentDeletedDetail = {
+  animeId: number;
+  hash: string;
+};
+
+export function dispatchLibraryTorrentDeleted(
+  detail: LibraryTorrentDeletedDetail,
+): void {
+  window.dispatchEvent(
+    new CustomEvent<LibraryTorrentDeletedDetail>(LIBRARY_TORRENT_DELETED_EVENT, {
+      detail,
+    }),
+  );
+}
 
 export function dispatchDownloadActivityChanged(detail: DownloadActivityDetail): void {
   window.dispatchEvent(

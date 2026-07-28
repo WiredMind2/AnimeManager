@@ -183,7 +183,7 @@ export default function DownloadedEpisodesTable({
       prev.map((t) => (t.hash === hash ? { ...t, state: "DELETED", progress: t.progress } : t)),
     );
     try {
-      const result = await api.deleteDownloadByHash(hash);
+      const result = await api.deleteAnimeTorrent(animeId, hash);
       if (!result.deleted) {
         setTorrents(snapshot);
         showToast("Could not delete torrent.", "error");
@@ -192,9 +192,14 @@ export default function DownloadedEpisodesTable({
       dispatchLibraryTorrentDeleted({ animeId, hash });
       dispatchDownloadActivityChanged({ animeId, active: false });
       await refresh();
-    } catch {
+    } catch (err) {
       setTorrents(snapshot);
-      showToast("Failed to delete torrent. Please try again.", "error");
+      const detail =
+        err && typeof err === "object" && "status" in err
+          ? ` (${String((err as { status?: unknown }).status)})`
+          : "";
+      console.error("deleteAnimeTorrent failed", err);
+      showToast(`Failed to delete torrent${detail}. Please try again.`, "error");
     }
   }
 
