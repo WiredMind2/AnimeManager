@@ -59,6 +59,7 @@ from domain.policies.schedule_recency import (  # noqa: E402
     filter_recent_schedule_records,
     is_recent_schedule_start,
     schedule_recency_cutoff_ts,
+    schedule_recency_horizon_ts,
 )
 from domain.policies.season import (  # noqa: E402
     AIRING_SEASONS,
@@ -98,6 +99,7 @@ __all__ = [
     "normalize_search_query",
     "normalize_top_category",
     "schedule_recency_cutoff_ts",
+    "schedule_recency_horizon_ts",
     "season_date_range",
     "top_category_spec",
     "validate_season_year",

@@ -22,23 +22,33 @@ def schedule_recency_cutoff_ts(
     return int(current.timestamp()) - int(window_days) * _SECONDS_PER_DAY
 
 
+def schedule_recency_horizon_ts(
+    *,
+    window_days: int = 90,
+    now: datetime | None = None,
+) -> int:
+    """Return the latest Unix timestamp that still qualifies as recent."""
+    current = now or datetime.now(timezone.utc)
+    return int(current.timestamp()) + int(window_days) * _SECONDS_PER_DAY
+
+
 def is_recent_schedule_start(
     date_from: int | None,
     *,
     window_days: int = 90,
     now: datetime | None = None,
 ) -> bool:
-    """True when ``date_from`` fell within the last ``window_days`` (inclusive)."""
+    """True when ``date_from`` is within ``window_days`` of now (past or future)."""
     if date_from is None:
         return False
     current = now or datetime.now(timezone.utc)
-    now_ts = int(current.timestamp())
     cutoff = schedule_recency_cutoff_ts(window_days=window_days, now=current)
+    horizon = schedule_recency_horizon_ts(window_days=window_days, now=current)
     try:
         start = int(date_from)
     except (TypeError, ValueError):
         return False
-    return cutoff <= start <= now_ts
+    return cutoff <= start <= horizon
 
 
 def filter_recent_schedule_records(
@@ -48,7 +58,7 @@ def filter_recent_schedule_records(
     limit: int,
     now: datetime | None = None,
 ) -> list[_T]:
-    """Keep recent rows, newest ``date_from`` first, capped at ``limit``."""
+    """Keep recent/upcoming rows, newest ``date_from`` first, capped at ``limit``."""
     recent = [
         record
         for record in records
