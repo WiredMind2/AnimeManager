@@ -372,8 +372,10 @@ class TestSaveTorrent:
         mgr.log = _silent_logger
         db = _FakeDB()
         db.sql_responses = {
-            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)": [(0,)],
-            "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)": [(0,)],
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (0,)
+            ],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(0,)],
         }
         mgr.set_database(db)
         torrent = SimpleNamespace(
@@ -393,8 +395,10 @@ class TestSaveTorrent:
         mgr.log = _silent_logger
         db = _FakeDB()
         db.sql_responses = {
-            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)": [(0,)],
-            "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)": [(0,)],
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (0,)
+            ],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(0,)],
         }
         mgr.set_database(db)
         torrent = SimpleNamespace(hash="x", name="n", trackers=None)
@@ -408,8 +412,10 @@ class TestSaveTorrent:
         mgr.log = _silent_logger
         db = _FakeDB()
         db.sql_responses = {
-            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND value=?)": [(1,)],
-            "SELECT EXISTS(SELECT 1 FROM torrents WHERE hash=?)": [(1,)],
+            "SELECT EXISTS(SELECT 1 FROM torrentsIndex WHERE id=? AND LOWER(value)=LOWER(?))": [
+                (1,)
+            ],
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(1,)],
         }
         mgr.set_database(db)
         torrent = SimpleNamespace(hash="x", name="n", trackers=[])
@@ -426,6 +432,20 @@ class TestSaveTorrent:
         torrent = SimpleNamespace(hash="x", name="n", trackers=[])
         with pytest.raises(RuntimeError):
             mgr.save_torrent(1, torrent)
+
+    def test_update_torrent_save_path_does_not_insert(self, DatabaseManager):
+        mgr = DatabaseManager()
+        mgr.log = _silent_logger
+        db = _FakeDB()
+        db.sql_responses = {
+            "SELECT EXISTS(SELECT 1 FROM torrents WHERE LOWER(hash)=LOWER(?))": [(0,)],
+        }
+        mgr.set_database(db)
+        mgr.update_torrent_save_path("deadbeef", "/data/Animes/Show - 1")
+        inserts = [c for c in db.sql_calls if "INSERT INTO torrents" in c[0]]
+        updates = [c for c in db.sql_calls if "UPDATE torrents SET save_path" in c[0]]
+        assert not inserts
+        assert not updates
 
     def test_get_torrent_data_returns_first_row(self, DatabaseManager):
         mgr = DatabaseManager()

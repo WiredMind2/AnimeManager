@@ -32,9 +32,10 @@ from shared.utils.folder_names import (
     format_anime_folder_name,
     match_anime_folder_names,
 )
-from adapters.persistence.models import Magnet, Torrent
+from adapters.persistence.models import Magnet, Torrent, canonicalize_infohash
 
 _INFOHASH_RE = re.compile(r"xt=urn:btih:([A-Za-z0-9]+)", re.IGNORECASE)
+_ANIME_FOLDER_ID_RE = re.compile(r" - (\d+)$")
 
 
 @dataclass(slots=True)
@@ -131,8 +132,7 @@ class DownloadManager(BaseComponent):
 
     @staticmethod
     def _normalize_infohash(value: Optional[str]) -> Optional[str]:
-        text = str(value or "").strip().lower()
-        return text or None
+        return canonicalize_infohash(value)
 
     @classmethod
     def _hash_from_magnet(cls, url: Optional[str]) -> Optional[str]:
@@ -142,7 +142,23 @@ class DownloadManager(BaseComponent):
         if not text.lower().startswith("magnet:"):
             return None
         match = _INFOHASH_RE.search(text)
-        return match.group(1).lower() if match else None
+        if not match:
+            return None
+        return cls._normalize_infohash(match.group(1))
+
+    @classmethod
+    def _anime_id_from_save_path(cls, path: Optional[str]) -> Optional[int]:
+        """Parse ``.../<Title> - <anime_id>`` from a torrent save path."""
+        if not path:
+            return None
+        folder = os.path.basename(os.path.normpath(str(path).strip()))
+        match = _ANIME_FOLDER_ID_RE.search(folder)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
 
     def _resolve_download_hash(
         self, url: Optional[str], hash_value: Optional[str]
@@ -742,6 +758,29 @@ class DownloadManager(BaseComponent):
             name = self._extract_torrent_field(data, "name")
             if not name and task is not None:
                 name = task.name
+            path = self._extract_torrent_field(data, "path")
+
+            # Self-heal orphans whose save_path is an anime library folder.
+            if anime_id is None:
+                inferred = self._anime_id_from_save_path(
+                    str(path) if path else None
+                )
+                if inferred is not None:
+                    if self._ensure_torrent_index(
+                        inferred,
+                        h_lower,
+                        name=str(name) if name else None,
+                        save_path=str(path) if path else None,
+                    ):
+                        anime_id = inferred
+                        anime_map[h_lower] = inferred
+                        if inferred not in title_map and db_manager is not None:
+                            try:
+                                extra = db_manager.get_anime_titles([inferred]) or {}
+                                title_map.update(extra)
+                            except Exception:
+                                pass
+
             if not name and anime_id is not None:
                 name = title_map.get(anime_id) or f"Anime #{anime_id}"
             if not name:
@@ -752,7 +791,6 @@ class DownloadManager(BaseComponent):
             if up_speed is None:
                 up_speed = self._extract_torrent_field(data, "upload_rate")
             eta = self._extract_torrent_field(data, "eta")
-            path = self._extract_torrent_field(data, "path")
 
             row: Dict[str, Any] = {
                 "hash": h_lower,
@@ -1564,12 +1602,24 @@ class DownloadManager(BaseComponent):
                     task.size = int(size_hint)
 
             folder_path = self._get_anime_folder(task.anime_id)
-            self._save_torrent(
+            if not folder_path:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"No anime folder for {task.anime_id}; aborting download",
+                )
+                task.status_queue.put(False)
+                return
+
+            # Persist index before touching the torrent client so a failed
+            # DB write never leaves an unassociated live torrent.
+            if not self._save_torrent(
                 task.anime_id,
                 torrent,
                 save_path=folder_path,
                 source=getattr(task, "source", None),
-            )
+            ):
+                task.status_queue.put(False)
+                return
 
             if task.user_id:
                 self._set_user_tag(task.anime_id, task.user_id)
@@ -1666,17 +1716,72 @@ class DownloadManager(BaseComponent):
         *,
         save_path: Optional[str] = None,
         source: Optional[str] = None,
-    ) -> None:
-        """Persist torrent metadata through the injected DatabaseManager."""
+    ) -> bool:
+        """Persist torrent metadata through the injected DatabaseManager.
+
+        Returns ``False`` when persistence fails so the caller can abort
+        before adding the torrent to the client.
+        """
         db_manager = self._database_manager
         if db_manager is None:
-            return
+            self.log(
+                "DOWNLOAD_MANAGER",
+                "No database manager; refusing to start unindexed download",
+            )
+            return False
+        canonical = self._normalize_infohash(getattr(torrent, "hash", None))
+        if canonical:
+            try:
+                torrent.hash = canonical
+            except Exception:
+                pass
+        if not canonical:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                "Torrent has no infohash; refusing to start unindexed download",
+            )
+            return False
         try:
             db_manager.save_torrent(
                 anime_id, torrent, save_path=save_path, source=source
             )
+            return True
         except Exception as exc:
             self.log("DOWNLOAD_MANAGER", f"Error saving torrent: {exc}")
+            return False
+
+    def _ensure_torrent_index(
+        self,
+        anime_id: int,
+        hash_value: Optional[str],
+        *,
+        name: Optional[str] = None,
+        save_path: Optional[str] = None,
+        trackers: Optional[Any] = None,
+    ) -> bool:
+        """Backfill ``torrentsIndex`` for a client-reported hash."""
+        key = self._normalize_infohash(hash_value)
+        if not key:
+            return False
+        db_manager = self._database_manager
+        ensure = getattr(db_manager, "ensure_torrent_index", None) if db_manager else None
+        if not callable(ensure):
+            return False
+        try:
+            ensure(
+                anime_id,
+                key,
+                name=name,
+                save_path=save_path,
+                trackers=trackers,
+            )
+            return True
+        except Exception as exc:
+            self.log(
+                "DOWNLOAD_MANAGER",
+                f"Error ensuring torrent index for {key}: {exc}",
+            )
+            return False
 
     def _set_user_tag(self, anime_id: int, user_id: int) -> None:
         """Promote library tag to ``WATCHING`` when a download is tied to a user."""
@@ -1691,6 +1796,7 @@ class DownloadManager(BaseComponent):
                 "DOWNLOAD_MANAGER",
                 f"Watching-tag callback failed for anime {anime_id}: {exc}",
             )
+
     def _start_download(self, anime_id: int, torrent: Torrent) -> bool:
         """
         Start the actual download.
@@ -1706,22 +1812,47 @@ class DownloadManager(BaseComponent):
             if not self._torrent_manager or not hasattr(torrent, "to_magnet"):
                 return False
 
-            torrent_hash = self._normalize_infohash(getattr(torrent, "hash", None))
-            if torrent_hash and self._lookup_live_torrent(torrent_hash) is not None:
-                self.log(
-                    "DOWNLOAD_MANAGER",
-                    f"Torrent {torrent_hash} already in client; skipping add",
-                )
-                return True
-
             folder_path = self._get_anime_folder(anime_id)
             if not folder_path:
                 return False
+
+            torrent_hash = self._normalize_infohash(getattr(torrent, "hash", None))
+            torrent_name = getattr(torrent, "name", None)
+            torrent_trackers = getattr(torrent, "trackers", None)
+
+            if torrent_hash and self._lookup_live_torrent(torrent_hash) is not None:
+                self.log(
+                    "DOWNLOAD_MANAGER",
+                    f"Torrent {torrent_hash} already in client; ensuring index",
+                )
+                self._ensure_torrent_index(
+                    anime_id,
+                    torrent_hash,
+                    name=torrent_name,
+                    save_path=folder_path,
+                    trackers=torrent_trackers,
+                )
+                return True
 
             torrents = self._torrent_manager.add([torrent.to_magnet()], path=folder_path)
 
             if torrents:
                 self._move_torrents_to_folder(torrents, folder_path)
+                for entry in torrents:
+                    client_hash = None
+                    client_name = torrent_name
+                    if isinstance(entry, dict):
+                        client_hash = entry.get("hash")
+                        client_name = entry.get("name") or client_name
+                    elif hasattr(entry, "hash"):
+                        client_hash = getattr(entry, "hash", None)
+                    self._ensure_torrent_index(
+                        anime_id,
+                        client_hash or torrent_hash,
+                        name=client_name,
+                        save_path=folder_path,
+                        trackers=torrent_trackers,
+                    )
 
             return bool(torrents)
 
