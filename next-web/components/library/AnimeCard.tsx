@@ -99,7 +99,7 @@ export default function AnimeCard({ item }: AnimeCardProps) {
       <span className="card__meta">
         {item.episodes ? <span>{item.episodes} ep</span> : null}
         {item.duration ? <span>{item.duration} min</span> : null}
-        {item.unwatched_count != null ? (
+        {item.unwatched_count != null && item.unwatched_count > 0 ? (
           <span>{item.unwatched_count} unwatched</span>
         ) : null}
         {item.episodes_left != null ? (
