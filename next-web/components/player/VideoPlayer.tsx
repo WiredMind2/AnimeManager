@@ -214,8 +214,24 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
             <media-loading-indicator slot="centered-chrome" />
             <media-control-bar>
               <media-play-button />
-              <media-seek-backward-button seek-offset="10" />
-              <media-seek-forward-button seek-offset="10" />
+              <button
+                type="button"
+                className="watch-view__seek-btn"
+                aria-label="Seek backward 10 seconds"
+                title="Back 10 seconds"
+                onClick={() => seekByAbsoluteDelta(-10)}
+              >
+                −10s
+              </button>
+              <button
+                type="button"
+                className="watch-view__seek-btn"
+                aria-label="Seek forward 10 seconds"
+                title="Forward 10 seconds"
+                onClick={() => seekByAbsoluteDelta(10)}
+              >
+                +10s
+              </button>
               <media-time-range />
               <media-time-display show-duration="" />
               <media-mute-button />

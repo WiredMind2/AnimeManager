@@ -243,20 +243,3 @@ describe("shouldStartHeartbeatAfterLoad", () => {
     ).toBe(false);
   });
 });
-
-describe("shouldStartHeartbeatAfterLoad", () => {
-  it("is exported from load-pipeline", async () => {
-    const { shouldStartHeartbeatAfterLoad } = await import("./load-pipeline");
-    expect(shouldStartHeartbeatAfterLoad({ ok: true, player: {} as never, subtitleState: {} as never })).toBe(
-      true,
-    );
-    expect(
-      shouldStartHeartbeatAfterLoad({
-        ok: false,
-        aborted: false,
-        message: "fail",
-        shouldStopSession: true,
-      }),
-    ).toBe(false);
-  });
-});
