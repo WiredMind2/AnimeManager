@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnimePicture } from "@/lib/api";
+import CoverImage from "@/components/CoverImage";
 import { useDialogBehavior } from "@/lib/use-dialog";
 import "./AnimePictureGallery.css";
 
@@ -87,7 +88,7 @@ export default function AnimePictureGallery({ pictures, title }: AnimePictureGal
           }}
           aria-label="View full-size image"
         >
-          <img src={hero} alt={heroAlt} referrerPolicy="no-referrer" />
+          <CoverImage src={hero} alt={heroAlt} referrerPolicy="no-referrer" />
         </div>
       ) : null}
 
@@ -101,7 +102,7 @@ export default function AnimePictureGallery({ pictures, title }: AnimePictureGal
           >
             {pic.url ? (
               <span className="detail__gallery-thumb-media">
-                <img
+                <CoverImage
                   src={pic.url}
                   alt={pic.size ? `${altBase} (${pic.size})` : altBase}
                   loading="lazy"
@@ -151,7 +152,7 @@ export default function AnimePictureGallery({ pictures, title }: AnimePictureGal
                     ‹
                   </button>
                 ) : null}
-                <img src={hero} alt={heroAlt} referrerPolicy="no-referrer" />
+                <CoverImage src={hero} alt={heroAlt} referrerPolicy="no-referrer" />
                 {sorted.length > 1 ? (
                   <button
                     type="button"

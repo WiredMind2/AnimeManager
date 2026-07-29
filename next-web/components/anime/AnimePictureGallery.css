@@ -1,4 +1,5 @@
 .detail__gallery-hero {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -63,6 +64,7 @@
 }
 
 .detail__gallery-thumb-media {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;

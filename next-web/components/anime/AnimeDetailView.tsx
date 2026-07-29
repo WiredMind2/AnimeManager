@@ -22,6 +22,7 @@ import DownloadedEpisodesTable from "./DownloadedEpisodesTable";
 import EpisodePlayerTable from "./EpisodePlayerTable";
 import TorrentSearchSection from "./TorrentSearchSection";
 import { useCoverSrc } from "@/lib/covers/use-cover-src";
+import CoverImage from "@/components/CoverImage";
 
 type AnimeDetailViewProps = {
   anime: AnimeItem;
@@ -110,7 +111,7 @@ export default function AnimeDetailView({
       <section className="detail">
         <div className="detail__poster" ref={posterRef}>
           {coverSrc ? (
-            <img
+            <CoverImage
               src={coverSrc}
               alt={anime.title}
               referrerPolicy="no-referrer"

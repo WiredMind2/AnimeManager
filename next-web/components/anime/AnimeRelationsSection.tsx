@@ -11,6 +11,7 @@ import {
   type RelationTimelineEntry,
 } from "@/lib/relations";
 import { useCoverSrc } from "@/lib/covers/use-cover-src";
+import CoverImage from "@/components/CoverImage";
 
 const POLL_INTERVAL_MS = 2500;
 const MAX_POLL_ATTEMPTS = 15;
@@ -33,11 +34,16 @@ function RelationPoster({ entry }: { entry: RelationTimelineEntry }) {
   return (
     <div className="detail__relation-poster" ref={posterRef}>
       {coverSrc ? (
-        <img
+        <CoverImage
           src={coverSrc}
           alt=""
           loading="lazy"
           referrerPolicy="no-referrer"
+          fallback={
+            <div className="detail__relation-poster-empty" aria-hidden="true">
+              {entry.title.slice(0, 2)}
+            </div>
+          }
         />
       ) : (
         <div className="detail__relation-poster-empty" aria-hidden="true">
