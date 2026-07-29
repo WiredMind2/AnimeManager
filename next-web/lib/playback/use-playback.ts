@@ -33,6 +33,8 @@ import {
 } from "@/lib/playback/load-pipeline";
 import {
   createSessionRecovery,
+  isRecentUserSeek,
+  shouldFullSessionReplay,
   type RecoveryReason,
   type SessionRecoveryController,
 } from "@/lib/playback/recovery";
@@ -139,6 +141,7 @@ export function usePlayback(
   const progressReporterRef = useRef(createProgressReporter(animeId));
   const lastSaneCurrentTimeRef = useRef(0);
   const userSeekingRef = useRef(false);
+  const lastUserSeekAtRef = useRef<number | null>(null);
   const timelineRecoveringRef = useRef(false);
 
   const anchorProgressOpts = useCallback(
@@ -487,6 +490,7 @@ export function usePlayback(
       segmentSecondsRef.current = segmentSeconds;
       lastSaneCurrentTimeRef.current = loadStartTime;
       userSeekingRef.current = false;
+      lastUserSeekAtRef.current = null;
       timelineRecoveringRef.current = false;
 
       const resumePlayback = loadStartTime > 0;
@@ -514,8 +518,19 @@ export function usePlayback(
           logger: {
             log: (level, event, data) => playerLoggerRef.current?.log(level, event, data),
           },
-          onScheduleRecovery: (reason: RecoveryReason) => {
-            sessionRecoveryRef.current?.schedule(reason);
+          onScheduleRecovery: (reason: RecoveryReason, meta?: { uri?: string }) => {
+            if (reason === "scrub_rejected") {
+              playerLoggerRef.current?.log("warn", "scrub_rejected", {
+                uri: meta?.uri ?? null,
+                user_seeking: userSeekingRef.current,
+                last_user_seek_at: lastUserSeekAtRef.current,
+                current_time: video.currentTime,
+              });
+              return;
+            }
+            if (shouldFullSessionReplay(reason)) {
+              sessionRecoveryRef.current?.schedule(reason);
+            }
           },
           onExplicitError: (error) => {
             explicitPlaybackErrorRef.current = error;
@@ -529,6 +544,10 @@ export function usePlayback(
             shakaAttachInProgressRef.current = inProgress;
           },
           getPlaybackToken: () => playbackTokenRef.current,
+          getSeekContext: () => ({
+            userSeeking: userSeekingRef.current,
+            lastUserSeekAtMs: lastUserSeekAtRef.current,
+          }),
         },
       });
 
@@ -640,8 +659,13 @@ export function usePlayback(
 
     const onTimeupdate = () => {
       const t = Number(video.currentTime || 0);
+      const recentUserSeek = isRecentUserSeek({
+        userSeeking: userSeekingRef.current,
+        lastUserSeekAtMs: lastUserSeekAtRef.current,
+      });
       if (
         !timelineRecoveringRef.current &&
+        !recentUserSeek &&
         shouldRecoverTimelineJump({
           currentTime: t,
           lastSaneTime: lastSaneCurrentTimeRef.current,
@@ -656,6 +680,8 @@ export function usePlayback(
           reported_current_time: t,
           recovered_to: snapTo,
           known_duration: streamDurationRef.current,
+          user_seeking: userSeekingRef.current,
+          recent_user_seek: recentUserSeek,
         });
         return;
       }
@@ -668,9 +694,11 @@ export function usePlayback(
     const onSeeking = () => {
       if (timelineRecoveringRef.current) return;
       userSeekingRef.current = true;
+      lastUserSeekAtRef.current = Date.now();
     };
     const onSeeked = () => {
       const t = Number(video.currentTime || 0);
+      lastUserSeekAtRef.current = Date.now();
       if (timelineRecoveringRef.current) {
         timelineRecoveringRef.current = false;
         if (Number.isFinite(t)) lastSaneCurrentTimeRef.current = t;

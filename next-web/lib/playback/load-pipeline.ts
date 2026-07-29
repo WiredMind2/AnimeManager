@@ -7,9 +7,10 @@ import {
   type SubtitleState,
 } from "@/lib/playback/subtitles";
 import {
+  classifyStreamRecovery,
   isRecoverableShakaError,
-  isRecoverableStreamResponse,
   type RecoveryReason,
+  type SeekContext,
 } from "@/lib/playback/recovery";
 import {
   buildShakaConfig,
@@ -24,7 +25,7 @@ export type LoadPipelineLogger = {
 export type LoadPipelineCallbacks = {
   markPhase: (phase: LoadPhase | string, extra?: Record<string, unknown>) => void;
   logger: LoadPipelineLogger;
-  onScheduleRecovery: (reason: RecoveryReason) => void;
+  onScheduleRecovery: (reason: RecoveryReason, meta?: { uri?: string }) => void;
   onExplicitError: (error: { kind: string; message: string; code?: string | number | null }) => void;
   setStatus: (status: string) => void;
   setError: (message: string) => void;
@@ -34,6 +35,8 @@ export type LoadPipelineCallbacks = {
   onAttachProgress?: (inProgress: boolean) => void;
   /** Latest HMAC session token for stream request URLs. */
   getPlaybackToken?: () => string;
+  /** Active or recent user seek state for scrub-vs-stale classification. */
+  getSeekContext?: () => SeekContext;
 };
 
 export type ShakaLoadInput = {
@@ -103,8 +106,9 @@ export function registerStreamTokenRequestFilter(
 
 export function registerStreamRecoveryFilter(
   player: { getNetworkingEngine?: () => { registerResponseFilter?: (fn: unknown) => void } | null },
-  onRecovery: (reason: RecoveryReason) => void,
+  onRecovery: (reason: RecoveryReason, meta?: { uri?: string }) => void,
   logger: LoadPipelineLogger,
+  getSeekContext?: () => SeekContext,
 ): void {
   try {
     const net = player.getNetworkingEngine?.();
@@ -112,10 +116,15 @@ export function registerStreamRecoveryFilter(
     net.registerResponseFilter(
       (_type: unknown, response: { uri?: string; code?: number; data?: ArrayBuffer }) => {
         if (!response?.uri) return;
-        const reason = isRecoverableStreamResponse(String(response.uri), response.code ?? 0);
+        const uri = String(response.uri);
+        const reason = classifyStreamRecovery(
+          uri,
+          response.code ?? 0,
+          getSeekContext?.(),
+        );
         if ((response.code ?? 0) >= 400) {
           const logPayload: Record<string, unknown> = {
-            uri: String(response.uri),
+            uri,
             status: response.code,
           };
           if (response.code === 404 && response.data) {
@@ -127,7 +136,7 @@ export function registerStreamRecoveryFilter(
           }
           logger.log("warn", "stream_http_error", logPayload);
         }
-        if (reason) onRecovery(reason);
+        if (reason) onRecovery(reason, { uri });
       },
     );
   } catch {
@@ -203,7 +212,12 @@ export async function runShakaLoadPipeline(input: ShakaLoadInput): Promise<Shaka
     player.configure(buildShakaConfig(resumePlayback) as Record<string, unknown>);
     markPhase("shaka_configured", { generation });
 
-    registerStreamRecoveryFilter(player, onScheduleRecovery, logger);
+    registerStreamRecoveryFilter(
+      player,
+      onScheduleRecovery,
+      logger,
+      callbacks.getSeekContext,
+    );
     registerStreamTokenRequestFilter(player, () => callbacks.getPlaybackToken?.() || "");
 
     markPhase("shaka_attach_start", { generation });
@@ -263,7 +277,7 @@ export async function runShakaLoadPipeline(input: ShakaLoadInput): Promise<Shaka
       );
       setStatus("Playback error.");
 
-      const recoveryReason = isRecoverableShakaError(detail?.code, errData);
+      const recoveryReason = isRecoverableShakaError(detail?.code, errData, callbacks.getSeekContext?.());
       if (recoveryReason) onScheduleRecovery(recoveryReason);
     });
 
