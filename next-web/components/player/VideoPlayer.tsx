@@ -3,6 +3,11 @@
 import Script from "next/script";
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import {
+  installAnchoredMediaChromeStore,
+  type AnchorBridgeConfig,
+  type MediaControllerHost,
+} from "@/lib/playback/media-chrome-anchor";
+import {
   toAbsoluteSourceSeconds,
   toManifestRelativeSeconds,
 } from "@/lib/playback/progress";
@@ -15,11 +20,6 @@ export type VideoPlayerProps = {
   videoRef: RefObject<HTMLVideoElement | null>;
   panelRef: RefObject<HTMLDivElement | null>;
   session: PlaybackSession;
-};
-
-type MediaControllerElement = HTMLElement & {
-  mediaDuration?: number;
-  mediaCurrentTime?: number;
 };
 
 export default function VideoPlayer({ animeId, videoRef, panelRef, session }: VideoPlayerProps) {
@@ -39,7 +39,20 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
     segmentSeconds,
   } = session;
 
-  const prevElementTimeRef = useRef(0);
+  const anchorConfigRef = useRef<AnchorBridgeConfig>({
+    hlsAnchorSegment,
+    segmentSeconds,
+    streamDurationSeconds,
+  });
+  anchorConfigRef.current = {
+    hlsAnchorSegment,
+    segmentSeconds,
+    streamDurationSeconds,
+  };
+
+  const mediaStoreRef = useRef<{
+    dispatch: (action: { type: string; detail?: unknown }) => void;
+  } | null>(null);
 
   const anchorOpts = useCallback(
     () => ({
@@ -71,64 +84,44 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
     [anchorOpts, elementTimeFromAbsolute, videoRef],
   );
 
-  // Drive media-chrome from absolute episode time; pin duration for EVENT/Infinity.
   useEffect(() => {
-    const video = videoRef.current;
-    const controller = panelRef.current?.querySelector("media-controller") as
-      | MediaControllerElement
-      | null;
-    if (!video || !controller) {
-      return;
+    let cancelled = false;
+
+    async function setupAnchoredStore() {
+      await customElements.whenDefined("media-controller");
+      if (cancelled) return;
+
+      const video = videoRef.current;
+      const controller = panelRef.current?.querySelector(
+        "media-controller",
+      ) as MediaControllerHost | null;
+      if (!video || !controller) return;
+
+      controller.setAttribute("nodefaultstore", "");
+      const store = await installAnchoredMediaChromeStore(
+        controller,
+        video,
+        () => anchorConfigRef.current,
+      );
+      if (!cancelled) {
+        mediaStoreRef.current = store;
+      }
     }
 
-    const syncTimeline = () => {
-      const t = Number(video.currentTime || 0);
-      prevElementTimeRef.current = t;
-
-      if (streamDurationSeconds && streamDurationSeconds > 0) {
-        const reportedDuration = video.duration;
-        const shouldPin =
-          !Number.isFinite(reportedDuration) ||
-          reportedDuration <= 0 ||
-          reportedDuration > streamDurationSeconds * 1.2;
-        if (shouldPin) {
-          controller.mediaDuration = streamDurationSeconds;
-        }
-      }
-
-      controller.mediaCurrentTime = toAbsoluteSourceSeconds(t, anchorOpts());
-    };
-
-    const remapScrubberSeek = () => {
-      const t = Number(video.currentTime || 0);
-      const prev = prevElementTimeRef.current;
-      const remapped = elementTimeFromAbsolute(t, prev);
-      if (Math.abs(remapped - t) > 0.01) {
-        video.currentTime = remapped;
-      }
-      prevElementTimeRef.current = Number(video.currentTime || 0);
-    };
-
-    syncTimeline();
-    video.addEventListener("timeupdate", syncTimeline);
-    video.addEventListener("durationchange", syncTimeline);
-    video.addEventListener("loadedmetadata", syncTimeline);
-    video.addEventListener("seeking", remapScrubberSeek);
-    video.addEventListener("seeked", syncTimeline);
+    void setupAnchoredStore();
     return () => {
-      video.removeEventListener("timeupdate", syncTimeline);
-      video.removeEventListener("durationchange", syncTimeline);
-      video.removeEventListener("loadedmetadata", syncTimeline);
-      video.removeEventListener("seeking", remapScrubberSeek);
-      video.removeEventListener("seeked", syncTimeline);
+      cancelled = true;
+      mediaStoreRef.current = null;
     };
-  }, [
-    anchorOpts,
-    elementTimeFromAbsolute,
-    panelRef,
-    streamDurationSeconds,
-    videoRef,
-  ]);
+  }, [panelRef, videoRef]);
+
+  useEffect(() => {
+    if (!streamDurationSeconds || streamDurationSeconds <= 0) return;
+    mediaStoreRef.current?.dispatch({
+      type: "optionschangerequest",
+      detail: { defaultDuration: streamDurationSeconds },
+    });
+  }, [streamDurationSeconds]);
 
   // Keyboard shortcuts on the player host, matching the legacy web UI:
   // Space/k play-pause, ←/→ seek ±10s, m mute, f fullscreen.
@@ -198,6 +191,7 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         <div className="player-panel__video-wrap watch-view__video-wrap">
           <media-controller
             className="watch-view__controller"
+            {...({ nodefaultstore: "" } as Record<string, string>)}
             {...(streamDurationSeconds && streamDurationSeconds > 0
               ? { defaultduration: streamDurationSeconds }
               : {})}
