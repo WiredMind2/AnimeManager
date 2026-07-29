@@ -7,6 +7,8 @@ thin compatibility shim that re-exports from here.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from application.commands import (
     CreatePlaybackSessionCommand,
     HeartbeatPlaybackSessionCommand,
@@ -494,7 +496,62 @@ class AnimeApplicationService:
             user_id=request.user_id,
         )
         self._prefetch_metadata(items)
+        if (
+            str(request.filter or "").upper() == "WATCHING"
+            and request.user_id is not None
+            and self._media_streaming is not None
+        ):
+            items = [
+                self._enrich_watching_counts(item, int(request.user_id))
+                for item in items
+            ]
         return AnimeListResponse(items=items, has_next=has_next)
+
+    def _enrich_watching_counts(
+        self, entity: AnimeEntity, user_id: int
+    ) -> AnimeEntity:
+        unwatched, left = self._watching_episode_counts(
+            entity.id, user_id, entity.episodes
+        )
+        return replace(
+            entity,
+            unwatched_count=unwatched,
+            episodes_left=left,
+        )
+
+    def _watching_episode_counts(
+        self,
+        anime_id: int,
+        user_id: int,
+        catalog_episodes: int | None,
+    ) -> tuple[int, int | None]:
+        """Return ``(unwatched_count, episodes_left)`` for a watching-list card.
+
+        ``unwatched_count`` is on-disk files not marked ``SEEN``.
+        ``episodes_left`` is catalog remaining when metadata episodes are known.
+        """
+        if self._media_streaming is None:
+            return 0, None
+        refs = self._media_streaming.list_local_episode_refs(anime_id)
+        progress = self._user_actions_port.get_episode_progress_map(anime_id, user_id)
+        seen = 0
+        unwatched = 0
+        for ref in refs:
+            p = progress_for_file_id(progress, ref.file_id)
+            st = str(p.get("status") or "UNSEEN").upper()
+            if st == "SEEN":
+                seen += 1
+            else:
+                unwatched += 1
+        left: int | None = None
+        if catalog_episodes is not None:
+            try:
+                total = int(catalog_episodes)
+            except (TypeError, ValueError):
+                total = 0
+            if total > 0:
+                left = max(0, total - seen)
+        return unwatched, left
 
     def get_anime_details(self, anime_id: int) -> AnimeDetailsResult:
         anime_id = int(anime_id)
