@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useRef, type MouseEvent } from "react";
 import type { AnimeItem } from "@/lib/api";
 import { useCoverSrc } from "@/lib/covers/use-cover-src";
+import CoverImage from "@/components/CoverImage";
 
 const STATUS_DOT: Record<string, string> = {
   AIRING: "dot--airing",
@@ -47,6 +48,9 @@ export default function AnimeCard({ item }: AnimeCardProps) {
   const tag = (item.tag || "NONE").toUpperCase();
   const title = displayTitle(item);
   const posterFallback = truncateTitle(title || "?");
+  const emptyPoster = (
+    <div className="card__poster-empty">{posterFallback}</div>
+  );
 
   function openTorrentSearch(event: MouseEvent) {
     event.preventDefault();
@@ -67,21 +71,15 @@ export default function AnimeCard({ item }: AnimeCardProps) {
     >
       <div className="card__poster" ref={posterRef}>
         {coverSrc ? (
-          <img
+          <CoverImage
             src={coverSrc}
             alt={item.title ?? ""}
             loading="lazy"
             referrerPolicy="no-referrer"
-            onError={(e) => {
-              const img = e.currentTarget;
-              const div = document.createElement("div");
-              div.className = "card__poster-empty";
-              div.textContent = posterFallback;
-              img.replaceWith(div);
-            }}
+            fallback={emptyPoster}
           />
         ) : (
-          <div className="card__poster-empty">{posterFallback}</div>
+          emptyPoster
         )}
 
         <span className="card__status" title={statusLabel}>

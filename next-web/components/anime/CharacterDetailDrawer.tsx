@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, type AnimeCharacter, type AnimeCharacterDetail } from "@/lib/api";
+import CoverImage from "@/components/CoverImage";
 import { useDialogBehavior } from "@/lib/use-dialog";
 
 type CharacterDetailDrawerProps = {
@@ -73,7 +74,7 @@ export default function CharacterDetailDrawer({
         <div className="drawer__body">
           {character.picture ? (
             <div className="drawer__portrait">
-              <img
+              <CoverImage
                 src={character.picture}
                 alt={character.name || "Character"}
                 referrerPolicy="no-referrer"

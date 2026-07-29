@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { api, type AnimeCharacter } from "@/lib/api";
+import CoverImage from "@/components/CoverImage";
 import CharacterDetailDrawer from "./CharacterDetailDrawer";
 
 type AnimeCharactersSectionProps = {
@@ -78,11 +79,14 @@ export default function AnimeCharactersSection({
             >
               <div className="detail__character-avatar">
                 {character.picture ? (
-                  <img
+                  <CoverImage
                     src={character.picture}
                     alt={character.name || "Character"}
                     loading="lazy"
                     referrerPolicy="no-referrer"
+                    fallback={
+                      <span>{(character.name || "?").charAt(0)}</span>
+                    }
                   />
                 ) : (
                   <span>{(character.name || "?").charAt(0)}</span>
