@@ -13,9 +13,9 @@ MIN_RESUME_SECONDS = 10.0
 # "finished" unsticks those episodes and matches normal video-app semantics.
 NEAR_END_RESTART_SECONDS = 15.0
 
-# Incomplete EVENT manifests only advertise this many segments past the
-# encode/playhead head. Stops Shaka from probing the fictional live edge
-# of a fully-listed-but-unencoded playlist (which yanked ffmpeg mid-resume).
+# Bootstrap window for EVENT manifests before any segment exists on disk.
+# Once encoding starts, ``playlist.event_manifest_end_index`` uses
+# ``PREFETCH_MARGIN`` past the latest on-disk segment instead.
 EVENT_MANIFEST_LOOKAHEAD = 15
 
 # Refuse seek-on-demand ffmpeg restarts more than this many segments ahead of

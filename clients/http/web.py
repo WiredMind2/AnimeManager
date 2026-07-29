@@ -2070,7 +2070,7 @@ def web_stream_segment(
 
 
 @router.post("/ui/stream/{session_id}/heartbeat", name="web_stream_heartbeat")
-def web_stream_heartbeat(
+async def web_stream_heartbeat(
     request: Request,
     session_id: str,
     token: str = Query(""),
@@ -2079,8 +2079,28 @@ def web_stream_heartbeat(
     if not _is_client_allowed_for_streaming(request, sdk):
         raise HTTPException(status_code=403, detail="Playback is limited to trusted LAN clients.")
     _verify_playback_token(sdk, session_id=session_id, token=token)
+    position_seconds: float | None = None
+    content_type = (request.headers.get("content-type") or "").lower()
+    if content_type.startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Invalid JSON body.") from exc
+        if isinstance(body, dict) and "position_seconds" in body:
+            raw = body.get("position_seconds")
+            if raw is not None:
+                try:
+                    position_seconds = float(raw)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="position_seconds must be a number.",
+                    ) from exc
     try:
-        payload = sdk.heartbeat_playback_session(session_id)
+        payload = sdk.heartbeat_playback_session(
+            session_id,
+            position_seconds=position_seconds,
+        )
     except Exception as exc:  # noqa: BLE001
         code, msg = _map_error(exc)
         raise HTTPException(status_code=code, detail=msg) from exc

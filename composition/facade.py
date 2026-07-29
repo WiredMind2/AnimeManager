@@ -397,8 +397,16 @@ class EmbeddedClientFacade:
     def get_playback_session(self, session_id: str):
         return self._service.get_playback_session(session_id)
 
-    def heartbeat_playback_session(self, session_id: str):
-        return self._service.heartbeat_playback_session(session_id)
+    def heartbeat_playback_session(
+        self,
+        session_id: str,
+        *,
+        position_seconds: float | None = None,
+    ):
+        return self._service.heartbeat_playback_session(
+            session_id,
+            position_seconds=position_seconds,
+        )
 
     def stop_playback_session(self, session_id: str) -> None:
         self._service.stop_playback_session(session_id)

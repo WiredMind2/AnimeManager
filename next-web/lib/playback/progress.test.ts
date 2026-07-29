@@ -4,6 +4,7 @@ import {
   NEAR_END_RESTART_SECONDS,
   shouldRecoverTimelineJump,
   toAbsoluteSourceSeconds,
+  toManifestRelativeSeconds,
 } from "./progress";
 
 describe("clampPlaybackSeconds", () => {
@@ -33,6 +34,74 @@ describe("toAbsoluteSourceSeconds", () => {
         maxSeconds: 1422,
       }),
     ).toBe(anchorSource);
+  });
+});
+
+describe("toManifestRelativeSeconds", () => {
+  const anchor = 175;
+  const segSecs = 4;
+  const anchorSource = anchor * segSecs;
+
+  it("round-trips manifest-relative element time through absolute space", () => {
+    const element = 2;
+    const absolute = toAbsoluteSourceSeconds(element, {
+      hlsAnchorSegment: anchor,
+      segmentSeconds: segSecs,
+      maxSeconds: 1422,
+    });
+    expect(absolute).toBe(anchorSource + element);
+    expect(
+      toManifestRelativeSeconds(absolute, {
+        hlsAnchorSegment: anchor,
+        segmentSeconds: segSecs,
+        currentVideoSeconds: element,
+      }),
+    ).toBe(element);
+  });
+
+  it("maps absolute seeks while playback is manifest-relative", () => {
+    expect(
+      toManifestRelativeSeconds(712, {
+        hlsAnchorSegment: anchor,
+        segmentSeconds: segSecs,
+        currentVideoSeconds: 2,
+      }),
+    ).toBe(12);
+    expect(
+      toManifestRelativeSeconds(692, {
+        hlsAnchorSegment: anchor,
+        segmentSeconds: segSecs,
+        currentVideoSeconds: 2,
+      }),
+    ).toBe(0);
+  });
+
+  it("maps absolute seeks while playback is in absolute element space", () => {
+    expect(
+      toManifestRelativeSeconds(690, {
+        hlsAnchorSegment: anchor,
+        segmentSeconds: segSecs,
+        currentVideoSeconds: anchorSource,
+      }),
+    ).toBe(690);
+    expect(
+      toManifestRelativeSeconds(anchorSource, {
+        hlsAnchorSegment: anchor,
+        segmentSeconds: segSecs,
+        currentVideoSeconds: anchorSource,
+      }),
+    ).toBe(anchorSource);
+  });
+
+  it("passes through when there is no anchor", () => {
+    expect(
+      toManifestRelativeSeconds(120, {
+        hlsAnchorSegment: 0,
+        segmentSeconds: segSecs,
+        maxSeconds: 1422,
+        currentVideoSeconds: 120,
+      }),
+    ).toBe(120);
   });
 });
 

@@ -1101,9 +1101,19 @@ class AnimeApplicationService:
         media = self._require_media_streaming()
         return media.get_session(session_id)
 
-    def heartbeat_playback_session(self, session_id: str) -> PlaybackSessionDTO:
+    def heartbeat_playback_session(
+        self,
+        session_id: str,
+        *,
+        position_seconds: float | None = None,
+    ) -> PlaybackSessionDTO:
         media = self._require_media_streaming()
-        return media.heartbeat(HeartbeatPlaybackSessionCommand(session_id=session_id))
+        return media.heartbeat(
+            HeartbeatPlaybackSessionCommand(
+                session_id=session_id,
+                position_seconds=position_seconds,
+            )
+        )
 
     def stop_playback_session(self, session_id: str) -> None:
         media = self._require_media_streaming()

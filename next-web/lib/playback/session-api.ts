@@ -75,6 +75,8 @@ export type HeartbeatOptions = {
   onSessionLost?: (reason: "heartbeat_404") => void;
   /** Called when heartbeat returns a refreshed session token. */
   onTokenRefresh?: (token: string) => void;
+  /** Absolute source seconds for server playhead sync (optional). */
+  getPositionSeconds?: () => number;
 };
 
 /** Replace or append ``token=`` on a playback URL. */
@@ -100,10 +102,19 @@ export function startHeartbeat(
   options: HeartbeatOptions = {},
 ): () => void {
   if (!heartbeatUrl) return () => {};
-  const { onSessionLost, onTokenRefresh } = options;
+  const { onSessionLost, onTokenRefresh, getPositionSeconds } = options;
   let currentUrl = heartbeatUrl;
   const id = setInterval(() => {
-    fetch(resolveBackendUrl(currentUrl), { method: "POST", credentials: "include" })
+    const positionSeconds = getPositionSeconds?.();
+    const init: RequestInit = {
+      method: "POST",
+      credentials: "include",
+    };
+    if (positionSeconds != null && Number.isFinite(positionSeconds)) {
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify({ position_seconds: positionSeconds });
+    }
+    fetch(resolveBackendUrl(currentUrl), init)
       .then(async (response) => {
         if (response.status === 404) {
           onSessionLost?.("heartbeat_404");

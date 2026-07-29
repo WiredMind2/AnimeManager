@@ -319,8 +319,8 @@ class FakeSDK:
         }
         return dict(self._playback_sessions[sid])
 
-    def heartbeat_playback_session(self, session_id: str):
-        self._record("heartbeat_playback_session", session_id)
+    def heartbeat_playback_session(self, session_id: str, *, position_seconds: float | None = None):
+        self._record("heartbeat_playback_session", session_id, position_seconds=position_seconds)
         session = self._playback_sessions.get(session_id)
         if not session:
             from domain.errors import NotFoundError
@@ -1610,6 +1610,24 @@ def test_stream_heartbeat_and_stop_endpoints(client):
     assert hb.status_code == 200
     stop = client.post(f"/ui/stream/{session_id}/stop", params={"token": token})
     assert stop.status_code == 200
+
+
+def test_stream_heartbeat_forwards_position_seconds(client):
+    created = client.post("/ui/anime/1/play", data={"file_id": "ep-001"}).json()
+    token = created["token"]
+    session_id = created["session_id"]
+    hb = client.post(
+        f"/ui/stream/{session_id}/heartbeat",
+        params={"token": token},
+        json={"position_seconds": 400.5},
+    )
+    assert hb.status_code == 200
+    fake: FakeSDK = client.fake  # type: ignore[attr-defined]
+    assert fake.calls[-1] == (
+        "heartbeat_playback_session",
+        ("sess-1",),
+        {"position_seconds": 400.5},
+    )
 
 
 def test_stream_heartbeat_requires_token(client):

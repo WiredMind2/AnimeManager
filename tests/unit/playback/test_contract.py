@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from application.commands import CreatePlaybackSessionCommand
-from application.playback.contract import PREFETCH_MARGIN, SEGMENT_SECONDS
-from application.playback.playlist import render_manifest
+from application.playback.contract import EVENT_MANIFEST_LOOKAHEAD, PREFETCH_MARGIN, SEGMENT_SECONDS
+from application.playback.playlist import event_manifest_end_index, render_manifest
 from application.playback.resume import anchor_segment, clamp_resume_seconds, resume_segment_index
 from application.playback.service import PlaybackService
 from application.dto import PlaybackSessionDTO
@@ -140,6 +140,63 @@ def test_manifest_has_no_ext_x_start_and_sliding_event_window(tmp_path: Path):
     assert "segment_00015.ts" in text
     assert "segment_00032.ts" not in text
     assert "#EXT-X-ENDLIST" not in text
+
+
+def _minimal_session(tmp_path: Path, **overrides) -> PlaybackSessionDTO:
+    defaults = {
+        "session_id": "s",
+        "anime_id": 1,
+        "file_id": "ep-1",
+        "file_title": "Ep",
+        "manifest_path": str(tmp_path / "index.m3u8"),
+        "output_dir": str(tmp_path),
+        "token": "t",
+        "expires_at": 0.0,
+        "created_at": 0.0,
+        "last_seen_at": 0.0,
+        "duration_seconds": 1422.0,
+        "segment_seconds": 4,
+        "total_segments": 356,
+    }
+    defaults.update(overrides)
+    return PlaybackSessionDTO(**defaults)
+
+
+def test_event_manifest_end_clamps_to_latest_not_playhead(tmp_path: Path):
+    session = _minimal_session(
+        tmp_path,
+        live_playhead_segment=100,
+        transcode_start_segment=31,
+        hls_anchor_segment=175,
+    )
+    end = event_manifest_end_index(session, latest=177, total=356, anchor=175)
+    assert end == 177 + PREFETCH_MARGIN
+    assert end != 177 + EVENT_MANIFEST_LOOKAHEAD
+
+
+def test_event_manifest_end_bootstrap_without_segments(tmp_path: Path):
+    session = _minimal_session(
+        tmp_path,
+        duration_seconds=130.0,
+        total_segments=33,
+        hls_anchor_segment=0,
+    )
+    end = event_manifest_end_index(session, latest=-1, total=33, anchor=0)
+    assert end == EVENT_MANIFEST_LOOKAHEAD
+
+
+def test_render_manifest_clamps_to_encoded_segments(tmp_path: Path):
+    for index in range(175, 178):
+        (tmp_path / f"segment_{index:05d}.ts").write_bytes(b"seg")
+    session = _minimal_session(
+        tmp_path,
+        live_playhead_segment=100,
+        hls_anchor_segment=175,
+    )
+    text = render_manifest(session)
+    assert "segment_00177.ts" in text
+    assert f"segment_{177 + PREFETCH_MARGIN:05d}.ts" in text
+    assert f"segment_{100 + EVENT_MANIFEST_LOOKAHEAD:05d}.ts" not in text
 
 
 def test_complete_manifest_lists_full_vod_timeline(tmp_path: Path):
