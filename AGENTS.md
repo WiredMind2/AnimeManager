@@ -424,14 +424,13 @@ Resolved by `DownloadManager._get_anime_folder()`.
 
 ### Startup pipeline ([`application/services/startup_jobs.py`](application/services/startup_jobs.py))
 
-Order:
+Phased so HTTP can listen before heavy work:
 
-1. `repair_date_from`
-2. `repair_duplicate_anime`
-3. `fetch_latest_anime`
-4. `update_status`
-5. `reconcile_deleted_torrents` — via download adapter (before LibTorrent restore)
-6. `restore_libtorrent_sessions` — `LibTorrent.ensure_restored()` when active
+1. **Migrations (immediate):** `repair_date_from`, `purge_provisional_anime`
+2. **Torrent-critical (~5s settle):** `purge_deleted_torrents` → `reconcile_deleted_torrents` → `restore_libtorrent_sessions`
+3. **Deferred maintenance (~60s from pipeline start):** `reconcile_seen_anime_torrents`, `repair_torrent_index`, `consolidate_duplicate_anime_folders`
+
+Schedule ingest (`fetch_latest_anime` / `update_status`) runs on `AM-ScheduleRefresh` after a ~90s startup delay (not in the boot job list). Auto-download still waits 60s before its first pass.
 
 ### Download API
 

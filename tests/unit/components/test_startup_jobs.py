@@ -6,6 +6,7 @@ The pipeline must:
 * persist the deduplicated batch through the database manager,
 * run subsequent jobs even when an earlier job throws,
 * report per-job outcomes so callers can introspect failures.
+* defer schedule ingest and disk-heavy maintenance off the critical boot path.
 """
 
 from __future__ import annotations
@@ -149,13 +150,22 @@ def _build_service(api, db, *, settings=None) -> StartupJobsService:
     )
 
 
+@pytest.fixture(autouse=True)
+def _fast_startup_settles(monkeypatch):
+    """Keep unit tests fast; settle delays are covered by dedicated tests."""
+    monkeypatch.setattr(StartupJobsService, "_CRITICAL_SETTLE_S", 0.0)
+    monkeypatch.setattr(StartupJobsService, "_MAINTENANCE_SETTLE_S", 0.0)
+    monkeypatch.setattr(StartupJobsService, "_INTER_JOB_YIELD_S", 0.0)
+    monkeypatch.setattr(StartupJobsService, "_SCHEDULE_STARTUP_DELAY_S", 0.0)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 def test_startup_pipeline_runs_lean_jobs_only():
-    """Heavy backlog jobs must not run on every boot."""
+    """Heavy backlog and schedule ingest must not run on every boot."""
     api = _FakeAPI([])
     db = _RecordingDBManager()
     service = _build_service(api, db)
@@ -168,16 +178,16 @@ def test_startup_pipeline_runs_lean_jobs_only():
     assert names == [
         "repair_date_from",
         "purge_provisional_anime",
-        "fetch_latest_anime",
-        "update_status",
         "purge_deleted_torrents",
-        "reconcile_seen_anime_torrents",
         "reconcile_deleted_torrents",
         "restore_libtorrent_sessions",
+        "reconcile_seen_anime_torrents",
         "repair_torrent_index",
         "consolidate_duplicate_anime_folders",
     ]
-    assert report.total == 10
+    assert report.total == 8
+    assert "fetch_latest_anime" not in names
+    assert "update_status" not in names
     assert db.enrich_calls == []
 
 
@@ -203,15 +213,12 @@ def test_fetch_latest_persists_deduped_batch():
     db = _RecordingDBManager()
     service = _build_service(api, db)
     try:
-        report = service.run()
+        report = service.run_schedule_refresh()
     finally:
         service._api_coordinator.close()
 
     assert isinstance(report, StartupJobReport)
-    # Lean pipeline runs reconcile_deleted_torrents before
-    # restore_libtorrent_sessions. ``repair_date_from`` is skipped cleanly
-    # here because ``_RecordingDBManager.get_database()`` returns ``None``.
-    assert report.total == 10
+    assert report.total == 2
     fetch = next(o for o in report.outcomes if o.name == "fetch_latest_anime")
     assert fetch.ok is True
     # The DB sink should have received exactly the deduped batch once.
@@ -232,7 +239,7 @@ def test_partial_provider_failure_still_succeeds():
     db = _RecordingDBManager()
     service = _build_service(api, db)
     try:
-        report = service.run()
+        report = service.run_schedule_refresh()
     finally:
         service._api_coordinator.close()
 
@@ -249,7 +256,7 @@ def test_no_providers_yields_skipped_outcome():
     db = _RecordingDBManager()
     service = _build_service(api, db)
     try:
-        report = service.run()
+        report = service.run_schedule_refresh()
     finally:
         service._api_coordinator.close()
 
@@ -265,7 +272,7 @@ def test_one_failing_job_does_not_abort_pipeline():
     db = _RecordingDBManager()
     service = _build_service(api, db)
     try:
-        # Replace the job iterator with one that throws first, then
+        # Replace the migration phase with one that throws first, then
         # produces a healthy job. The service is expected to record the
         # failure and still run the trailing job.
         ran = []
@@ -274,7 +281,9 @@ def test_one_failing_job_does_not_abort_pipeline():
             yield StartupJob("explode", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
             yield StartupJob("succeed", lambda: ran.append("ok") or "ok")
 
-        service._jobs = jobs  # type: ignore[assignment]
+        service._migration_jobs = jobs  # type: ignore[assignment]
+        service._critical_jobs = lambda: ()  # type: ignore[assignment]
+        service._deferred_jobs = lambda: ()  # type: ignore[assignment]
         report = service.run()
     finally:
         service._api_coordinator.close()
@@ -309,13 +318,29 @@ def test_run_in_background_is_idempotent_while_thread_alive():
     api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
     db = _RecordingDBManager()
     service = _build_service(api, db)
+    gate = threading.Event()
+
+    def _blocking_migration():
+        yield StartupJob("hold", lambda: gate.wait(timeout=2.0) or "ok")
+
+    service._migration_jobs = _blocking_migration  # type: ignore[assignment]
+    service._critical_jobs = lambda: ()  # type: ignore[assignment]
+    service._deferred_jobs = lambda: ()  # type: ignore[assignment]
     try:
         thread1 = service.run_in_background(daemon=True)
+        # Wait until the pipeline is actually running so the second kickoff
+        # hits the alive-thread branch (settles are zeroed in unit tests).
+        for _ in range(50):
+            if service.is_running:
+                break
+            time.sleep(0.01)
         thread2 = service.run_in_background(daemon=True)
         assert thread1 is thread2
+        gate.set()
         thread1.join(timeout=10.0)
         assert not thread1.is_alive()
     finally:
+        gate.set()
         service._api_coordinator.close()
 
 
@@ -420,20 +445,22 @@ def test_purge_deleted_torrents_job_runs_before_restore():
     try:
         names = [job.name for job in service._jobs()]
         assert names.index("purge_deleted_torrents") < names.index(
-            "reconcile_seen_anime_torrents"
-        )
-        assert names.index("reconcile_seen_anime_torrents") < names.index(
             "reconcile_deleted_torrents"
         )
         assert names.index("reconcile_deleted_torrents") < names.index(
             "restore_libtorrent_sessions"
         )
         assert names.index("restore_libtorrent_sessions") < names.index(
+            "reconcile_seen_anime_torrents"
+        )
+        assert names.index("reconcile_seen_anime_torrents") < names.index(
             "repair_torrent_index"
         )
         assert names.index("repair_torrent_index") < names.index(
             "consolidate_duplicate_anime_folders"
         )
+        assert "fetch_latest_anime" not in names
+        assert "update_status" not in names
         detail = service._job_purge_deleted_torrents()
     finally:
         coord.close()
@@ -498,7 +525,7 @@ def test_schedule_timeout_clamped_to_daily_minimum():
     assert timeout_s == StartupJobsService._SCHEDULE_MIN_INTERVAL_S
 
 
-def test_startup_skips_fetch_when_last_schedule_is_recent():
+def test_schedule_refresh_skips_fetch_when_last_schedule_is_recent():
     api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
     db = _RecordingDBManager()
     service = _build_service(
@@ -507,7 +534,7 @@ def test_startup_skips_fetch_when_last_schedule_is_recent():
         settings={"lastSchedule": int(time.time())},
     )
     try:
-        report = service.run()
+        report = service.run_schedule_refresh()
     finally:
         service._api_coordinator.close()
 
@@ -670,6 +697,97 @@ def test_schedule_loop_sleep_is_bounded(settings, expect_max):
     assert 60.0 <= sleep_s <= expect_max
 
 
+def test_schedule_loop_sleeps_before_first_refresh(monkeypatch):
+    """AM-ScheduleRefresh must not compete with boot on the first tick."""
+    api = _FakeAPI([_FakeProvider("A", [_anime_like(1)])])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    refresh_calls: list[str] = []
+    waited: list[float] = []
+
+    monkeypatch.setattr(
+        StartupJobsService,
+        "_SCHEDULE_STARTUP_DELAY_S",
+        0.05,
+    )
+    monkeypatch.setattr(
+        service,
+        "run_schedule_refresh",
+        lambda: refresh_calls.append("refresh") or StartupJobReport(),
+    )
+    original_wait = service._schedule_loop_stop.wait
+
+    def _tracking_wait(timeout=None):
+        waited.append(float(timeout) if timeout is not None else -1.0)
+        if len(waited) == 1:
+            # First call is the startup settle; let it expire.
+            return original_wait(timeout=timeout)
+        # Second call is the daily sleep; stop the loop.
+        service._schedule_loop_stop.set()
+        return True
+
+    monkeypatch.setattr(service._schedule_loop_stop, "wait", _tracking_wait)
+
+    try:
+        thread = service.start_schedule_loop(daemon=True)
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+    finally:
+        service.stop_schedule_loop()
+        service._api_coordinator.close()
+
+    assert waited and waited[0] == pytest.approx(0.05)
+    assert refresh_calls == ["refresh"]
+
+
+def test_startup_phases_settle_before_critical_and_deferred(monkeypatch):
+    """Critical jobs wait ~5s; deferred wait until ~60s from pipeline start."""
+    api = _FakeAPI([])
+    db = _RecordingDBManager()
+    service = _build_service(api, db)
+    settles: list[float] = []
+    phase_order: list[str] = []
+
+    monkeypatch.setattr(StartupJobsService, "_CRITICAL_SETTLE_S", 5.0)
+    monkeypatch.setattr(StartupJobsService, "_MAINTENANCE_SETTLE_S", 60.0)
+    monkeypatch.setattr(
+        service,
+        "_settle",
+        lambda seconds: settles.append(float(seconds)),
+    )
+
+    def _migration():
+        phase_order.append("migration")
+        yield StartupJob("migration", lambda: "ok")
+
+    def _critical():
+        phase_order.append("critical")
+        yield StartupJob("critical", lambda: "ok")
+
+    def _deferred():
+        phase_order.append("deferred")
+        yield StartupJob("deferred", lambda: "ok")
+
+    service._migration_jobs = _migration  # type: ignore[assignment]
+    service._critical_jobs = _critical  # type: ignore[assignment]
+    service._deferred_jobs = _deferred  # type: ignore[assignment]
+
+    try:
+        report = service.run()
+    finally:
+        service._api_coordinator.close()
+
+    assert [o.name for o in report.outcomes] == [
+        "migration",
+        "critical",
+        "deferred",
+    ]
+    assert phase_order == ["migration", "critical", "deferred"]
+    assert settles[0] == pytest.approx(5.0)
+    # Remaining maintenance settle is ~60s minus elapsed (near 60 with fast fakes).
+    assert settles[1] == pytest.approx(60.0, abs=1.0)
+
+
 def test_backfill_title_synonyms_hydrates_missing_rows():
     class _BackfillDB:
         def __init__(self):
@@ -742,4 +860,3 @@ def test_run_one_tolerates_proxy_db_without_counters():
     assert len(report.outcomes) == 1
     assert report.outcomes[0].ok is True
     assert report.outcomes[0].detail == "ok"
-

@@ -77,23 +77,32 @@ class StartupJobsService:
     ``UpdateUtils.updateAllProgression`` chain. It fans the work across
     short, well-scoped jobs that each survive their own errors.
 
-    Jobs run on startup (lean pipeline):
+    Jobs run in phases so HTTP/API traffic can settle before heavy work:
 
-    * ``repair_date_from`` -- one-shot ordinal date migration (skipped
-      after ``startup_migrations.repair_date_from``).
-    * ``fetch_latest_anime`` -- pull the current season / trending
-      lists from every metadata provider that exposes a ``schedule``
-      endpoint (at most once per :attr:`_SCHEDULE_MIN_INTERVAL_S`).
-    * ``update_status`` -- transition stale lifecycle rows
-      (``UPCOMING`` / ``AIRING``) based on airing dates.
-    * ``purge_deleted_torrents`` -- remove resume artifacts for DB-
-      deleted torrents before session restore.
-    * ``reconcile_deleted_torrents`` -- mark completed torrents whose
-      files are missing as ``deleted`` (before LibTorrent restore).
-    * ``restore_libtorrent_sessions`` -- restore embedded LibTorrent
-      torrents after missing-file reconcile.
-    * ``consolidate_duplicate_anime_folders`` -- merge on-disk library
-      folders that share the same trailing anime id (title-change splits).
+    1. **Migrations (immediate)**
+       * ``repair_date_from`` -- one-shot ordinal date migration
+       * ``purge_provisional_anime`` -- drop provisional catalog rows
+
+    2. **Torrent-critical** (after :attr:`_CRITICAL_SETTLE_S`)
+       * ``purge_deleted_torrents`` -- remove resume artifacts for
+         DB-deleted torrents before session restore
+       * ``reconcile_deleted_torrents`` -- mark completed torrents whose
+         files are missing as ``deleted`` (before LibTorrent restore)
+       * ``restore_libtorrent_sessions`` -- restore embedded LibTorrent
+         torrents after missing-file reconcile
+
+    3. **Deferred maintenance** (after :attr:`_MAINTENANCE_SETTLE_S`
+       from pipeline start)
+       * ``reconcile_seen_anime_torrents`` -- clean torrents/folders for
+         SEEN anime
+       * ``repair_torrent_index`` -- repair unindexed library torrents
+       * ``consolidate_duplicate_anime_folders`` -- merge on-disk folders
+         that share the same trailing anime id
+
+    Schedule ingest (``fetch_latest_anime`` / ``update_status``) is owned
+    by the daily schedule refresh loop, which itself sleeps
+    :attr:`_SCHEDULE_STARTUP_DELAY_S` before the first tick so it does not
+    compete with boot.
 
     Heavy backlog work (catalog enrichment, synonym backfill, duplicate
     repair) is intentionally **not** run here; it is handled by post-
@@ -117,6 +126,15 @@ class StartupJobsService:
     _SCHEDULE_SLEEP_MAX_S = 7 * 86_400
     _AUTO_DOWNLOAD_INTERVAL_S = 30 * 60
     _AUTO_DOWNLOAD_STARTUP_DELAY_S = 60
+
+    # Let HTTP listen / first probes win before torrent-critical jobs.
+    _CRITICAL_SETTLE_S = 5.0
+    # Defer disk-heavy maintenance until the app has been up a minute.
+    _MAINTENANCE_SETTLE_S = 60.0
+    # Schedule loop sleeps first so provider ingest does not race boot.
+    _SCHEDULE_STARTUP_DELAY_S = 90.0
+    # Brief yield between jobs so request/DB threads can interleave.
+    _INTER_JOB_YIELD_S = 0.25
 
     def __init__(
         self,
@@ -159,7 +177,7 @@ class StartupJobsService:
         return self._running
 
     def run(self) -> StartupJobReport:
-        """Execute every startup job in order. Always returns a report."""
+        """Execute every startup job in phased order. Always returns a report."""
         with self._lock:
             if self._running:
                 # Defensive: a second concurrent invocation would race
@@ -173,8 +191,13 @@ class StartupJobsService:
         report = StartupJobReport()
         total_start = time.perf_counter()
         try:
-            for job in self._jobs():
-                self._run_one(job, report)
+            self._run_phase(self._migration_jobs(), report)
+            self._settle(self._CRITICAL_SETTLE_S)
+            self._run_phase(self._critical_jobs(), report)
+            elapsed = time.perf_counter() - total_start
+            remaining = max(0.0, float(self._MAINTENANCE_SETTLE_S) - elapsed)
+            self._settle(remaining)
+            self._run_phase(self._deferred_jobs(), report)
         finally:
             report.elapsed_ms = int(
                 (time.perf_counter() - total_start) * 1000
@@ -367,6 +390,12 @@ class StartupJobsService:
                 break
 
     def _schedule_loop_worker(self) -> None:
+        # Sleep first so provider ingest does not compete with HTTP boot
+        # or the torrent-critical startup phase.
+        if self._schedule_loop_stop.wait(
+            timeout=self._SCHEDULE_STARTUP_DELAY_S
+        ):
+            return
         while not self._schedule_loop_stop.is_set():
             try:
                 self.run_schedule_refresh()
@@ -440,6 +469,29 @@ class StartupJobsService:
                 f"Failed persisting lastSchedule: {type(exc).__name__}: {exc}"
             )
 
+    def _settle(self, seconds: float) -> None:
+        """Block for ``seconds`` so HTTP / request threads can run."""
+        delay = max(0.0, float(seconds))
+        if delay <= 0.0:
+            return
+        time.sleep(delay)
+
+    def _yield_between_jobs(self) -> None:
+        delay = max(0.0, float(self._INTER_JOB_YIELD_S))
+        if delay <= 0.0:
+            return
+        time.sleep(delay)
+
+    def _run_phase(
+        self, jobs: Iterable[StartupJob], report: StartupJobReport
+    ) -> None:
+        first = True
+        for job in jobs:
+            if not first:
+                self._yield_between_jobs()
+            first = False
+            self._run_one(job, report)
+
     def _run_one(
         self, job: StartupJob, report: StartupJobReport
     ) -> None:
@@ -492,25 +544,15 @@ class StartupJobsService:
                 f"{type(exc).__name__}: {exc}"
             )
 
-    def _jobs(self) -> Iterable[StartupJob]:
+    def _migration_jobs(self) -> Iterable[StartupJob]:
         yield StartupJob("repair_date_from", self._job_repair_date_from)
         yield StartupJob(
             "purge_provisional_anime", self._job_purge_provisional_anime
         )
-        if self._should_fetch_schedule():
-            yield StartupJob("fetch_latest_anime", self._job_fetch_latest)
-        else:
-            yield StartupJob(
-                "fetch_latest_anime",
-                lambda: "skipped (recent fetch)",
-            )
-        yield StartupJob("update_status", self._job_update_status)
+
+    def _critical_jobs(self) -> Iterable[StartupJob]:
         yield StartupJob(
             "purge_deleted_torrents", self._job_purge_deleted_torrents
-        )
-        yield StartupJob(
-            "reconcile_seen_anime_torrents",
-            self._job_reconcile_seen_anime_torrents,
         )
         yield StartupJob(
             "reconcile_deleted_torrents", self._job_reconcile_deleted_torrents
@@ -518,11 +560,23 @@ class StartupJobsService:
         yield StartupJob(
             "restore_libtorrent_sessions", self._job_restore_libtorrent_sessions
         )
+
+    def _deferred_jobs(self) -> Iterable[StartupJob]:
+        yield StartupJob(
+            "reconcile_seen_anime_torrents",
+            self._job_reconcile_seen_anime_torrents,
+        )
         yield StartupJob("repair_torrent_index", self._job_repair_torrent_index)
         yield StartupJob(
             "consolidate_duplicate_anime_folders",
             self._job_consolidate_duplicate_anime_folders,
         )
+
+    def _jobs(self) -> Iterable[StartupJob]:
+        """All startup jobs in execution order (excludes schedule ingest)."""
+        yield from self._migration_jobs()
+        yield from self._critical_jobs()
+        yield from self._deferred_jobs()
 
     def _job_purge_deleted_torrents(self) -> str:
         adapter = self._download_adapter
