@@ -40,9 +40,24 @@ def main() -> int:
         title = f"#{aid}"
         try:
             anime = facade.get_anime(aid) or {}
-            title = str(anime.get("title") or anime.get("name") or title)
-        except Exception:  # noqa: BLE001
-            pass
+            if not isinstance(anime, dict):
+                anime = dict(anime) if hasattr(anime, "keys") else {}
+            title = str(
+                anime.get("title")
+                or anime.get("name")
+                or anime.get("title_romaji")
+                or title
+            )
+        except Exception as exc:  # noqa: BLE001
+            title = f"#{aid}"
+            print(f"  title_err {aid}: {exc}", flush=True)
+        if title == f"#{aid}":
+            try:
+                terms = svc._search_terms(aid)
+                if terms:
+                    title = str(terms[0])[:80]
+            except Exception:  # noqa: BLE001
+                pass
 
         status = "match"
         source = None

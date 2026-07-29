@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from adapters.feeds.rss_feed_adapter import RssFeedEntry
-from adapters.search.subsplease import parse_subsplease_release, release_matches_catalog
+from adapters.search.subsplease import (
+    expected_catalog_season,
+    extract_title_season,
+    parse_subsplease_release,
+    release_matches_catalog,
+)
 from application.services.auto_download_matching import ReleasePreference, _parsed_as_dict
 
 ParseTitleFn = Callable[[str], Any]
@@ -31,6 +36,10 @@ def entry_matches_anime(
 
     sp = parse_subsplease_release(title)
     show_title = sp.show_title if sp is not None else title
+    expected = expected_catalog_season(terms)
+    release_season = extract_title_season(show_title) or 1
+    if release_season != expected:
+        return False
     for term in terms:
         if release_matches_catalog(show_title, term):
             return True

@@ -22,6 +22,7 @@ from application.services.auto_download_prefs import (
     resolve_release_preference,
     select_feeds_for_anime,
 )
+from shared.utils.title_season import expected_catalog_season
 
 _LOG = logging.getLogger("animemanager.auto_download")
 
@@ -226,6 +227,7 @@ class AutoDownloadService:
             preference=preference,
             episode=episode,
             exclude_hashes=exclude,
+            expected_season=expected_catalog_season(terms),
         )
 
     def find_rss_candidate(
