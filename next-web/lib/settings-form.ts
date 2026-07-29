@@ -175,7 +175,8 @@ const LEAF_LABELS: Record<string, string> = {
   dateStates: "Airing-date states",
   tagcolors: "Tag colors",
   torrentsStateColors: "Torrent state colors",
-  video_encoder: "Video encoder (auto, libx264, h264_nvenc, h264_qsv, h264_amf, h264_mf)",
+  video_encoder:
+    "Video encoder (auto probes GPU; falls back if NVENC/driver mismatch)",
   promote_watching_on_startup: "Promote NONE/WATCHLIST to WATCHING when local files exist",
 };
 

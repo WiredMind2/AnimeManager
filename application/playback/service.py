@@ -66,6 +66,26 @@ def _is_within_dir(path: Path, root: Path) -> bool:
         return False
 
 
+def _ffmpeg_log_excerpt(output_dir: Path, *, max_chars: int = 280) -> str:
+    """Last non-spawn stderr lines from the session ffmpeg log."""
+    log_path = output_dir / "_ffmpeg.log"
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("[AnimeManager]")
+    ]
+    if not lines:
+        return ""
+    joined = " | ".join(lines[-3:])
+    if len(joined) > max_chars:
+        return joined[-max_chars:]
+    return joined
+
+
 class PlaybackService:
     """Coordinates session-safe HLS playback."""
 
@@ -224,11 +244,25 @@ class PlaybackService:
             wait_timeout = (
                 RESUME_SEGMENT_WAIT_SECONDS if playback_start > 0 else SESSION_CREATE_WAIT_SECONDS
             )
-            playhead_exists = wait_for_file(wait_target, wait_timeout)
+            try:
+                playhead_exists = wait_for_file(
+                    wait_target,
+                    wait_timeout,
+                    should_abort=lambda: not self._transcode.is_running(session_id),
+                )
+            except RuntimeError:
+                excerpt = _ffmpeg_log_excerpt(output_dir)
+                detail = f" Transcoder log: {excerpt}" if excerpt else ""
+                raise InfrastructureError(
+                    f"Transcoder exited before segment {wait_segment:05d} became ready"
+                    f" (anchor={start_segment}).{detail}"
+                ) from None
             if not playhead_exists:
+                excerpt = _ffmpeg_log_excerpt(output_dir)
+                detail = f" Transcoder log: {excerpt}" if excerpt else ""
                 raise InfrastructureError(
                     f"Resume segment {wait_segment:05d} was not ready within {wait_timeout:.0f}s "
-                    f"(anchor={start_segment})."
+                    f"(anchor={start_segment}).{detail}"
                 )
 
         else:

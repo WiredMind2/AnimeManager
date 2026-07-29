@@ -70,7 +70,9 @@ def release_matches_catalog(show_title: str, catalog_title: str) -> bool:
     """Return True when a catalog string plausibly names the same show."""
     rel = normalize_match_key(show_title)
     cat = normalize_match_key(catalog_title)
-    if not rel or not cat:
+    # Reject tiny keys (e.g. Japanese titles that fold to a lone ``s`` from
+    # ``S-Rank``) — they false-positive against almost every Latin title.
+    if not rel or not cat or len(rel) < 4 or len(cat) < 4:
         return False
     if rel == cat or rel in cat or cat in rel:
         return True

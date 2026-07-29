@@ -17,6 +17,7 @@ class _Database:
     def __init__(self) -> None:
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._lock = threading.RLock()
+        self.save_calls = 0
         self.conn.execute(
             """
             CREATE TABLE characterRelations (
@@ -37,6 +38,7 @@ class _Database:
         cur = self.conn.execute(query, params)
         if save:
             self.conn.commit()
+            self.save_calls += 1
             return []
         return list(cur.fetchall())
 
@@ -55,6 +57,7 @@ def test_save_animeography_inserts_new_relation(api_utils):
 
     rows = db.sql("SELECT id, anime_id, role FROM characterRelations")
     assert rows == [(7, 42, "main")]
+    assert db.save_calls >= 1
 
 
 def test_save_animeography_updates_existing_role(api_utils):

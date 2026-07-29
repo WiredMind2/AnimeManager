@@ -109,7 +109,9 @@ def facade(monkeypatch, policy_factory):
     policy = policy_factory(
         engines={"nyaasi": {"enabled": True, "risk_level": "low"}}
     )
-    facade = SearchFacade(profile=_profile(), policy=policy)
+    facade = SearchFacade(
+        profile=_profile(), policy=policy, subsplease_search=None
+    )
     # Patch the worker's runner factory through monkeypatching the module-level
     # default. Tests provide a scripted runner per case.
     return facade
@@ -146,7 +148,7 @@ def test_facade_caps_results_per_term(monkeypatch, policy_factory):
             queue_capacity=64,
         )
     )
-    facade = SearchFacade(profile=profile, policy=policy)
+    facade = SearchFacade(profile=profile, policy=policy, subsplease_search=None)
 
     payload = b"".join(_row(f"hash{i:08x}", f"Title {i}") for i in range(10))
     runner = _ScriptedRunner({"Series": payload})
@@ -175,7 +177,7 @@ def test_facade_allows_total_above_per_term_across_terms(monkeypatch, policy_fac
             queue_capacity=64,
         )
     )
-    facade = SearchFacade(profile=profile, policy=policy)
+    facade = SearchFacade(profile=profile, policy=policy, subsplease_search=None)
 
     payload_a = b"".join(_row(f"aaaa{i:04x}", f"Alpha {i}") for i in range(10))
     payload_b = b"".join(_row(f"bbbb{i:04x}", f"Beta {i}") for i in range(10))
@@ -190,7 +192,9 @@ def test_facade_allows_total_above_per_term_across_terms(monkeypatch, policy_fac
 
 def test_facade_returns_empty_when_no_engines_allowed(monkeypatch, policy_factory):
     policy = policy_factory(engines={})
-    facade = SearchFacade(profile=_profile(), policy=policy)
+    facade = SearchFacade(
+        profile=_profile(), policy=policy, subsplease_search=None
+    )
 
     runner = _ScriptedRunner({})
     monkeypatch.setattr(
@@ -206,7 +210,7 @@ def test_facade_strict_profile_ranks_results(monkeypatch, policy_factory):
         engines={"nyaasi": {"enabled": True, "risk_level": "low"}}
     )
     profile = _profile(name="strict", rank_results=True)
-    facade = SearchFacade(profile=profile, policy=policy)
+    facade = SearchFacade(profile=profile, policy=policy, subsplease_search=None)
 
     payload = (
         _row("aaaa1111", "Low Seeds", seeds=2)

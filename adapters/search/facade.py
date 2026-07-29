@@ -33,12 +33,17 @@ from .config import (
 from .dedupe import ResultDeduper
 from .engine_policy import EnginePolicy, get_default_policy
 from .parser import ResultParser, TorrentResult
-from .planner import QueryPlanner, plan_terms
+from .planner import plan_terms
 from .ranking import sort_results
+from .subsplease_api import SubsPleaseSearchAdapter, is_useful_search_query
 from .telemetry import get_metrics, new_request_id, structured_log
 from .worker import JobOutcome, NovaWorker, SearchJob
 
 _SENTINEL = object()
+_SUBSPLEASE_ENGINE = "subsplease-api"
+# Sentinel so callers can pass ``subsplease_search=None`` to disable while
+# omitting the kwarg still constructs a real adapter.
+_SUBSPLEASE_UNSET = object()
 
 
 @dataclass
@@ -124,9 +129,20 @@ class SearchFacade:
         self,
         profile: Optional[SearchProfile] = None,
         policy: Optional[EnginePolicy] = None,
+        *,
+        subsplease_search: Optional[SubsPleaseSearchAdapter] | object = _SUBSPLEASE_UNSET,
     ) -> None:
         self._profile = profile or load_profile(DEFAULT_PROFILE)
         self._policy = policy or get_default_policy()
+        # Default to a real client so interactive search includes SubsPlease
+        # without every caller wiring composition. Pass ``None`` explicitly
+        # to disable (tests that only exercise Nova).
+        if subsplease_search is _SUBSPLEASE_UNSET:
+            self._subsplease_search: Optional[SubsPleaseSearchAdapter] = (
+                SubsPleaseSearchAdapter()
+            )
+        else:
+            self._subsplease_search = subsplease_search  # type: ignore[assignment]
         self._metrics = get_metrics()
 
     @property
@@ -158,6 +174,7 @@ class SearchFacade:
             self._profile,
             request_id=request_id,
         )
+        use_subsplease = self._subsplease_search is not None
 
         started_at = time.monotonic()
         structured_log(
@@ -167,9 +184,10 @@ class SearchFacade:
             terms_in=len(terms) if hasattr(terms, "__len__") else -1,
             terms_planned=len(plan.terms),
             engines=len(candidate_engines),
+            subsplease=int(use_subsplease),
         )
 
-        if not plan.terms or not candidate_engines:
+        if not plan.terms or (not candidate_engines and not use_subsplease):
             structured_log(
                 "request_empty",
                 request_id=request_id,
@@ -211,13 +229,24 @@ class SearchFacade:
                 category=self._profile.category,
             )
             for idx in range(len(plan.terms))
+            if candidate_engines
         ]
 
         request_deadline = time.monotonic() + self._profile.limits.request_deadline_s
         pool_thread = threading.Thread(
             target=self._run_pool,
             name=f"search-pool-{request_id}",
-            args=(jobs, parser, sink, cancel, request_deadline, outcomes, request_id, stream),
+            args=(
+                jobs,
+                parser,
+                sink,
+                cancel,
+                request_deadline,
+                outcomes,
+                request_id,
+                stream,
+                [t.normalized for t in plan.terms],
+            ),
             daemon=True,
         )
         pool_thread.start()
@@ -237,13 +266,14 @@ class SearchFacade:
             stream.close()
             pool_thread.join(timeout=2.0)
             finished_at = time.monotonic()
+            engines_used = len(candidate_engines) + (1 if use_subsplease else 0)
             summary = SearchSummary(
                 request_id=request_id,
                 profile=self._profile.name,
                 terms_in=len(terms) if hasattr(terms, "__len__") else -1,
                 terms_planned=len(plan.terms),
                 terms_dropped=len(plan.dropped),
-                engines_used=len(candidate_engines),
+                engines_used=engines_used,
                 results_emitted=results_emitted,
                 duplicates_dropped=len(deduper) - results_emitted
                 if len(deduper) >= results_emitted
@@ -270,6 +300,86 @@ class SearchFacade:
                     except Exception:  # pragma: no cover - defensive
                         pass
 
+    def _run_subsplease(
+        self,
+        terms: Sequence[str],
+        parser: ResultParser,
+        sink: Callable[[TorrentResult, SearchJob], None],
+        cancel: threading.Event,
+        deadline: float,
+        outcomes: List[JobOutcome],
+        request_id: str,
+        outcome_lock: threading.Lock,
+    ) -> None:
+        adapter = self._subsplease_search
+        if adapter is None:
+            return
+        started = time.monotonic()
+        rows_emitted = 0
+        exit_reason = "ok"
+        try:
+            for idx, term in enumerate(terms):
+                if cancel.is_set() or time.monotonic() >= deadline:
+                    exit_reason = "cancelled" if cancel.is_set() else "timed_out"
+                    break
+                if not is_useful_search_query(term):
+                    continue
+                job = SearchJob(
+                    job_id=f"{request_id}-sp-{idx}",
+                    term=term,
+                    engines=[_SUBSPLEASE_ENGINE],
+                    category=self._profile.category,
+                )
+                try:
+                    rows = adapter.search_interactive(term)
+                except Exception as exc:  # noqa: BLE001
+                    structured_log(
+                        "subsplease_failed",
+                        request_id=request_id,
+                        term_len=len(term),
+                        error=type(exc).__name__,
+                    )
+                    exit_reason = "error"
+                    continue
+                per_term = 0
+                for row in rows:
+                    if cancel.is_set() or time.monotonic() >= deadline:
+                        exit_reason = "cancelled" if cancel.is_set() else "timed_out"
+                        break
+                    if per_term >= self._profile.limits.max_results_per_term:
+                        break
+                    result = parser.from_fields(
+                        link=str(row.get("link") or row.get("magnet") or ""),
+                        name=str(row.get("name") or ""),
+                        size=row.get("size", 0),
+                        seeds=row.get("seeds", 0),
+                        leech=row.get("leech", 0),
+                        engine_url=str(row.get("engine_url") or "https://subsplease.org/"),
+                        desc_link=str(row.get("desc_link") or "") or None,
+                    )
+                    if result is None:
+                        continue
+                    sink(result, job)
+                    rows_emitted += 1
+                    per_term += 1
+                if exit_reason != "ok":
+                    break
+        finally:
+            with outcome_lock:
+                outcomes.append(
+                    JobOutcome(
+                        job_id=f"{request_id}-sp",
+                        term="|".join(terms[:3]),
+                        started_at=started,
+                        finished_at=time.monotonic(),
+                        exit_reason=exit_reason,
+                        exit_code=0 if exit_reason == "ok" else None,
+                        rows_emitted=rows_emitted,
+                        bytes_read=0,
+                        stderr_excerpt="",
+                    )
+                )
+
     def _run_pool(
         self,
         jobs: List[SearchJob],
@@ -280,6 +390,7 @@ class SearchFacade:
         outcomes: List[JobOutcome],
         request_id: str,
         stream: "_ResultStream",
+        planned_terms: Sequence[str],
     ) -> None:
         threads: List[threading.Thread] = []
         max_concurrent = max(1, self._profile.limits.max_concurrent_jobs)
@@ -328,6 +439,25 @@ class SearchFacade:
                 )
                 thread.start()
                 threads.append(thread)
+
+            if self._subsplease_search is not None and planned_terms:
+                sp_thread = threading.Thread(
+                    target=self._run_subsplease,
+                    name=f"subsplease-{request_id}",
+                    args=(
+                        planned_terms,
+                        parser,
+                        sink,
+                        cancel,
+                        deadline,
+                        outcomes,
+                        request_id,
+                        outcome_lock,
+                    ),
+                    daemon=True,
+                )
+                sp_thread.start()
+                threads.append(sp_thread)
 
             for thread in threads:
                 remaining = max(0.0, deadline - time.monotonic())

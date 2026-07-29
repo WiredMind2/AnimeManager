@@ -7,6 +7,7 @@ from unittest.mock import patch
 from adapters.media.ffmpeg_encoder import (
     SOFTWARE_ENCODER,
     build_video_encode_args,
+    clear_encoder_usable_cache,
     list_h264_encoders,
     resolve_video_encoder,
 )
@@ -22,6 +23,10 @@ _NO_HARDWARE_OUTPUT = """
 """
 
 
+def setup_function() -> None:
+    clear_encoder_usable_cache()
+
+
 def test_list_h264_encoders_parses_available_encoders() -> None:
     with patch(
         "adapters.media.ffmpeg_encoder.subprocess.run",
@@ -33,18 +38,44 @@ def test_list_h264_encoders_parses_available_encoders() -> None:
     assert run.call_args.kwargs.get("errors") == "replace"
 
 
-def test_auto_prefers_nvenc_when_available() -> None:
-    with patch(
-        "adapters.media.ffmpeg_encoder.list_h264_encoders",
-        return_value={"libx264", "h264_nvenc", "h264_qsv"},
+def test_auto_prefers_nvenc_when_usable() -> None:
+    with (
+        patch(
+            "adapters.media.ffmpeg_encoder.list_h264_encoders",
+            return_value={"libx264", "h264_nvenc", "h264_qsv"},
+        ),
+        patch(
+            "adapters.media.ffmpeg_encoder.encoder_is_usable",
+            side_effect=lambda _bin, enc: enc in {"h264_nvenc", "libx264"},
+        ),
     ):
         assert resolve_video_encoder(requested="auto", ffmpeg_bin="ffmpeg") == "h264_nvenc"
 
 
+def test_auto_skips_listed_but_unusable_nvenc() -> None:
+    with (
+        patch(
+            "adapters.media.ffmpeg_encoder.list_h264_encoders",
+            return_value={"libx264", "h264_nvenc", "h264_qsv"},
+        ),
+        patch(
+            "adapters.media.ffmpeg_encoder.encoder_is_usable",
+            side_effect=lambda _bin, enc: enc in {"h264_qsv", "libx264"},
+        ),
+    ):
+        assert resolve_video_encoder(requested="auto", ffmpeg_bin="ffmpeg") == "h264_qsv"
+
+
 def test_auto_falls_back_to_libx264() -> None:
-    with patch(
-        "adapters.media.ffmpeg_encoder.list_h264_encoders",
-        return_value={"libx264"},
+    with (
+        patch(
+            "adapters.media.ffmpeg_encoder.list_h264_encoders",
+            return_value={"libx264"},
+        ),
+        patch(
+            "adapters.media.ffmpeg_encoder.encoder_is_usable",
+            return_value=True,
+        ),
     ):
         assert resolve_video_encoder(requested="auto", ffmpeg_bin="ffmpeg") == SOFTWARE_ENCODER
 
@@ -60,10 +91,33 @@ def test_explicit_invalid_encoder_falls_back() -> None:
         )
 
 
+def test_explicit_unusable_hw_encoder_falls_back() -> None:
+    with (
+        patch(
+            "adapters.media.ffmpeg_encoder.list_h264_encoders",
+            return_value={"libx264", "h264_nvenc"},
+        ),
+        patch(
+            "adapters.media.ffmpeg_encoder.encoder_is_usable",
+            side_effect=lambda _bin, enc: enc == SOFTWARE_ENCODER,
+        ),
+    ):
+        assert (
+            resolve_video_encoder(requested="h264_nvenc", ffmpeg_bin="ffmpeg")
+            == SOFTWARE_ENCODER
+        )
+
+
 def test_explicit_libx264_when_available() -> None:
-    with patch(
-        "adapters.media.ffmpeg_encoder.list_h264_encoders",
-        return_value={"libx264", "h264_nvenc"},
+    with (
+        patch(
+            "adapters.media.ffmpeg_encoder.list_h264_encoders",
+            return_value={"libx264", "h264_nvenc"},
+        ),
+        patch(
+            "adapters.media.ffmpeg_encoder.encoder_is_usable",
+            return_value=True,
+        ),
     ):
         assert resolve_video_encoder(requested="libx264", ffmpeg_bin="ffmpeg") == SOFTWARE_ENCODER
 

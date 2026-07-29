@@ -1735,7 +1735,7 @@ class TestDownloadHashIdempotency:
         finally:
             mgr.close()
 
-    def test_skips_when_already_indexed(self, DownloadManager):
+    def test_skips_when_already_complete(self, DownloadManager):
         mgr = DownloadManager(max_concurrent_downloads=1)
         mgr.log = _silent_logger
         db = MagicMock()
@@ -1748,8 +1748,32 @@ class TestDownloadHashIdempotency:
             result = mgr.enqueue_download(1, hash_value="indexedhash")
             assert result.skipped is True
             assert result.started is False
+            assert result.reason == "already complete"
             assert mgr._download_queue.qsize() == 0
             assert "indexedhash" not in mgr._queued_hashes
+        finally:
+            mgr.close()
+
+    def test_requeues_indexed_orphan_not_in_client(self, DownloadManager):
+        mgr = DownloadManager(max_concurrent_downloads=1)
+        mgr.log = _silent_logger
+        mgr._stopping.set()
+        db = MagicMock()
+        db.get_torrent_status.return_value = None
+        db.get_torrent_data.return_value = ("Show - 01.mkv", [])
+        mgr.set_database_manager(db)
+        tm = MagicMock()
+        tm.list.return_value = []
+        mgr.set_torrent_manager(tm)
+        try:
+            result = mgr.enqueue_download(
+                1,
+                url="magnet:?xt=urn:btih:orphanhash012345678901234567890123",
+                hash_value="orphanhash012345678901234567890123",
+            )
+            assert result.started is True
+            assert result.skipped is False
+            assert mgr._download_queue.qsize() == 1
         finally:
             mgr.close()
 

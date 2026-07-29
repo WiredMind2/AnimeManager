@@ -410,3 +410,277 @@ def test_auto_download_rss_mode_queues_match():
     assert started[0]["source"] == "auto"
     assert "magnet:" in started[0]["url"]
     assert seen == [("subsplease-1080", "g2")]
+
+
+def test_auto_download_rss_miss_falls_back_to_subsplease_api():
+    started: list[dict] = []
+    api_calls: list[tuple] = []
+    seen: list[tuple[str, str]] = []
+
+    class FakeUserActions:
+        def list_auto_download_eligible(self, user_id=1):
+            return [2594]
+
+        def get_download_preferences(self, anime_id, user_id):
+            return {
+                "source_mode": "rss",
+                "publisher": "subsplease",
+                "resolution": "720p",
+                "feed_ids": ["subsplease-720"],
+                "use_inferred": False,
+            }
+
+        def list_rss_feed_seen_keys(self, feed_ids=None):
+            return set()
+
+        def mark_rss_feed_seen(self, feed_id, item_key):
+            seen.append((feed_id, item_key))
+
+    class FakeRepo:
+        def get_anime_torrents(self, anime_id):
+            return []
+
+        def get_search_terms(self, anime_id):
+            return ["Rakudai Kenja no Gakuin Musou: Nidome no Tensei"]
+
+    class FakeDownload:
+        def start_download(self, anime_id, url=None, hash_value=None, user_id=None, source=None):
+            started.append({"url": url, "hash_value": hash_value, "source": source})
+            return True
+
+    class FakeFetcher:
+        def fetch_many(self, feeds):
+            return []
+
+    def fake_sp_search(terms, episode=None):
+        api_calls.append((list(terms), episode))
+        if episode != 1:
+            return None
+        return {
+            "name": "[SubsPlease] Rakudai Kenja no Gakuin Musou - 01 (720p)",
+            "link": "magnet:?xt=urn:btih:apicatchup01",
+            "url": "magnet:?xt=urn:btih:apicatchup01",
+            "magnet": "magnet:?xt=urn:btih:apicatchup01",
+            "infohash": "apicatchup01",
+            "source": "subsplease-api",
+        }
+
+    from adapters.feeds.rss_match import find_rss_candidate
+
+    service = AutoDownloadService(
+        user_actions=FakeUserActions(),
+        anime_repository=FakeRepo(),
+        download_port=FakeDownload(),
+        media_library=SimpleNamespace(list_episode_files=lambda _id: []),
+        parse_title=parse_title,
+        cooldown_s=0,
+        settings_provider=lambda: {
+            "auto_download": {
+                "enabled": True,
+                "feeds": {
+                    "builtin": [
+                        {
+                            "id": "subsplease-720",
+                            "label": "SP",
+                            "url": "https://example.com/rss",
+                            "enabled": True,
+                        }
+                    ],
+                    "custom": [],
+                },
+            }
+        },
+        feed_fetcher=FakeFetcher(),
+        rss_match_fn=find_rss_candidate,
+        subsplease_search_fn=fake_sp_search,
+    )
+    outcome = service.run_once(force=True)
+    assert outcome.downloaded == 1
+    assert api_calls[0] == (
+        ["Rakudai Kenja no Gakuin Musou: Nidome no Tensei"],
+        1,
+    )
+    # Catch-up probes the next episode once, then stops on miss.
+    assert api_calls[-1][1] == 2
+    assert started[0]["source"] == "auto"
+    assert "apicatchup01" in started[0]["url"]
+    # API catch-up must not mark RSS seen keys.
+    assert seen == []
+
+
+def test_auto_download_rss_hit_skips_subsplease_api():
+    api_calls: list[tuple] = []
+
+    class FakeUserActions:
+        def list_auto_download_eligible(self, user_id=1):
+            return [9]
+
+        def get_download_preferences(self, anime_id, user_id):
+            return {
+                "source_mode": "rss",
+                "publisher": "subsplease",
+                "resolution": "1080p",
+                "feed_ids": ["subsplease-1080"],
+                "use_inferred": False,
+            }
+
+        def list_rss_feed_seen_keys(self, feed_ids=None):
+            return set()
+
+        def mark_rss_feed_seen(self, feed_id, item_key):
+            return None
+
+    class FakeRepo:
+        def get_anime_torrents(self, anime_id):
+            return [
+                {
+                    "hash": "old",
+                    "name": "[SubsPlease] Show - 01 (1080p) [AA].mkv",
+                    "status": "complete",
+                }
+            ]
+
+        def get_search_terms(self, anime_id):
+            return ["Show"]
+
+    class FakeDownload:
+        def start_download(self, anime_id, url=None, hash_value=None, user_id=None, source=None):
+            return True
+
+    class FakeFetcher:
+        def fetch_many(self, feeds):
+            from adapters.feeds.rss_feed_adapter import RssFeedEntry
+
+            return [
+                RssFeedEntry(
+                    feed_id="subsplease-1080",
+                    item_key="g2",
+                    title="[SubsPlease] Show - 02 (1080p) [BB].mkv",
+                    link="https://example.com/2",
+                    enclosure_url="magnet:?xt=urn:btih:rss2",
+                )
+            ]
+
+    def fake_sp_search(terms, episode=None):
+        api_calls.append((list(terms), episode))
+        return None
+
+    from adapters.feeds.rss_match import find_rss_candidate
+
+    service = AutoDownloadService(
+        user_actions=FakeUserActions(),
+        anime_repository=FakeRepo(),
+        download_port=FakeDownload(),
+        media_library=SimpleNamespace(list_episode_files=lambda _id: []),
+        parse_title=parse_title,
+        cooldown_s=0,
+        settings_provider=lambda: {
+            "auto_download": {
+                "enabled": True,
+                "feeds": {
+                    "builtin": [
+                        {
+                            "id": "subsplease-1080",
+                            "label": "SP",
+                            "url": "https://example.com/rss",
+                            "enabled": True,
+                        }
+                    ],
+                    "custom": [],
+                },
+            }
+        },
+        feed_fetcher=FakeFetcher(),
+        rss_match_fn=find_rss_candidate,
+        subsplease_search_fn=fake_sp_search,
+    )
+    outcome = service.run_once(force=True)
+    assert outcome.downloaded == 1
+    # First episode came from RSS; catch-up probes the next ep via API once.
+    assert api_calls == [(["Show"], 3)]
+
+
+def test_auto_download_rss_api_catchup_queues_multiple_episodes():
+    started: list[dict] = []
+    api_calls: list[int] = []
+
+    class FakeUserActions:
+        def list_auto_download_eligible(self, user_id=1):
+            return [2594]
+
+        def get_download_preferences(self, anime_id, user_id):
+            return {
+                "source_mode": "rss",
+                "publisher": "subsplease",
+                "resolution": "720p",
+                "feed_ids": ["subsplease-720"],
+                "use_inferred": False,
+            }
+
+        def list_rss_feed_seen_keys(self, feed_ids=None):
+            return set()
+
+    class FakeRepo:
+        def get_anime_torrents(self, anime_id):
+            return []
+
+        def get_search_terms(self, anime_id):
+            return ["Rakudai Kenja no Gakuin Musou"]
+
+    class FakeDownload:
+        def start_download(self, anime_id, url=None, hash_value=None, user_id=None, source=None):
+            started.append({"url": url, "hash_value": hash_value, "episode_hint": hash_value})
+            return {"started": True}
+
+    class FakeFetcher:
+        def fetch_many(self, feeds):
+            return []
+
+    def fake_sp_search(terms, episode=None):
+        api_calls.append(int(episode))
+        if episode is None or int(episode) > 3:
+            return None
+        ep = int(episode)
+        return {
+            "name": f"[SubsPlease] Rakudai Kenja no Gakuin Musou - {ep:02d} (720p)",
+            "link": f"magnet:?xt=urn:btih:catchup{ep:02d}",
+            "url": f"magnet:?xt=urn:btih:catchup{ep:02d}",
+            "magnet": f"magnet:?xt=urn:btih:catchup{ep:02d}",
+            "infohash": f"catchup{ep:02d}",
+            "source": "subsplease-api",
+        }
+
+    from adapters.feeds.rss_match import find_rss_candidate
+
+    service = AutoDownloadService(
+        user_actions=FakeUserActions(),
+        anime_repository=FakeRepo(),
+        download_port=FakeDownload(),
+        media_library=SimpleNamespace(list_episode_files=lambda _id: []),
+        parse_title=parse_title,
+        cooldown_s=0,
+        settings_provider=lambda: {
+            "auto_download": {
+                "enabled": True,
+                "feeds": {
+                    "builtin": [
+                        {
+                            "id": "subsplease-720",
+                            "label": "SP",
+                            "url": "https://example.com/rss",
+                            "enabled": True,
+                        }
+                    ],
+                    "custom": [],
+                },
+            }
+        },
+        feed_fetcher=FakeFetcher(),
+        rss_match_fn=find_rss_candidate,
+        subsplease_search_fn=fake_sp_search,
+    )
+    detail = service.process_anime(2594)
+    assert detail.startswith("queued ")
+    assert "ep 1:" in detail and "ep 2:" in detail and "ep 3:" in detail
+    assert api_calls == [1, 2, 3, 4]
+    assert len(started) == 3

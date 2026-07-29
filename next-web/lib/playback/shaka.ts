@@ -28,11 +28,20 @@ export function buildShakaConfig(resume: boolean): Record<string, unknown> {
   };
 }
 
+const MIN_RESUME_SECONDS = 10;
+
 export function loadStartTimeFromPayload(payload: {
   playback_start_seconds?: number;
+  duration_seconds?: number;
 }): number | undefined {
   const start = Number(payload.playback_start_seconds ?? 0);
-  return Number.isFinite(start) && start > 0 ? start : undefined;
+  const duration = Number(payload.duration_seconds ?? 0);
+  if (!Number.isFinite(start) || start < MIN_RESUME_SECONDS) return undefined;
+  if (Number.isFinite(duration) && duration > 0) {
+    if (start >= duration - 1) return undefined;
+    return Math.min(start, duration - 1);
+  }
+  return start > 0 ? start : undefined;
 }
 
 export function loadShakaScript(): Promise<typeof window.shaka | null> {
