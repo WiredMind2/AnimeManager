@@ -16,6 +16,8 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from adapters.search.subsplease import (
+    expected_catalog_season,
+    extract_title_season,
     parse_subsplease_release,
     release_matches_catalog,
 )
@@ -236,6 +238,7 @@ def find_subsplease_api_candidate(
     if not terms:
         return None
     target = int(episode)
+    expected = expected_catalog_season(terms)
     for row in results:
         if not isinstance(row, dict):
             continue
@@ -250,6 +253,9 @@ def find_subsplease_api_candidate(
         if ep is None or ep != target:
             continue
         show_title = show or name
+        release_season = extract_title_season(show_title) or 1
+        if release_season != expected:
+            continue
         matched = False
         for term in terms:
             if release_matches_catalog(show_title, term):

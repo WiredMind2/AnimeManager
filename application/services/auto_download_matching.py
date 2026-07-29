@@ -191,10 +191,12 @@ def find_matching_candidate(
     preference: ReleasePreference,
     episode: int,
     exclude_hashes: set[str] | None = None,
+    expected_season: int | None = None,
 ) -> Optional[dict[str, Any]]:
     """Pick the best single-episode torrent matching preference + episode.
 
     Batches are skipped. Among matches, highest seed count wins.
+    When ``expected_season`` is set, unmarked releases count as season 1.
     """
     excluded = {h.lower() for h in (exclude_hashes or set()) if h}
     best: Optional[dict[str, Any]] = None
@@ -215,6 +217,10 @@ def find_matching_candidate(
             continue
         if _as_int(parsed.get("episode")) != int(episode):
             continue
+        if expected_season is not None:
+            season = _as_int(parsed.get("season")) or 1
+            if season != int(expected_season):
+                continue
         publisher = _norm_publisher(parsed.get("publisher"))
         resolution = _norm_resolution(parsed.get("resolution"))
         if publisher != preference.publisher:
