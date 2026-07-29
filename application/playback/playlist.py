@@ -8,8 +8,7 @@ import re
 from pathlib import Path
 
 from application.dto import PlaybackSessionDTO
-from application.playback.contract import EVENT_MANIFEST_LOOKAHEAD
-from application.playback.resume import resume_segment_index
+from application.playback.contract import EVENT_MANIFEST_LOOKAHEAD, PREFETCH_MARGIN
 
 _SEGMENT_NAME_RE = re.compile(r"^segment_(\d+)\.ts$")
 
@@ -44,18 +43,17 @@ def event_manifest_end_index(
 
     Listing the full episode while still EVENT-typed makes Shaka treat the
     fictional end as the live edge and request far-ahead segments that yank
-    ffmpeg away from the playhead.
+    ffmpeg away from the playhead.  Only advertise segments that exist on disk
+    (``latest``) plus a small in-flight encode margin — not playhead hints
+  that can sit far ahead of the encoder.
     """
-    playhead = max(0, int(getattr(session, "live_playhead_segment", 0) or 0))
-    if playhead <= 0 and session.duration_seconds > 0 and session.segment_seconds > 0:
-        playhead = resume_segment_index(
-            session.playback_start_seconds,
-            total_segments=total,
-            segment_seconds=session.segment_seconds,
-        )
-    transcode_start = max(0, int(getattr(session, "transcode_start_segment", 0) or 0))
-    head = max(latest, playhead, transcode_start, anchor)
-    return min(total - 1, head + EVENT_MANIFEST_LOOKAHEAD)
+    if latest < 0:
+        encoded_head = max(0, anchor)
+        margin = EVENT_MANIFEST_LOOKAHEAD
+    else:
+        encoded_head = max(latest, anchor)
+        margin = PREFETCH_MARGIN
+    return min(total - 1, encoded_head + margin)
 
 
 def render_manifest(session: PlaybackSessionDTO, *, token: str | None = None) -> str:
