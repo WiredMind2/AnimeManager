@@ -38,6 +38,9 @@ class AnimeEntity:
     producers: list[str] = field(default_factory=list)
     external_ids: dict[str, int] = field(default_factory=dict)
     external_urls: list[dict[str, str]] = field(default_factory=list)
+    # Watching-list enrichment only (None = not computed).
+    unwatched_count: Optional[int] = None
+    episodes_left: Optional[int] = None
 
 
 @dataclass(slots=True)

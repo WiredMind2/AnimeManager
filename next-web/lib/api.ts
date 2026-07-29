@@ -142,6 +142,10 @@ export type AnimeItem = {
   external_urls?: Array<{ label: string; url: string }>;
   metadata_pending?: boolean;
   metadata_refreshing?: boolean;
+  /** Watching-list enrichment: downloaded files not marked SEEN. */
+  unwatched_count?: number | null;
+  /** Watching-list enrichment: catalog episodes minus SEEN files. */
+  episodes_left?: number | null;
 };
 
 export type AnimeCharacter = {

@@ -13,7 +13,7 @@ from domain.dto import (
     DownloadRequest,
     SearchRequest,
 )
-from application.dto.media_streaming import EpisodeFileDTO, PlaybackSessionDTO
+from application.dto.media_streaming import EpisodeFileDTO, LocalEpisodeRef, PlaybackSessionDTO
 
 __all__ = [
     "AnimeListRequest",
@@ -21,5 +21,6 @@ __all__ = [
     "DownloadRequest",
     "SearchRequest",
     "EpisodeFileDTO",
+    "LocalEpisodeRef",
     "PlaybackSessionDTO",
 ]

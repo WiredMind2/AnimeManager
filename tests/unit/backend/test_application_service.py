@@ -106,12 +106,22 @@ class FakeActions:
         _ = (anime_id, user_id, file_id)
 
 
-def _service():
+class FakeMediaStreaming:
+    def __init__(self, refs=None):
+        self.refs = list(refs or [])
+
+    def list_local_episode_refs(self, anime_id: int):
+        _ = anime_id
+        return list(self.refs)
+
+
+def _service(*, media_streaming=None, actions=None, repository=None):
     return AnimeApplicationService(
-        anime_repository=FakeRepository(),
+        anime_repository=repository or FakeRepository(),
         metadata_provider=FakeProvider(),
         download_port=FakeDownload(),
-        user_actions_port=FakeActions(),
+        user_actions_port=actions or FakeActions(),
+        media_streaming_service=media_streaming,
     )
 
 
@@ -168,3 +178,130 @@ def test_extended_contract_use_cases():
     assert service.get_settings()["anime"]["hideRated"] is True
     assert service.update_settings({"anime": {"hideRated": False}})["anime"]["hideRated"] is False
     assert service.get_relations(1)[0]["name"] == "SEQUEL"
+
+
+def test_watching_counts_no_files():
+    service = _service(media_streaming=FakeMediaStreaming([]))
+    unwatched, left = service._watching_episode_counts(1, 1, 12)
+    assert unwatched == 0
+    assert left == 12
+
+
+def test_watching_counts_all_seen():
+    from application.dto import LocalEpisodeRef
+
+    class SeenActions(FakeActions):
+        def get_episode_progress_map(self, anime_id, user_id):
+            _ = (anime_id, user_id)
+            return {
+                "ep-a": {"status": "SEEN", "position_seconds": 1.0},
+                "ep-b": {"status": "SEEN", "position_seconds": 2.0},
+            }
+
+    refs = [
+        LocalEpisodeRef(file_id="ep-a", episode=1),
+        LocalEpisodeRef(file_id="ep-b", episode=2),
+    ]
+    service = _service(media_streaming=FakeMediaStreaming(refs), actions=SeenActions())
+    unwatched, left = service._watching_episode_counts(1, 1, 12)
+    assert unwatched == 0
+    assert left == 10
+
+
+def test_watching_counts_in_progress_counts_as_unwatched():
+    from application.dto import LocalEpisodeRef
+
+    class MixedActions(FakeActions):
+        def get_episode_progress_map(self, anime_id, user_id):
+            _ = (anime_id, user_id)
+            return {
+                "ep-a": {"status": "SEEN", "position_seconds": 100.0},
+                "ep-b": {"status": "IN_PROGRESS", "position_seconds": 40.0},
+            }
+
+    refs = [
+        LocalEpisodeRef(file_id="ep-a", episode=1),
+        LocalEpisodeRef(file_id="ep-b", episode=2),
+        LocalEpisodeRef(file_id="ep-c", episode=3),
+    ]
+    service = _service(media_streaming=FakeMediaStreaming(refs), actions=MixedActions())
+    unwatched, left = service._watching_episode_counts(1, 1, 12)
+    assert unwatched == 2
+    assert left == 11
+
+
+def test_watching_counts_catalog_missing_omits_left():
+    from application.dto import LocalEpisodeRef
+
+    refs = [LocalEpisodeRef(file_id="ep-a")]
+    service = _service(media_streaming=FakeMediaStreaming(refs))
+    unwatched, left = service._watching_episode_counts(1, 1, None)
+    assert unwatched == 1
+    assert left is None
+
+
+def test_watching_counts_catalog_less_than_seen():
+    from application.dto import LocalEpisodeRef
+
+    class SeenActions(FakeActions):
+        def get_episode_progress_map(self, anime_id, user_id):
+            _ = (anime_id, user_id)
+            return {
+                "ep-a": {"status": "SEEN"},
+                "ep-b": {"status": "SEEN"},
+                "ep-c": {"status": "SEEN"},
+            }
+
+    refs = [
+        LocalEpisodeRef(file_id="ep-a"),
+        LocalEpisodeRef(file_id="ep-b"),
+        LocalEpisodeRef(file_id="ep-c"),
+    ]
+    service = _service(media_streaming=FakeMediaStreaming(refs), actions=SeenActions())
+    unwatched, left = service._watching_episode_counts(1, 1, 2)
+    assert unwatched == 0
+    assert left == 0
+
+
+def test_get_anime_list_watching_attaches_counts():
+    from application.dto import LocalEpisodeRef
+
+    repo = FakeRepository()
+    repo.items = [AnimeEntity(id=1, title="Cowboy Bebop", episodes=12, tag="WATCHING")]
+    refs = [
+        LocalEpisodeRef(file_id="ep-a"),
+        LocalEpisodeRef(file_id="ep-b"),
+    ]
+
+    class PartialSeen(FakeActions):
+        def get_episode_progress_map(self, anime_id, user_id):
+            _ = (anime_id, user_id)
+            return {"ep-a": {"status": "SEEN"}}
+
+    service = _service(
+        repository=repo,
+        media_streaming=FakeMediaStreaming(refs),
+        actions=PartialSeen(),
+    )
+    listing = service.get_anime_list(
+        AnimeListRequest(filter="WATCHING", user_id=1)
+    )
+    item = listing.items[0]
+    assert item.unwatched_count == 1
+    assert item.episodes_left == 11
+
+
+def test_get_anime_list_other_filter_skips_counts():
+    from application.dto import LocalEpisodeRef
+
+    repo = FakeRepository()
+    repo.items = [AnimeEntity(id=1, title="Cowboy Bebop", episodes=12, tag="WATCHING")]
+    service = _service(
+        repository=repo,
+        media_streaming=FakeMediaStreaming([LocalEpisodeRef(file_id="ep-a")]),
+    )
+    listing = service.get_anime_list(AnimeListRequest(filter="DEFAULT", user_id=1))
+    item = listing.items[0]
+    assert item.unwatched_count is None
+    assert item.episodes_left is None
+

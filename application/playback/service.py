@@ -16,7 +16,7 @@ from application.commands import (
     HeartbeatPlaybackSessionCommand,
     StopPlaybackSessionCommand,
 )
-from application.dto import EpisodeFileDTO, PlaybackSessionDTO
+from application.dto import EpisodeFileDTO, LocalEpisodeRef, PlaybackSessionDTO
 from application.playback.contract import (
     RESUME_SEGMENT_WAIT_SECONDS,
     SEGMENT_SECONDS,
@@ -113,6 +113,21 @@ class PlaybackService:
             restart_at=self._restart_at,
             restart_lock=self._restart_lock,
         )
+
+    def list_local_episode_refs(self, anime_id: int) -> list[LocalEpisodeRef]:
+        """Return on-disk episode identities without probing media tracks."""
+        out: list[LocalEpisodeRef] = []
+        for row in self._media_library.list_episode_files(anime_id) or []:
+            file_id = str(row.get("file_id") or "").strip()
+            if not file_id:
+                continue
+            out.append(
+                LocalEpisodeRef(
+                    file_id=file_id,
+                    episode=_safe_int(row.get("episode")),
+                )
+            )
+        return out
 
     def list_episode_files(self, query: ListEpisodeFilesQuery) -> list[EpisodeFileDTO]:
         out: list[EpisodeFileDTO] = []

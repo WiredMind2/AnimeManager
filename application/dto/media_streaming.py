@@ -6,6 +6,14 @@ from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
+class LocalEpisodeRef:
+    """Filesystem-only episode identity (no ffprobe)."""
+
+    file_id: str
+    episode: int | None = None
+
+
+@dataclass(slots=True)
 class EpisodeFileDTO:
     file_id: str
     title: str
@@ -68,4 +76,4 @@ class PlaybackSessionDTO:
     extra: dict[str, str] = field(default_factory=dict)
 
 
-__all__ = ["EpisodeFileDTO", "PlaybackSessionDTO"]
+__all__ = ["EpisodeFileDTO", "LocalEpisodeRef", "PlaybackSessionDTO"]
