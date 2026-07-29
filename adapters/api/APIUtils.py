@@ -559,15 +559,15 @@ class APIUtils:
                 exists = bool(self.database.sql(sql, (character_id, anime_id))[0][0])
 
                 if exists:
-                    # The relation already existed
                     sql = "UPDATE characterRelations SET role = ? WHERE id = ? AND anime_id = ?;"
-                    self.database.sql(sql, (role, character_id, anime_id))
+                    self.database.sql(
+                        sql, (role, character_id, anime_id), save=True
+                    )
                 else:
-                    # Create new relation
                     sql = "INSERT INTO characterRelations(id, anime_id, role) VALUES(?, ?, ?);"
-                    self.database.sql(sql, (character_id, anime_id, role))
-
-            # self.database.save()
+                    self.database.sql(
+                        sql, (character_id, anime_id, role), save=True
+                    )
 
     # def save_mapped_characters(self, ) TODO
 
