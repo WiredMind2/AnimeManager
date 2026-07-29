@@ -1,7 +1,11 @@
 "use client";
 
 import Script from "next/script";
-import { useCallback, useEffect, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
+import {
+  toAbsoluteSourceSeconds,
+  toManifestRelativeSeconds,
+} from "@/lib/playback/progress";
 import type { usePlayback } from "@/lib/playback/use-playback";
 
 export type PlaybackSession = ReturnType<typeof usePlayback>;
@@ -11,6 +15,11 @@ export type VideoPlayerProps = {
   videoRef: RefObject<HTMLVideoElement | null>;
   panelRef: RefObject<HTMLDivElement | null>;
   session: PlaybackSession;
+};
+
+type MediaControllerElement = HTMLElement & {
+  mediaDuration?: number;
+  mediaCurrentTime?: number;
 };
 
 export default function VideoPlayer({ animeId, videoRef, panelRef, session }: VideoPlayerProps) {
@@ -26,40 +35,100 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
     setSubtitleTrackId,
     queueReplayCurrent,
     streamDurationSeconds,
+    hlsAnchorSegment,
+    segmentSeconds,
   } = session;
 
-  // MSE/HLS can report UINT32-scale durations when segment PTS is wrong.
-  // Pin media-chrome to the server-probed episode length when that happens.
+  const prevElementTimeRef = useRef(0);
+
+  const anchorOpts = useCallback(
+    () => ({
+      hlsAnchorSegment,
+      segmentSeconds,
+      maxSeconds: streamDurationSeconds,
+    }),
+    [hlsAnchorSegment, segmentSeconds, streamDurationSeconds],
+  );
+
+  const elementTimeFromAbsolute = useCallback(
+    (absoluteSeconds: number, currentVideoSeconds?: number) =>
+      toManifestRelativeSeconds(absoluteSeconds, {
+        ...anchorOpts(),
+        currentVideoSeconds: currentVideoSeconds ?? videoRef.current?.currentTime ?? 0,
+      }),
+    [anchorOpts, videoRef],
+  );
+
+  const seekByAbsoluteDelta = useCallback(
+    (deltaSeconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const currentElement = Number(video.currentTime || 0);
+      const absolute = toAbsoluteSourceSeconds(currentElement, anchorOpts());
+      const targetAbsolute = Math.max(0, absolute + deltaSeconds);
+      video.currentTime = elementTimeFromAbsolute(targetAbsolute, currentElement);
+    },
+    [anchorOpts, elementTimeFromAbsolute, videoRef],
+  );
+
+  // Drive media-chrome from absolute episode time; pin duration for EVENT/Infinity.
   useEffect(() => {
     const video = videoRef.current;
     const controller = panelRef.current?.querySelector("media-controller") as
-      | (HTMLElement & { mediaDuration?: number; mediaCurrentTime?: number })
+      | MediaControllerElement
       | null;
-    if (!video || !controller || !streamDurationSeconds || streamDurationSeconds <= 0) {
+    if (!video || !controller) {
       return;
     }
 
     const syncTimeline = () => {
-      const reportedDuration = video.duration;
-      const durationAbsurd =
-        Number.isFinite(reportedDuration) && reportedDuration > streamDurationSeconds * 1.2;
+      const t = Number(video.currentTime || 0);
+      prevElementTimeRef.current = t;
 
-      // Only pin the displayed duration. Never rewrite mediaCurrentTime to
-      // playbackStartSeconds — that snaps the scrubber back to the session
-      // resume point on every mid-watch seek that briefly reports a bad PTS.
-      if (durationAbsurd) {
-        controller.mediaDuration = streamDurationSeconds;
+      if (streamDurationSeconds && streamDurationSeconds > 0) {
+        const reportedDuration = video.duration;
+        const shouldPin =
+          !Number.isFinite(reportedDuration) ||
+          reportedDuration <= 0 ||
+          reportedDuration > streamDurationSeconds * 1.2;
+        if (shouldPin) {
+          controller.mediaDuration = streamDurationSeconds;
+        }
       }
+
+      controller.mediaCurrentTime = toAbsoluteSourceSeconds(t, anchorOpts());
+    };
+
+    const remapScrubberSeek = () => {
+      const t = Number(video.currentTime || 0);
+      const prev = prevElementTimeRef.current;
+      const remapped = elementTimeFromAbsolute(t, prev);
+      if (Math.abs(remapped - t) > 0.01) {
+        video.currentTime = remapped;
+      }
+      prevElementTimeRef.current = Number(video.currentTime || 0);
     };
 
     syncTimeline();
+    video.addEventListener("timeupdate", syncTimeline);
     video.addEventListener("durationchange", syncTimeline);
     video.addEventListener("loadedmetadata", syncTimeline);
+    video.addEventListener("seeking", remapScrubberSeek);
+    video.addEventListener("seeked", syncTimeline);
     return () => {
+      video.removeEventListener("timeupdate", syncTimeline);
       video.removeEventListener("durationchange", syncTimeline);
       video.removeEventListener("loadedmetadata", syncTimeline);
+      video.removeEventListener("seeking", remapScrubberSeek);
+      video.removeEventListener("seeked", syncTimeline);
     };
-  }, [panelRef, streamDurationSeconds, videoRef]);
+  }, [
+    anchorOpts,
+    elementTimeFromAbsolute,
+    panelRef,
+    streamDurationSeconds,
+    videoRef,
+  ]);
 
   // Keyboard shortcuts on the player host, matching the legacy web UI:
   // Space/k play-pause, ←/→ seek ±10s, m mute, f fullscreen.
@@ -77,10 +146,10 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         else video.pause();
       } else if (ev.key === "ArrowLeft") {
         ev.preventDefault();
-        video.currentTime = Math.max(0, (video.currentTime || 0) - 10);
+        seekByAbsoluteDelta(-10);
       } else if (ev.key === "ArrowRight") {
         ev.preventDefault();
-        video.currentTime = (video.currentTime || 0) + 10;
+        seekByAbsoluteDelta(10);
       } else if (ev.key === "m") {
         ev.preventDefault();
         video.muted = !video.muted;
@@ -102,7 +171,7 @@ export default function VideoPlayer({ animeId, videoRef, panelRef, session }: Vi
         }
       }
     },
-    [videoRef, panelRef],
+    [panelRef, seekByAbsoluteDelta, videoRef],
   );
 
   return (

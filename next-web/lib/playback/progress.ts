@@ -18,6 +18,14 @@ export function clampPlaybackSeconds(seconds: number, maxSeconds?: number | null
   return seconds;
 }
 
+export type PlaybackAnchorOpts = {
+  hlsAnchorSegment?: number;
+  segmentSeconds?: number;
+  maxSeconds?: number | null;
+  /** Current ``video.currentTime`` — picks manifest-relative vs absolute element space. */
+  currentVideoSeconds?: number;
+};
+
 /** Map ``video.currentTime`` to absolute source seconds for anchored HLS windows. */
 export function toAbsoluteSourceSeconds(
   videoSeconds: number,
@@ -37,6 +45,34 @@ export function toAbsoluteSourceSeconds(
   const anchorSource = anchor * segSecs;
   const absolute = t >= anchorSource - 1 ? t : anchorSource + t;
   return clampPlaybackSeconds(absolute, opts.maxSeconds);
+}
+
+/** Inverse of ``toAbsoluteSourceSeconds`` for seeks and media-chrome scrubber writes. */
+export function toManifestRelativeSeconds(
+  absoluteSeconds: number,
+  opts: PlaybackAnchorOpts,
+): number {
+  const anchor = Math.max(0, Number(opts.hlsAnchorSegment ?? 0));
+  const segSecs = Math.max(1, Number(opts.segmentSeconds ?? 4));
+  let a = Number(absoluteSeconds || 0);
+  if (!Number.isFinite(a) || a < 0) return 0;
+
+  if (opts.maxSeconds != null && Number.isFinite(opts.maxSeconds) && opts.maxSeconds > 0) {
+    a = Math.min(a, opts.maxSeconds);
+  }
+
+  if (anchor <= 0) {
+    return a;
+  }
+
+  const anchorSource = anchor * segSecs;
+  const current = Number(opts.currentVideoSeconds ?? 0);
+  const inManifestRelativeSpace = Number.isFinite(current) && current < anchorSource - 1;
+
+  if (inManifestRelativeSpace) {
+    return Math.max(0, a - anchorSource);
+  }
+  return Math.max(0, a);
 }
 
 /** Mid-playback MSE corruption: playhead jumps without a user seek. */

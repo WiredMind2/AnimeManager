@@ -103,6 +103,8 @@ export function usePlayback(
   const [subtitleTrackId, setSubtitleTrackId] = useState("");
   const [streamDurationSeconds, setStreamDurationSeconds] = useState<number | null>(null);
   const [playbackStartSeconds, setPlaybackStartSeconds] = useState(0);
+  const [hlsAnchorSegment, setHlsAnchorSegment] = useState(0);
+  const [segmentSeconds, setSegmentSeconds] = useState(4);
 
   const streamDurationRef = useRef<number | null>(null);
   const playbackStartSecondsRef = useRef(0);
@@ -396,6 +398,8 @@ export function usePlayback(
       streamDurationRef.current = null;
       setPlaybackStartSeconds(0);
       playbackStartSecondsRef.current = 0;
+      setHlsAnchorSegment(0);
+      setSegmentSeconds(4);
       hlsAnchorSegmentRef.current = 0;
       segmentSecondsRef.current = 4;
       playerLoggerRef.current?.setFileId(fileId);
@@ -488,6 +492,8 @@ export function usePlayback(
       playbackStartSecondsRef.current = playbackStartSeconds;
       hlsAnchorSegmentRef.current = hlsAnchorSegment;
       segmentSecondsRef.current = segmentSeconds;
+      setHlsAnchorSegment(hlsAnchorSegment);
+      setSegmentSeconds(segmentSeconds);
       lastSaneCurrentTimeRef.current = loadStartTime;
       userSeekingRef.current = false;
       lastUserSeekAtRef.current = null;
@@ -865,5 +871,7 @@ export function usePlayback(
     stopSession,
     streamDurationSeconds,
     playbackStartSeconds,
+    hlsAnchorSegment,
+    segmentSeconds,
   };
 }
