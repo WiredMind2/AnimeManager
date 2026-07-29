@@ -69,6 +69,60 @@ class ResultParser:
         self._max_line_bytes = max_line_bytes
         self._metrics = get_metrics()
 
+    def from_fields(
+        self,
+        *,
+        link: str,
+        name: str,
+        size: Any = 0,
+        seeds: Any = 0,
+        leech: Any = 0,
+        engine_url: str,
+        desc_link: Optional[str] = None,
+    ) -> Optional[TorrentResult]:
+        """Build a :class:`TorrentResult` from already-split fields.
+
+        Used by first-party sources (e.g. SubsPlease API) that do not emit
+        ``prettyPrinter`` lines but still need the same validation / title
+        parsing as Nova workers.
+        """
+        magnet = str(link or "").strip()
+        if not _MAGNET_RE.match(magnet):
+            self._metrics.incr("parser_dropped_non_magnet")
+            return None
+        clean_name = self._clean_text(str(name or ""))
+        clean_engine = str(engine_url or "").strip()
+        if not clean_name or not clean_engine:
+            self._metrics.incr("parser_dropped_missing_field")
+            return None
+        try:
+            size_i = max(0, int(size or 0))
+        except (TypeError, ValueError):
+            size_i = 0
+            self._metrics.incr("parser_size_coerced")
+        seeds_i = self._safe_int(seeds)
+        leech_i = self._safe_int(leech)
+        desc = str(desc_link).strip() if desc_link else None
+        if desc == "":
+            desc = None
+        self._metrics.incr("parser_accepted")
+        try:
+            parsed = parse_title(clean_name)
+        except Exception:  # pragma: no cover - parser is total but defensive
+            self._metrics.incr("parser_title_extract_failed")
+            parsed = None
+        return TorrentResult(
+            link=magnet,
+            name=clean_name,
+            size=size_i,
+            seeds=seeds_i,
+            leech=leech_i,
+            engine_url=clean_engine,
+            desc_link=desc,
+            infohash=self._extract_infohash(magnet),
+            parsed=parsed,
+        )
+
     def parse(self, line: bytes) -> Optional[TorrentResult]:
         if not line:
             return None
@@ -90,46 +144,14 @@ class ResultParser:
             return None
 
         record: Dict[str, str] = dict(zip(_PRETTY_KEYS, parts))
-        link = record.get("link", "").strip()
-        if not _MAGNET_RE.match(link):
-            self._metrics.incr("parser_dropped_non_magnet")
-            return None
-
-        infohash = self._extract_infohash(link)
-        name = self._clean_text(record.get("name", ""))
-        engine_url = record.get("engine_url", "").strip()
-        desc_link = record.get("desc_link") or None
-        if desc_link is not None:
-            desc_link = desc_link.strip() or None
-
-        try:
-            size = max(0, int(record.get("size", "0").strip() or 0))
-        except ValueError:
-            size = 0
-            self._metrics.incr("parser_size_coerced")
-        seeds = self._safe_int(record.get("seeds"))
-        leech = self._safe_int(record.get("leech"))
-
-        if not name or not engine_url:
-            self._metrics.incr("parser_dropped_missing_field")
-            return None
-
-        self._metrics.incr("parser_accepted")
-        try:
-            parsed = parse_title(name)
-        except Exception:  # pragma: no cover - parser is total but defensive
-            self._metrics.incr("parser_title_extract_failed")
-            parsed = None
-        return TorrentResult(
-            link=link,
-            name=name,
-            size=size,
-            seeds=seeds,
-            leech=leech,
-            engine_url=engine_url,
-            desc_link=desc_link,
-            infohash=infohash,
-            parsed=parsed,
+        return self.from_fields(
+            link=record.get("link", ""),
+            name=record.get("name", ""),
+            size=record.get("size", "0"),
+            seeds=record.get("seeds"),
+            leech=record.get("leech"),
+            engine_url=record.get("engine_url", ""),
+            desc_link=record.get("desc_link"),
         )
 
     @staticmethod

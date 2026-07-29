@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 
 _LOG = logging.getLogger(__name__)
 
@@ -28,6 +29,10 @@ AUTO_ENCODER_PRIORITY: tuple[str, ...] = (
 )
 
 _ENCODER_LINE_RE = re.compile(r"^\s*V\S+\s+(\S+)\s+")
+
+# Process-lifetime cache: (resolved ffmpeg path, encoder) -> usable?
+_USABLE_CACHE: dict[tuple[str, str], bool] = {}
+_USABLE_CACHE_LOCK = threading.Lock()
 
 
 def list_h264_encoders(ffmpeg_bin: str) -> set[str]:
@@ -60,6 +65,86 @@ def list_h264_encoders(ffmpeg_bin: str) -> set[str]:
     return found
 
 
+def encoder_is_usable(ffmpeg_bin: str, encoder: str) -> bool:
+    """True when ``encoder`` can actually open on this machine.
+
+    ``ffmpeg -encoders`` lists hardware encoders even when the driver/SDK
+    is too old (e.g. NVENC API 13.0 vs a build requiring 13.1). A tiny
+    lavfi smoke encode catches that before playback session create.
+    """
+    resolved = encoder if encoder in SUPPORTED_ENCODERS else SOFTWARE_ENCODER
+    if resolved == SOFTWARE_ENCODER:
+        return True
+
+    ffmpeg_cmd = shutil.which(ffmpeg_bin) or ffmpeg_bin
+    cache_key = (ffmpeg_cmd, resolved)
+    with _USABLE_CACHE_LOCK:
+        cached = _USABLE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    usable = _probe_encoder_open(ffmpeg_cmd, resolved)
+    with _USABLE_CACHE_LOCK:
+        _USABLE_CACHE[cache_key] = usable
+    if not usable:
+        _LOG.warning(
+            "ffmpeg_video_encoder_unusable encoder=%s ffmpeg=%s",
+            resolved,
+            ffmpeg_cmd,
+        )
+    return usable
+
+
+def _probe_encoder_open(ffmpeg_cmd: str, encoder: str) -> bool:
+    command = [
+        ffmpeg_cmd,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=256x144:d=0.1",
+        "-frames:v",
+        "1",
+        "-c:v",
+        encoder,
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except Exception:
+        return False
+    if result.returncode == 0:
+        return True
+    stderr = (result.stderr or "").strip()
+    if stderr:
+        _LOG.info(
+            "ffmpeg_encoder_probe_failed encoder=%s rc=%s err=%s",
+            encoder,
+            result.returncode,
+            stderr.splitlines()[-1][:240],
+        )
+    return False
+
+
+def clear_encoder_usable_cache() -> None:
+    """Test helper — drop process-lifetime usability cache."""
+    with _USABLE_CACHE_LOCK:
+        _USABLE_CACHE.clear()
+
+
 def resolve_video_encoder(*, requested: str, ffmpeg_bin: str) -> str:
     """Resolve a settings value to a concrete FFmpeg video encoder name."""
     normalized = str(requested or "auto").strip().lower()
@@ -67,10 +152,13 @@ def resolve_video_encoder(*, requested: str, ffmpeg_bin: str) -> str:
 
     if normalized == "auto":
         for candidate in AUTO_ENCODER_PRIORITY:
-            if candidate in available:
-                if candidate != SOFTWARE_ENCODER:
-                    _LOG.info("ffmpeg_video_encoder_auto_selected encoder=%s", candidate)
-                return candidate
+            if candidate not in available:
+                continue
+            if not encoder_is_usable(ffmpeg_bin, candidate):
+                continue
+            if candidate != SOFTWARE_ENCODER:
+                _LOG.info("ffmpeg_video_encoder_auto_selected encoder=%s", candidate)
+            return candidate
         return SOFTWARE_ENCODER
 
     if normalized not in SUPPORTED_ENCODERS:
@@ -84,6 +172,14 @@ def resolve_video_encoder(*, requested: str, ffmpeg_bin: str) -> str:
     if normalized not in available:
         _LOG.warning(
             "ffmpeg_video_encoder_unavailable requested=%s fallback=%s",
+            normalized,
+            SOFTWARE_ENCODER,
+        )
+        return SOFTWARE_ENCODER
+
+    if not encoder_is_usable(ffmpeg_bin, normalized):
+        _LOG.warning(
+            "ffmpeg_video_encoder_unusable requested=%s fallback=%s",
             normalized,
             SOFTWARE_ENCODER,
         )
@@ -169,6 +265,8 @@ __all__ = [
     "SOFTWARE_ENCODER",
     "SUPPORTED_ENCODERS",
     "build_video_encode_args",
+    "clear_encoder_usable_cache",
+    "encoder_is_usable",
     "list_h264_encoders",
     "resolve_video_encoder",
 ]

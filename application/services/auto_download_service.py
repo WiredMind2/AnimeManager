@@ -57,6 +57,7 @@ class AutoDownloadService:
         settings_provider: Callable[[], Mapping[str, Any]] | None = None,
         feed_fetcher: Any | None = None,
         rss_match_fn: Callable[..., Optional[dict[str, Any]]] | None = None,
+        subsplease_search_fn: Callable[..., Optional[dict[str, Any]]] | None = None,
     ) -> None:
         self._user_actions = user_actions
         self._anime_repository = anime_repository
@@ -69,6 +70,7 @@ class AutoDownloadService:
         self._settings_provider = settings_provider
         self._feed_fetcher = feed_fetcher
         self._rss_match_fn = rss_match_fn
+        self._subsplease_search_fn = subsplease_search_fn
         self._last_check: dict[int, float] = {}
 
     def _log(self, message: str) -> None:
@@ -265,6 +267,35 @@ class AutoDownloadService:
             seen_keys=seen,
         )
 
+    def find_subsplease_api_candidate(
+        self,
+        anime_id: int,
+        episode: int,
+    ) -> Optional[dict[str, Any]]:
+        """Catch-up via SubsPlease JSON search (720p) when RSS misses."""
+        searcher = self._subsplease_search_fn
+        if not callable(searcher):
+            self._log(f"anime {anime_id}: SubsPlease API fallback unavailable")
+            return None
+        terms = self._search_terms(anime_id)
+        if not terms:
+            self._log(f"anime {anime_id}: no search terms for SubsPlease API fallback")
+            return None
+        self._log(
+            f"anime {anime_id}: RSS miss; SubsPlease API fallback for ep {episode}"
+        )
+        try:
+            return searcher(terms, episode=episode)
+        except TypeError:
+            try:
+                return searcher(terms, episode)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"anime {anime_id}: SubsPlease API fallback failed: {exc}")
+                return None
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"anime {anime_id}: SubsPlease API fallback failed: {exc}")
+            return None
+
     def _candidate_url(self, candidate: Mapping[str, Any]) -> Optional[str]:
         for key in ("link", "magnet", "url", "desc_link"):
             value = candidate.get(key)
@@ -301,9 +332,7 @@ class AutoDownloadService:
                 user_id=self._user_id,
                 source="auto",
             )
-            if isinstance(result, dict):
-                return bool(result.get("started"))
-            return bool(result)
+            return self._started_download_result(anime_id, result)
         except TypeError:
             try:
                 result = start(
@@ -312,15 +341,24 @@ class AutoDownloadService:
                     hash_value=hash_value,
                     user_id=self._user_id,
                 )
-                if isinstance(result, dict):
-                    return bool(result.get("started"))
-                return bool(result)
+                return self._started_download_result(anime_id, result)
             except Exception as exc:  # noqa: BLE001
                 self._log(f"anime {anime_id}: start_download failed: {exc}")
                 return False
         except Exception as exc:  # noqa: BLE001
             self._log(f"anime {anime_id}: start_download failed: {exc}")
             return False
+
+    def _started_download_result(self, anime_id: int, result: Any) -> bool:
+        if isinstance(result, dict):
+            if result.get("started"):
+                return True
+            reason = result.get("reason") or (
+                "skipped" if result.get("skipped") else "not started"
+            )
+            self._log(f"anime {anime_id}: start_download did not start ({reason})")
+            return False
+        return bool(result)
 
     def _mark_rss_seen(self, candidate: Mapping[str, Any]) -> None:
         marker = getattr(self._user_actions, "mark_rss_feed_seen", None)
@@ -348,29 +386,69 @@ class AutoDownloadService:
                 cooldown = self._cooldown_s
         return (now - last) < cooldown
 
+    CATCH_UP_MAX = 5
+
     def process_anime(self, anime_id: int) -> str:
-        """Check one anime and optionally queue a download. Returns a status detail."""
+        """Check one anime and optionally queue download(s). Returns a status detail.
+
+        For RSS mode, after the first queue, keep catching up via SubsPlease API
+        for subsequent missing episodes (up to ``CATCH_UP_MAX``) so late opt-in
+        does not wait one cooldown interval per episode.
+        """
         prefs = self.get_download_preferences(anime_id)
         preference = self.resolve_preference(anime_id)
         if preference is None:
             return "skipped (no preference)"
-        owned = self.owned_episodes(anime_id)
+        owned = set(self.owned_episodes(anime_id))
         episode = next_episode(owned)
         if episode is None:
             return "skipped (no owned episodes)"
         mode = str(prefs.get("source_mode") or DEFAULT_SOURCE_MODE).lower()
-        if mode == "rss":
-            candidate = self.find_rss_candidate(anime_id, preference, episode, prefs)
-        else:
-            candidate = self.find_candidate(anime_id, preference, episode)
-        if candidate is None:
-            return f"skipped (no match for ep {episode})"
-        if self._start_auto_download(anime_id, candidate):
+
+        queued: list[str] = []
+        first_miss_episode: int | None = None
+
+        for _ in range(self.CATCH_UP_MAX):
+            episode = next_episode(owned)
+            if episode is None:
+                break
             if mode == "rss":
+                candidate = self.find_rss_candidate(
+                    anime_id, preference, episode, prefs
+                )
+                if candidate is None:
+                    candidate = self.find_subsplease_api_candidate(anime_id, episode)
+            else:
+                candidate = self.find_candidate(anime_id, preference, episode)
+                # Search mode still only queues one per pass (expensive).
+                if candidate is None:
+                    first_miss_episode = episode
+                    break
+                if self._start_auto_download(anime_id, candidate):
+                    name = str(
+                        candidate.get("name") or candidate.get("infohash") or "torrent"
+                    )
+                    return f"queued ep {episode}: {name}"
+                return f"failed to queue ep {episode}"
+
+            if candidate is None:
+                first_miss_episode = episode
+                break
+            if not self._start_auto_download(anime_id, candidate):
+                if queued:
+                    break
+                return f"failed to queue ep {episode}"
+            if mode == "rss" and str(candidate.get("source") or "") == "rss":
                 self._mark_rss_seen(candidate)
             name = str(candidate.get("name") or candidate.get("infohash") or "torrent")
-            return f"queued ep {episode}: {name}"
-        return f"failed to queue ep {episode}"
+            queued.append(f"ep {episode}: {name}")
+            owned.add(int(episode))
+
+        if queued:
+            return "queued " + "; ".join(queued)
+        if first_miss_episode is not None:
+            return f"skipped (no match for ep {first_miss_episode})"
+        return "skipped (no match)"
 
     def run_once(self, *, force: bool = False) -> AutoDownloadOutcome:
         """Process every eligible anime once."""

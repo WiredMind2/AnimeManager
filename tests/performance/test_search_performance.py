@@ -110,7 +110,9 @@ def test_subprocess_fanout_is_bounded_by_planner(monkeypatch):
         allow_insecure_engines=False,
         allow_no_timeout_engines=True,
     )
-    facade = SearchFacade(profile=profile, policy=get_default_policy())
+    facade = SearchFacade(
+        profile=profile, policy=get_default_policy(), subsplease_search=None
+    )
     raw = [f"Synonym {i}" for i in range(20)]
     list(facade.search(raw))
 

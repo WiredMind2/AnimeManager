@@ -90,7 +90,9 @@ def _profile(**overrides) -> SearchProfile:
 class TestEmptyInputs:
     def test_empty_term_list_yields_empty(self, monkeypatch, policy_factory):
         policy = policy_factory(engines={"nyaasi": {"enabled": True}})
-        facade = SearchFacade(profile=_profile(), policy=policy)
+        facade = SearchFacade(
+            profile=_profile(), policy=policy, subsplease_search=None
+        )
 
         runner = _ScriptedRunner({})
         monkeypatch.setattr(
@@ -103,7 +105,9 @@ class TestEmptyInputs:
 
     def test_terms_collapsing_to_zero_yields_empty(self, monkeypatch, policy_factory):
         policy = policy_factory(engines={"nyaasi": {"enabled": True}})
-        facade = SearchFacade(profile=_profile(), policy=policy)
+        facade = SearchFacade(
+            profile=_profile(), policy=policy, subsplease_search=None
+        )
 
         runner = _ScriptedRunner({})
         monkeypatch.setattr(
@@ -114,7 +118,9 @@ class TestEmptyInputs:
 
     def test_iterable_without_len_succeeds(self, monkeypatch, policy_factory):
         policy = policy_factory(engines={"nyaasi": {"enabled": True}})
-        facade = SearchFacade(profile=_profile(), policy=policy)
+        facade = SearchFacade(
+            profile=_profile(), policy=policy, subsplease_search=None
+        )
         runner = _ScriptedRunner({})
         monkeypatch.setattr(
             "search_engines.worker._ProcessRunner.spawn", runner.spawn
@@ -150,7 +156,7 @@ class TestEmptyInputs:
                 queue_capacity=32,
             )
         )
-        facade = SearchFacade(profile=profile, policy=policy)
+        facade = SearchFacade(profile=profile, policy=policy, subsplease_search=None)
 
         runner = _ScriptedRunner({"unknown title": b""})
         monkeypatch.setattr(

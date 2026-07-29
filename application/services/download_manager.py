@@ -208,14 +208,10 @@ class DownloadManager(BaseComponent):
                 status = None
         if status == "deleted":
             return None
-
-        data_getter = getattr(db_manager, "get_torrent_data", None)
-        if callable(data_getter):
-            try:
-                if data_getter(key) is not None:
-                    return "already indexed"
-            except Exception:  # noqa: BLE001
-                pass
+        # Completed downloads must not be re-queued. Incomplete DB-only rows
+        # (indexed but not in the live client) are orphans and may re-add.
+        if status == "complete":
+            return "already complete"
         return None
 
     def _skipped_download_queue(self) -> queue.Queue:

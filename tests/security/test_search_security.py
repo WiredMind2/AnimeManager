@@ -103,7 +103,9 @@ def test_shell_metacharacters_arrive_as_single_argv_slot(monkeypatch, term):
         allow_insecure_engines=False,
         allow_no_timeout_engines=True,
     )
-    facade = SearchFacade(profile=profile, policy=get_default_policy())
+    facade = SearchFacade(
+        profile=profile, policy=get_default_policy(), subsplease_search=None
+    )
 
     list(facade.search([term + " series"]))  # drain generator
 

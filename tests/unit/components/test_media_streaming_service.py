@@ -14,7 +14,7 @@ from application.commands import (
 from application.queries import GetPlaybackSessionQuery
 from application.playback.resume import anchor_segment, resume_segment_index
 from application.playback.service import PlaybackService
-from domain.errors import NotFoundError, UnauthorizedError, ValidationError
+from domain.errors import InfrastructureError, NotFoundError, UnauthorizedError, ValidationError
 
 
 class _FakeLibrary:
@@ -296,6 +296,37 @@ class _UnreadableFakeTranscoder(_SeekableFakeTranscoder):
         return {"audio": [], "subtitles": []}
 
 
+class _DeadOnCreateFake(_SeekableFakeTranscoder):
+    """ffmpeg dies immediately without writing the playhead segment."""
+
+    def ensure_hls_session(self, **kwargs):
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        self._output_dir = out
+        self.calls.append(
+            {
+                "start_segment_index": kwargs.get("start_segment_index", 0),
+                "segment_seconds": kwargs.get("segment_seconds"),
+            }
+        )
+        (out / "_ffmpeg.log").write_text(
+            "[AnimeManager] ffmpeg spawn\n"
+            "[h264_nvenc @ x] Driver does not support the required nvenc API version.\n"
+            "[vost#0:0/h264_nvenc] Error while opening encoder\n",
+            encoding="utf-8",
+        )
+        return {
+            "manifest_path": str(out / "index.m3u8"),
+            "output_dir": str(out),
+            "start_segment_index": str(kwargs.get("start_segment_index", 0)),
+            "segment_seconds": str(kwargs.get("segment_seconds")),
+        }
+
+    def is_hls_session_running(self, session_id: str) -> bool:
+        _ = session_id
+        return False
+
+
 # --- Cycle 1: resume create contract ---
 
 
@@ -358,6 +389,30 @@ def test_create_session_postcondition_playhead_segment_exists(tmp_path: Path):
     )
     playhead = Path(session.output_dir) / "segment_00177.ts"
     assert playhead.is_file(), "segment_00177.ts must exist when /play returns for 708s resume"
+
+
+def test_create_session_fails_fast_when_transcoder_dies(tmp_path: Path):
+    svc = PlaybackService(
+        media_library=_FakeLibrary(tmp_path),
+        transcoder=_DeadOnCreateFake(duration=600.0),
+        token_secret="test-secret",
+        default_ttl_seconds=120,
+    )
+    started = time.monotonic()
+    with pytest.raises(InfrastructureError) as excinfo:
+        svc.create_session(
+            CreatePlaybackSessionCommand(
+                anime_id=1,
+                file_id="ep-1",
+                client_host="127.0.0.1",
+                ttl_seconds=120,
+            )
+        )
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0
+    message = str(excinfo.value)
+    assert "Transcoder exited before segment" in message
+    assert "nvenc" in message.lower()
 
 
 def test_create_session_rejects_unreadable_incomplete_file(tmp_path: Path):

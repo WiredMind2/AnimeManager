@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from adapters.feeds.rss_feed_adapter import RssFeedAdapter
 from adapters.feeds.rss_match import find_rss_candidate
+from adapters.search.subsplease_api import SubsPleaseSearchAdapter
 from adapters.file.local_media_library import LocalMediaLibraryAdapter
 from adapters.media import FFmpegTranscoderAdapter
 from adapters.media.ffmpeg_paths import resolve_ffmpeg_bins
@@ -118,6 +119,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         schedule_limit = int(anime_cfg.get("maxTrendingAnime", 50))
     except (TypeError, ValueError):
         schedule_limit = 50
+    subsplease_search = SubsPleaseSearchAdapter(resolution="720")
     auto_download = AutoDownloadService(
         user_actions=user_actions,
         anime_repository=repository,
@@ -128,6 +130,7 @@ def build_embedded_facade() -> EmbeddedClientFacade:
         settings_provider=lambda: dict(deps.config.settings or {}),
         feed_fetcher=RssFeedAdapter(),
         rss_match_fn=find_rss_candidate,
+        subsplease_search_fn=subsplease_search.search_for_episode,
     )
     startup_jobs = StartupJobsService(
         api_coordinator=metadata.api_coordinator,

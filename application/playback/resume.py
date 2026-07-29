@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from application.playback.contract import MIN_RESUME_SECONDS, NEAR_END_RESTART_SECONDS, PREFETCH_MARGIN
@@ -55,11 +56,24 @@ def clamp_resume_seconds(
     return min(seconds, max_duration - 1.0)
 
 
-def wait_for_file(target: Path, timeout: float) -> bool:
+def wait_for_file(
+    target: Path,
+    timeout: float,
+    *,
+    should_abort: Callable[[], bool] | None = None,
+) -> bool:
+    """Wait until ``target`` exists.
+
+    Returns ``False`` on timeout. If ``should_abort`` returns True before the
+    file appears, raises ``RuntimeError("aborted")`` so callers can map that
+    to a transcoder-died error without waiting out the full timeout.
+    """
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         if target.is_file():
             return True
+        if should_abort is not None and should_abort():
+            raise RuntimeError("aborted")
         if time.monotonic() >= deadline:
             return target.is_file()
         time.sleep(0.1)

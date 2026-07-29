@@ -100,13 +100,15 @@ HLS playback needs `ffmpeg` and `ffprobe`. Composition prefers **project-local**
 | [`tools/ffmpeg/bin/`](tools/ffmpeg/bin/) | Preferred (gitignored) |
 | System `PATH` | Fallback |
 
-Install on Windows (downloads gyan.dev essentials):
+Install on Windows (downloads gyan.dev essentials; prefers an NVENC-usable build when the newest release cannot open GPU encode on the local driver):
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/install_ffmpeg.py
+# Re-pick after a driver upgrade:
+.\.venv\Scripts\python.exe scripts/install_ffmpeg.py --force --prefer-gpu
 ```
 
-Restart the app after installing. See [`tools/ffmpeg/README.md`](tools/ffmpeg/README.md). Without ffmpeg, episode listings show **Needs ffmpeg** (not “Not ready”), and `/play` returns an infrastructure error with the install hint.
+Restart the app after installing. See [`tools/ffmpeg/README.md`](tools/ffmpeg/README.md). Without ffmpeg, episode listings show **Needs ffmpeg** (not “Not ready”), and `/play` returns an infrastructure error with the install hint. Encoder `auto` probes real NVENC usability (listed ≠ usable when the driver is older than the ffmpeg NVENC SDK).
 
 ---
 
@@ -125,7 +127,9 @@ Background loop (`AM-AutoDownload` in [`StartupJobsService`](application/service
 | Detail UI | [`next-web/components/anime/AutoDownloadPanel.tsx`](next-web/components/anime/AutoDownloadPanel.tsx) |
 | Global feeds UI | [`next-web/components/settings/AutoDownloadSettingsPanel.tsx`](next-web/components/settings/AutoDownloadSettingsPanel.tsx) |
 
-**Source modes (per anime):** `search` (Nova3) or `rss` (configured feeds). Preferences: publisher, resolution, feed ids, `use_inferred`. Global config in `settings.json` → `auto_download` (kill switch, interval, builtin SubsPlease feeds, custom feeds).
+**Source modes (per anime):** `search` (Nova3) or `rss` (configured feeds). Preferences: publisher, resolution, feed ids, `use_inferred`. Global config in `settings.json` → `auto_download` (kill switch, interval, builtin SubsPlease feeds, custom feeds). When RSS misses, catch-up uses the same SubsPlease JSON client ([`adapters/search/subsplease_api.py`](adapters/search/subsplease_api.py)).
+
+**Interactive torrent search:** [`SearchFacade`](adapters/search/facade.py) queries Nova3 engines **and** SubsPlease (`f=search`) as a first-party parallel source — not a Nova3 plugin. Results share the same sink, dedupe, and ranking path.
 
 | Method | Path |
 |--------|------|
@@ -464,7 +468,7 @@ Transcoder: [`adapters/media/ffmpeg_transcoder.py`](adapters/media/ffmpeg_transc
 
 | Value | Behavior |
 |-------|----------|
-| `auto` | Prefer hardware encoders: `h264_nvenc` → `h264_qsv` → `h264_amf` → `h264_mf` → `libx264` |
+| `auto` | Prefer hardware encoders that actually open on this machine: `h264_nvenc` → `h264_qsv` → `h264_amf` → `h264_mf` → `libx264` (listed-but-unusable NVENC is skipped) |
 | `libx264` | Force CPU software encoding |
 | `h264_nvenc` / `h264_qsv` / `h264_amf` / `h264_mf` | Force a specific encoder; falls back to `libx264` if unavailable |
 

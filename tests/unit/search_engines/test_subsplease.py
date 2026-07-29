@@ -42,3 +42,15 @@ def test_release_matches_catalog_colon_synonym():
 def test_release_matches_catalog_romanized_overlap():
     catalog = "Suterare Seijo no Isekai Gohan Tabi"
     assert release_matches_catalog("Suterare Seijo no Isekai Gohan Tabi", catalog)
+
+
+def test_release_matches_catalog_rejects_tiny_folded_keys():
+    # Japanese synonyms that fold to a lone ``s`` (from ``S-Rank``) must not
+    # match arbitrary SubsPlease titles.
+    jp = "落第賢者の学院無双～二度目の転生、Sランクチート魔術師冒険録～"
+    assert not release_matches_catalog("Futsutsuka na Akujo dewa Gozaimasu ga", jp)
+    assert not release_matches_catalog("Quanzhi Fashi S7", jp)
+    assert release_matches_catalog(
+        "Rakudai Kenja no Gakuin Musou",
+        "Rakudai Kenja no Gakuin Musou: Nidome no Tensei, S-Rank Cheat Majutsushi Bouken-roku",
+    )
