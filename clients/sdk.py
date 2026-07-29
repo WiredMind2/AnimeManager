@@ -460,8 +460,18 @@ class ClientSDK:
         session = self._facade.get_playback_session(session_id)
         return asdict(session) if session is not None else None
 
-    def heartbeat_playback_session(self, session_id: str) -> dict[str, Any]:
-        return asdict(self._facade.heartbeat_playback_session(session_id))
+    def heartbeat_playback_session(
+        self,
+        session_id: str,
+        *,
+        position_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return asdict(
+            self._facade.heartbeat_playback_session(
+                session_id,
+                position_seconds=position_seconds,
+            )
+        )
 
     def stop_playback_session(self, session_id: str) -> None:
         self._facade.stop_playback_session(session_id)

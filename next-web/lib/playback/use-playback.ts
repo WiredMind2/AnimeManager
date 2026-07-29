@@ -558,6 +558,11 @@ export function usePlayback(
           onTokenRefresh: (token) => {
             playbackTokenRef.current = token;
           },
+          getPositionSeconds: () => {
+            const v = videoRef.current;
+            if (!v) return 0;
+            return videoTimeToSourceSeconds(Number(v.currentTime || 0));
+          },
         });
       }
       } finally {
@@ -576,6 +581,7 @@ export function usePlayback(
       setStatus,
       stopSession,
       videoRef,
+      videoTimeToSourceSeconds,
     ],
   );
 
