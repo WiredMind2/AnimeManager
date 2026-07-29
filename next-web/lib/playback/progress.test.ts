@@ -37,10 +37,116 @@ describe("toAbsoluteSourceSeconds", () => {
   });
 });
 
+const ANCHORED_SCRUB = {
+  anchor: 175,
+  segSecs: 4,
+  maxSeconds: 1422,
+} as const;
+
+const anchorSource = ANCHORED_SCRUB.anchor * ANCHORED_SCRUB.segSecs;
+
+function anchoredOpts(currentVideoSeconds: number) {
+  return {
+    hlsAnchorSegment: ANCHORED_SCRUB.anchor,
+    segmentSeconds: ANCHORED_SCRUB.segSecs,
+    maxSeconds: ANCHORED_SCRUB.maxSeconds,
+    currentVideoSeconds,
+  };
+}
+
+describe("scrub round-trip (manifest-relative playback)", () => {
+  const elementPrev = 2;
+
+  const scrubCases = [
+    { label: "just after anchor", absolute: 702, expectedElement: 2 },
+    { label: "early episode", absolute: 712, expectedElement: 12 },
+    { label: "quarter mark", absolute: 800, expectedElement: 100 },
+    { label: "mid episode", absolute: 950, expectedElement: 250 },
+    { label: "late episode", absolute: 1100, expectedElement: 400 },
+  ] as const;
+
+  it.each(scrubCases)(
+    "maps $label scrub ($absolute absolute) to element $expectedElement",
+    ({ absolute, expectedElement }) => {
+      expect(toManifestRelativeSeconds(absolute, anchoredOpts(elementPrev))).toBe(
+        expectedElement,
+      );
+    },
+  );
+
+  it.each(scrubCases)(
+    "round-trips $label scrub through absolute space",
+    ({ absolute, expectedElement }) => {
+      const element = toManifestRelativeSeconds(absolute, anchoredOpts(elementPrev));
+      expect(element).toBe(expectedElement);
+      expect(
+        toAbsoluteSourceSeconds(element, {
+          hlsAnchorSegment: ANCHORED_SCRUB.anchor,
+          segmentSeconds: ANCHORED_SCRUB.segSecs,
+          maxSeconds: ANCHORED_SCRUB.maxSeconds,
+        }),
+      ).toBe(absolute);
+    },
+  );
+
+  it("maps ≥3 distinct bar positions to distinct element times", () => {
+    const targets = scrubCases.map((c) => c.absolute);
+    const mapped = targets.map((absolute) =>
+      toManifestRelativeSeconds(absolute, anchoredOpts(elementPrev)),
+    );
+    expect(new Set(mapped).size).toBe(targets.length);
+  });
+});
+
+describe("polluted prev regression", () => {
+  it("chains second scrub from updated element time, not last absolute target", () => {
+    const startElement = 2;
+    const firstElement = toManifestRelativeSeconds(712, anchoredOpts(startElement));
+    expect(firstElement).toBe(12);
+
+    const pollutedPrev = 712;
+    const secondWithPollutedPrev = toManifestRelativeSeconds(800, anchoredOpts(pollutedPrev));
+    const secondWithElementPrev = toManifestRelativeSeconds(800, anchoredOpts(firstElement));
+
+    expect(secondWithElementPrev).toBe(100);
+    expect(secondWithPollutedPrev).not.toBe(secondWithElementPrev);
+
+    const thirdElement = toManifestRelativeSeconds(950, anchoredOpts(secondWithElementPrev));
+    expect(new Set([firstElement, secondWithElementPrev, thirdElement]).size).toBe(3);
+  });
+
+  it("does not collapse distinct scrub targets when element prev is correct", () => {
+    let elementPrev = 2;
+    const absoluteTargets = [712, 800, 950];
+    const elementTimes: number[] = [];
+
+    for (const absolute of absoluteTargets) {
+      const element = toManifestRelativeSeconds(absolute, anchoredOpts(elementPrev));
+      elementTimes.push(element);
+      elementPrev = element;
+    }
+
+    expect(new Set(elementTimes).size).toBe(absoluteTargets.length);
+    expect(elementTimes).toEqual([12, 100, 250]);
+  });
+});
+
+describe("fresh start (anchor 0)", () => {
+  it("leaves scrub math unchanged without an HLS anchor", () => {
+    const opts = {
+      hlsAnchorSegment: 0,
+      segmentSeconds: 4,
+      maxSeconds: 1422,
+      currentVideoSeconds: 120,
+    };
+    expect(toManifestRelativeSeconds(500, opts)).toBe(500);
+    expect(toAbsoluteSourceSeconds(500, opts)).toBe(500);
+  });
+});
+
 describe("toManifestRelativeSeconds", () => {
-  const anchor = 175;
-  const segSecs = 4;
-  const anchorSource = anchor * segSecs;
+  const anchor = ANCHORED_SCRUB.anchor;
+  const segSecs = ANCHORED_SCRUB.segSecs;
 
   it("round-trips manifest-relative element time through absolute space", () => {
     const element = 2;
