@@ -549,7 +549,7 @@ class AnimeApplicationService:
                 total = int(catalog_episodes)
             except (TypeError, ValueError):
                 total = 0
-            if total > 0:
+            if total >= 0:
                 left = max(0, total - seen)
         return unwatched, left
 

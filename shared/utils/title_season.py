@@ -12,7 +12,7 @@ _RE_SEASON_NTH = re.compile(
     r"\b(\d{1,2})(?:st|nd|rd|th)[\s._-]*Season\b", re.IGNORECASE
 )
 _RE_SEASON_TRAILING_ROMAN = re.compile(
-    r"([IVX]{1,4}|[ⅡⅢⅣⅤⅥⅦⅧⅨⅩ])\s*$",
+    r"(?<![A-Za-z])([IVX]{1,4}|[ⅡⅢⅣⅤⅥⅦⅧⅨⅩ])\s*$",
     re.IGNORECASE,
 )
 _RE_SEASON_TRAILING_DIGIT = re.compile(r"(?<![\w])(\d{1,2})\s*$")
