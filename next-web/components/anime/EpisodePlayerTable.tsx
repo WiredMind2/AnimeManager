@@ -77,6 +77,7 @@ export default function EpisodePlayerTable({
               <col className="col--episode" />
               <col className="col--size" />
               <col className="col--progress" />
+              <col className="col--status" />
               <col className="col--actions" />
             </colgroup>
             <thead>
@@ -86,6 +87,7 @@ export default function EpisodePlayerTable({
                 <th className="num">Episode</th>
                 <th className="num">Size</th>
                 <th>Progress</th>
+                <th>Status</th>
                 <th className="num">Actions</th>
               </tr>
             </thead>
@@ -115,13 +117,15 @@ export default function EpisodePlayerTable({
                       >
                         <div className="progress__bar" style={{ width: `${pct}%` }} />
                       </div>
-                      <div className="episode-watch-meta">
-                        <span className={meta === "—" ? "episode-watch-meta--muted" : undefined}>
-                          {meta}
-                        </span>
-                      </div>
+                      <span
+                        className={`episode-watch-meta${meta === "—" ? " episode-watch-meta--muted" : ""}`}
+                      >
+                        {meta}
+                      </span>
+                    </td>
+                    <td className="episode-table__status">
                       <form
-                        className="episode-table__progress-form"
+                        className="episode-table__status-form"
                         onSubmit={(e) => e.preventDefault()}
                       >
                         <select

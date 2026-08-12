@@ -4755,32 +4755,45 @@ tr:hover .torrent-name::after,
   table-layout: fixed;
 }
 
-.table--anime-episodes .col--episode-file { width: 26%; }
-.table--anime-episodes .col--season       { width: 8%; }
-.table--anime-episodes .col--episode      { width: 8%; }
-.table--anime-episodes .col--size         { width: 10%; }
-.table--anime-episodes .col--progress     { width: 22%; }
-.table--anime-episodes .col--actions      { width: 26%; }
+.table--anime-episodes .col--episode-file { width: 24%; }
+.table--anime-episodes .col--season       { width: 7%; }
+.table--anime-episodes .col--episode      { width: 7%; }
+.table--anime-episodes .col--size         { width: 9%; }
+.table--anime-episodes .col--progress     { width: 14%; }
+.table--anime-episodes .col--status       { width: 16%; }
+.table--anime-episodes .col--actions      { width: 23%; }
 
 .table--anime-episodes .episode-table__progress {
   overflow: hidden;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: var(--sp-2);
+  min-width: 0;
 }
 
 .table--anime-episodes .episode-table__progress .progress {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
+  width: auto;
 }
 
-.table--anime-episodes .episode-table__progress-form {
+.table--anime-episodes .episode-table__progress .progress--watch {
+  min-width: 0;
+}
+
+.table--anime-episodes .episode-table__status {
+  overflow: hidden;
+  min-width: 0;
+}
+
+.table--anime-episodes .episode-table__status-form {
   display: flex;
-  gap: var(--sp-2);
   align-items: center;
   min-width: 0;
 }
 
-.table--anime-episodes .episode-table__progress-form .input {
+.table--anime-episodes .episode-table__status-form .input {
   width: 100%;
   min-width: 0;
 }
@@ -4790,9 +4803,10 @@ tr:hover .torrent-name::after,
 }
 
 .table--anime-episodes .episode-watch-meta {
-  margin-top: var(--sp-1);
+  flex-shrink: 0;
   font-size: 11px;
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .table--anime-episodes .episode-watch-meta--muted {
