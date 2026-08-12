@@ -15,7 +15,7 @@ jikanpy
 jsonapi-client>=0.9.10
 jsonschema
 multidict
-mysql-connector
+mysql-connector-python>=9.7.0,<10
 pefile
 Pillow
 requests
